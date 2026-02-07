@@ -1,0 +1,66 @@
+﻿@page "/map"
+@rendermode InteractiveServer
+@inject IJSRuntime JS
+@inject MavlinkService Drone
+@implements IDisposable
+
+<div class="map-wrapper">
+    <div id="map-element" style="height: 100%; width: 100%;"></div>
+
+    <div class="map-overlay">
+        <div class="stat">LAT: @Drone.State.Latitude.ToString("F7")</div>
+        <div class="stat">LON: @Drone.State.Longitude.ToString("F7")</div>
+        <div class="stat">HDG: @Drone.State.Yaw.ToString("0")°</div>
+    </div>
+</div>
+
+<style>
+    .map-wrapper {
+        height: calc(100vh - 60px); /* Full height minus navbar */
+        width: 100%;
+        position: relative;
+    }
+
+    .map-overlay {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        background: rgba(13, 14, 16, 0.85);
+        padding: 15px;
+        border-radius: 8px;
+        border: 1px solid #2a2d35;
+        color: #00f2ff;
+        font-family: monospace;
+        pointer-events: none;
+    }
+
+    .stat {
+        margin-bottom: 5px;
+        font-size: 0.9rem;
+    }
+</style>
+
+@code {
+    private System.Threading.Timer? _mapTimer;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Initial map load at current drone position
+            await JS.InvokeVoidAsync("initMap", Drone.State.Latitude, Drone.State.Longitude);
+
+            // Start update loop
+            _mapTimer = new System.Threading.Timer(async _ =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    await JS.InvokeVoidAsync("updateMapPos", Drone.State.Latitude, Drone.State.Longitude, Drone.State.Yaw);
+                    StateHasChanged();
+                });
+            }, null, 0, 100); // 10Hz update
+        }
+    }
+
+    public void Dispose() => _mapTimer?.Dispose();
+}

@@ -1,0 +1,43 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <HeadOutlet />
+</head>
+<body>
+    <Routes @rendermode="InteractiveServer" />
+
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBuFZlKbvcCiU2GsVw8UyGiONSVq_-HPQ0"></script>
+
+    <script>
+        window.initMap = (lat, lng) => {
+            // If the drone hasn't sent coordinates yet (lat/lng are 0), center on India
+            const defaultCenter = { lat: 20.5937, lng: 78.9629 };
+            const centerPoint = (lat !== 0 && lng !== 0) ? { lat: lat, lng: lng } : defaultCenter;
+
+            const mapOptions = {
+                center: centerPoint,
+                zoom: 5, // Zoom level 5 perfectly fits India's boundaries
+
+                fullscreenControl: true,
+                fullscreenControlOptions: {
+                    position: google.maps.ControlPosition.LEFT_TOP
+                },
+                mapTypeControl: true,
+                mapTypeControlOptions: {
+                    style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
+                    position: google.maps.ControlPosition.TOP_RIGHT,
+                    mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain']
+                }
+            };
+
+            const mapElement = document.getElementById('map-element');
+            if (mapElement) {
+                window.map = new google.maps.Map(mapElement, mapOptions);
+            }
+        };
+    </script>
+
+    <script src="_framework/blazor.web.js"></script>
+</body>
+</html>

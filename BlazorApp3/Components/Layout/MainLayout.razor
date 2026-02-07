@@ -1,0 +1,330 @@
+﻿@inherits LayoutComponentBase
+@inject MavlinkService Drone
+@implements IDisposable
+@using System.IO.Ports
+@using System.Linq
+
+<div class="gcs-wrapper">
+    <header class="header">
+        <div class="brand-section">
+            <div class="logo">
+                <span class="logo-text">DIVYALINK</span>
+                <div class="tagline">by Vayunotics</div>
+            </div>
+            <div class="sat-status">
+                <span class="sat-icon">📡</span>
+                <span>Sat-Count: @Drone.State.SatCount</span>
+            </div>
+        </div>
+
+        <div class="connection-controls">
+            <select class="gcs-input" @bind="selectedType">
+                <option value="Serial">SERIAL</option>
+                <option value="UDP">UDP</option>
+                <option value="TCP">TCP</option>
+            </select>
+
+            @if (selectedType == "Serial")
+            {
+                <select class="gcs-input" @bind="selectedPort">
+                    <option value="">-- Auto-Detecting... --</option>
+                    @foreach (var p in availablePorts)
+                    {
+                        <option value="@p">@p</option>
+                    }
+                </select>
+            }
+            else
+            {
+                <input class="gcs-input" @bind="selectedPort" placeholder="127.0.0.1" style="width:120px;" />
+            }
+
+            <select class="gcs-input" @bind="selectedBaud">
+                <option value="57600">57600</option>
+                <option value="115200">115200</option>
+                <option value="14550">14550 (SITL)</option>
+            </select>
+
+            <div class="v-divider"></div>
+            <span class="status-indicator @(IsConnected ? "online" : "offline")"></span>
+            <button class="connect-btn" @onclick="ToggleConnection">
+                @(IsConnected ? "DISCONNECT" : "CONNECT")
+            </button>
+        </div>
+    </header>
+
+    <main class="viewport">
+        <CascadingValue Value="activeTab">
+            @Body
+        </CascadingValue>
+    </main>
+
+    <footer class="footer">
+        <div class="sub-nav">
+            @foreach (var tab in tabs)
+            {
+                <button class="nav-btn @(activeTab == tab ? "active" : "")" @onclick="() => activeTab = tab">
+                    <i class="cyan-icon">@GetIcon(tab)</i>
+                    <span>@tab</span>
+                </button>
+            }
+        </div>
+    </footer>
+</div>
+
+<style>
+    :root {
+        --bg-dark: #0a0b0d;
+        --panel-bg: #12141a;
+        --border: #242731;
+        --accent-blue: #2b58ff;
+        --accent-purple: #7e3ff2;
+        --cyan: #00f2ff;
+    }
+
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-family: 'Segoe UI', sans-serif;
+    }
+
+    .gcs-wrapper {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        background: var(--bg-dark);
+        color: white;
+    }
+
+    /* HEADER STYLING */
+    .header {
+        height: 60px;
+        background: var(--panel-bg);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+    }
+
+    .brand-section {
+        display: flex; /* Forces children (Logo and Sat-Count) to be side-by-side */
+        align-items: center; /* Vertically aligns them in the center of the 60px header */
+        gap: 15px; /* Space between logo and sat-count */
+    }
+
+    .logo {
+        line-height: 0.8; /* Keeps the tagline close to the brand name */
+    }
+
+    .logo-text {
+        background: linear-gradient(to right, #3a86ff, #ff00c8);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 900;
+        font-size: 1.6rem;
+        letter-spacing: -0.5px;
+        display: inline-block;
+    }
+
+    .tagline {
+        font-size: 0.55rem;
+        color: #888;
+        letter-spacing: 1.2px;
+        text-transform: uppercase;
+        margin-top: 4px;
+    }
+
+    .sat-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.8rem;
+        color: #ddd;
+        padding-bottom: 5px; /* Adjusts vertical "feeling" to match logo baseline */
+    }
+
+    .sat-icon {
+        font-size: 1rem;
+        color: #ffffff;
+    }
+
+    .connection-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .gcs-input {
+        background: #08090b;
+        border: 1px solid var(--border);
+        color: white;
+        padding: 5px 10px;
+        border-radius: 4px;
+        font-size: 0.8rem;
+    }
+
+    .divider {
+        width: 1px;
+        height: 25px;
+        background: var(--border);
+        margin: 0 10px;
+    }
+
+    .status-indicator {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+    }
+
+    .online {
+        background: #00ff00;
+        box-shadow: 0 0 10px #00ff00;
+    }
+
+    .offline {
+        background: #ff0000;
+    }
+
+    .connect-btn {
+        background: var(--accent-blue);
+        color: white;
+        border: none;
+        padding: 8px 20px;
+        border-radius: 4px;
+        font-weight: bold;
+        cursor: pointer;
+    }
+
+    /* VIEWPORT */
+    .viewport {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+    }
+
+    /* FOOTER STYLING */
+    .footer {
+        background: var(--bg-dark);
+        border-top: 1px solid var(--border);
+        padding: 10px;
+        display: flex;
+        justify-content: center;
+    }
+
+    .sub-nav {
+        display: flex;
+        gap: 10px;
+        width: 100%;
+        max-width: 1400px;
+    }
+
+    .nav-btn {
+        flex: 1;
+        background: #090a0c;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: white;
+        padding: 12px 5px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        cursor: pointer;
+        transition: 0.2s;
+    }
+
+    .nav-btn i.cyan {
+        color: var(--cyan);
+        font-style: normal;
+        margin-bottom: 5px;
+    }
+
+    .nav-btn span {
+        font-size: 0.75rem;
+    }
+
+    .nav-btn.active {
+        background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
+        border: none;
+    }
+
+    .nav-btn.active i {
+        color: white;
+    }
+</style>
+
+@code {
+    private string activeTab = "Quick";
+    private string selectedType = "Serial";
+    private string selectedPort = "";
+    private int selectedBaud = 57600;
+    private List<string> availablePorts = new();
+    private System.Threading.Timer? _autoDetectTimer;
+    private bool isManualConnected = false; // Tracks the button state
+
+    private string ConnectionButtonText => isManualConnected ? "DISCONNECT" : "CONNECT";
+    private string ConnectionButtonClass => isManualConnected ? "btn-disconnect" : "btn-connect";
+
+    private string[] tabs = { "Quick", "Actions", "Messages", "FlightPlan", "Pre Flight", "Setup" };
+    private bool IsConnected => Drone.State.ConnectionStatus.Contains("Receiving");
+
+    protected override void OnInitialized()
+    {
+        _autoDetectTimer = new System.Threading.Timer(async _ =>
+        {
+            var rawPorts = SerialPort.GetPortNames();
+            var uniquePorts = new HashSet<string>(rawPorts).ToList();
+
+            if (!Enumerable.SequenceEqual(availablePorts, uniquePorts))
+            {
+                availablePorts = uniquePorts;
+                // FIX: Corrected method name and syntax
+                await InvokeAsync(StateHasChanged);
+            }
+        }, null, 0, 2000);
+    }
+
+    private async Task ToggleConnection()
+    {
+        if (isManualConnected)
+        {
+            // DISCONNECT ACTION
+            Drone.StopConnection();
+            isManualConnected = false;
+        }
+        else
+        {
+            // CONNECT ACTION
+            if (string.IsNullOrEmpty(selectedPort)) return;
+
+            try
+            {
+                // Trigger the service connection
+                var type = Enum.Parse<MavlinkService.ConnectionType>(selectedType);
+                Drone.Connect(type, selectedPort, 115200);
+
+                // Immediately flip the button state
+                isManualConnected = true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Connection Failed: {ex.Message}");
+                isManualConnected = false;
+            }
+        }
+    }
+
+    private string GetIcon(string t) => t switch
+    {
+        "Quick" => "⚡",
+        "Actions" => "⚙️",
+        "Messages" => "✉️",
+        "FlightPlan" => "✈️",
+        "Pre Flight" => "✈️",
+        "Setup" => "🛠️",
+        _ => "❓"
+    };
+
+    public void Dispose() => _autoDetectTimer?.Dispose();
+}
