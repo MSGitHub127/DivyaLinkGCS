@@ -26,11 +26,12 @@
 
             @if (selectedType == "Serial")
             {
-                <select class="gcs-input" @bind="selectedPort">
-                    <option value="">-- Auto-Detecting... --</option>
+                <select class="gcs-input" @onchange="OnPortChanged" autocomplete="off">
+                    <option value="" selected="@(string.IsNullOrEmpty(selectedPort))" disabled>-- Select Port --</option>
+
                     @foreach (var p in availablePorts)
                     {
-                        <option value="@p">@p</option>
+                        <option value="@p" selected="@(p == selectedPort)">@p</option>
                     }
                 </select>
             }
@@ -47,8 +48,17 @@
 
             <div class="v-divider"></div>
             <span class="status-indicator @(IsConnected ? "online" : "offline")"></span>
-            <button class="connect-btn" @onclick="ToggleConnection">
-                @(IsConnected ? "DISCONNECT" : "CONNECT")
+            <button class="connect-btn @(isManualConnected ? "online-red" : "offline-blue")"
+                    @onclick="ToggleConnection"
+                    disabled="@isAttempting">
+                @if (isAttempting)
+                {
+                    <span>VERIFYING...</span>
+                }
+                else
+                {
+                    @(isManualConnected ? "DISCONNECT" : "CONNECT")
+                }
             </button>
         </div>
     </header>
@@ -59,11 +69,23 @@
         </CascadingValue>
     </main>
 
+    <div class="gcs-drawer @(string.IsNullOrEmpty(activeTab) ? "" : "open")">
+        <button class="close-overlay" @onclick='() => activeTab = ""'>&times;</button>
+        <div class="drawer-content">
+            @if (activeTab == "Quick")
+            {
+                <Quick />
+            }
+            @* Other tabs here *@
+        </div>
+    </div>
+
     <footer class="footer">
         <div class="sub-nav">
             @foreach (var tab in tabs)
             {
-                <button class="nav-btn @(activeTab == tab ? "active" : "")" @onclick="() => activeTab = tab">
+                <button class="nav-btn @(activeTab == tab ? "active" : "")"
+                        @onclick="() => HandleTabClick(tab)">
                     <i class="cyan-icon">@GetIcon(tab)</i>
                     <span>@tab</span>
                 </button>
@@ -94,12 +116,81 @@
         flex-direction: column;
         height: 100vh;
         background: var(--bg-dark);
-        color: white;
+        overflow: hidden; /* Prevents double scrollbars */
     }
 
+    /* THE DRAWER (Left Side) */
+    .gcs-drawer {
+        position: fixed;
+        top: 60px;
+        /* FIX: Increased to 540px to fit the 500px content comfortably */
+        width: 540px;
+        left: -580px;
+        height: calc(100vh - 120px);
+        background: #0b0c10;
+        border-right: 2px solid #7e3ff2;
+        z-index: 1500;
+        transition: left 0.3s ease-in-out;
+        /* Keep the scrollbar always visible to prevent jumping */
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    .gcs-drawer.open {
+        left: 0; /* Slide in */
+    }
+
+    .drawer-content {
+        min-width: 480px;
+        padding: 10px; /* Slight padding so the X doesn't cover text immediately */
+        box-sizing: border-box;
+    }
+
+    /* Sidebar Header Layout */
+    .drawer-header {
+        display: flex;
+        justify-content: space-between; /* Pushes Title Left, X Right */
+        align-items: center; /* Centers them vertically */
+        padding: 15px 20px; /* Adds breathing room */
+        background: #12141a; /* Darker header background */
+        border-bottom: 1px solid #7e3ff2; /* Neon purple separator */
+        min-height: 50px;
+    }
+
+        /* Title Styling */
+    .drawer-header span {
+        font-size: 1.1rem;
+        font-weight: bold;
+        color: white;
+        letter-spacing: 1px;
+    }
+
+    .close-overlay {
+        position: absolute; /* Floats over content */
+        top: 5px;
+        right: 5px;
+        background: transparent; /* No background color */
+        border: none;
+        color: rgba(255, 255, 255, 0.7); /* Semi-transparent white */
+        font-size: 26px; /* Large and easy to hit */
+        font-weight: bold;
+        padding: 0;
+        cursor: pointer;
+        z-index: 2000; /* Ensures it sits ON TOP of your HUD/Map */
+        line-height: 1;
+        transition: all 0.2s ease;
+    }
+
+        /* Hover Effect */
+    .close-overlay:hover {
+        color: #ff3a3a; /* Bright red on hover */
+        transform: scale(1.2);
+    }
     /* HEADER STYLING */
     .header {
         height: 60px;
+        z-index: 100;
+        flex-shrink: 0;
         background: var(--panel-bg);
         border-bottom: 1px solid var(--border);
         display: flex;
@@ -201,16 +292,19 @@
     .viewport {
         flex: 1;
         position: relative;
+        z-index: 10;
         overflow: hidden;
     }
 
     /* FOOTER STYLING */
     .footer {
-        background: var(--bg-dark);
+        background: var(--panel-bg); /* Was var(--bg-dark) in some versions, using panel for contrast */
         border-top: 1px solid var(--border);
         padding: 10px;
         display: flex;
         justify-content: center;
+        z-index: 2000; /* Ensure it stays on top of the map */
+        flex-shrink: 0; /* CRITICAL: Prevents footer from being squashed */
     }
 
     .sub-nav {
@@ -255,12 +349,15 @@
 </style>
 
 @code {
-    private string activeTab = "Quick";
+    private string activeTab = "";
     private string selectedType = "Serial";
     private string selectedPort = "";
     private int selectedBaud = 57600;
     private List<string> availablePorts = new();
     private System.Threading.Timer? _autoDetectTimer;
+    // This is the key: It returns all ports EXCEPT the one we are using/just used
+    private IEnumerable<string> FilteredPorts => availablePorts
+        .Where(p => p != selectedPort);
     private bool isManualConnected = false; // Tracks the button state
 
     private string ConnectionButtonText => isManualConnected ? "DISCONNECT" : "CONNECT";
@@ -269,49 +366,95 @@
     private string[] tabs = { "Quick", "Actions", "Messages", "FlightPlan", "Pre Flight", "Setup" };
     private bool IsConnected => Drone.State.ConnectionStatus.Contains("Receiving");
 
+    private bool isAttempting = false;
+
+    // A connection is only "Online" if MAVLink data is flowing
+    private bool IsDroneActuallyTalking =>
+        Drone.IsConnected && (DateTime.UtcNow - Drone.State.LastHeartbeat).TotalSeconds < 3;
+
+    // Explicit handler to lock the value immediately when you click
+    private void OnPortChanged(ChangeEventArgs e)
+    {
+        selectedPort = e.Value?.ToString() ?? "";
+        StateHasChanged(); // Force UI to update immediately
+    }
+
     protected override void OnInitialized()
     {
         _autoDetectTimer = new System.Threading.Timer(async _ =>
         {
-            var rawPorts = SerialPort.GetPortNames();
-            var uniquePorts = new HashSet<string>(rawPorts).ToList();
+            // 1. Get ONLY what is physically plugged in right now
+            var currentPhysicalPorts = SerialPort.GetPortNames().Distinct().ToList();
 
-            if (!Enumerable.SequenceEqual(availablePorts, uniquePorts))
+            // 2. Clear the internal list and rebuild it from scratch
+            // This prevents "History" from sticking around
+            if (!currentPhysicalPorts.OrderBy(x => x).SequenceEqual(availablePorts.OrderBy(x => x)))
             {
-                availablePorts = uniquePorts;
-                // FIX: Corrected method name and syntax
+                availablePorts = currentPhysicalPorts;
+
+                // 3. If the selected port was unplugged, wipe the selection
+                if (!string.IsNullOrEmpty(selectedPort) && !availablePorts.Contains(selectedPort))
+                {
+                    selectedPort = "";
+                    Drone.StopConnection();
+                    isManualConnected = false;
+                }
+
                 await InvokeAsync(StateHasChanged);
             }
-        }, null, 0, 2000);
+
+            // 4. HEARTBEAT CHECK: If it's plugged in but "Ghosting" (No Heartbeat)
+            if (isManualConnected && !Drone.IsConnected)
+            {
+                var deadPort = selectedPort;
+                Drone.StopConnection();
+                selectedPort = "";
+                isManualConnected = false;
+
+                // Remove it so it doesn't show in the dropdown anymore
+                availablePorts.Remove(deadPort);
+                await InvokeAsync(StateHasChanged);
+            }
+        }, null, 0, 1000);
     }
 
     private async Task ToggleConnection()
     {
         if (isManualConnected)
         {
-            // DISCONNECT ACTION
+            // DISCONNECT
             Drone.StopConnection();
+            availablePorts.Clear();
+            selectedPort = ""; // This clears the dropdown selection
             isManualConnected = false;
+            isAttempting = false;
+
+            await InvokeAsync(StateHasChanged);
         }
         else
         {
-            // CONNECT ACTION
+            // CONNECT
             if (string.IsNullOrEmpty(selectedPort)) return;
 
-            try
-            {
-                // Trigger the service connection
-                var type = Enum.Parse<MavlinkService.ConnectionType>(selectedType);
-                Drone.Connect(type, selectedPort, 115200);
+            isAttempting = true;
+            Drone.Connect(Enum.Parse<ConnectionType>(selectedType), selectedPort, selectedBaud);
 
-                // Immediately flip the button state
-                isManualConnected = true;
-            }
-            catch (Exception ex)
+            // Wait 3 seconds to see if a heartbeat arrives
+            await Task.Delay(3000);
+
+            if (IsDroneActuallyTalking)
             {
-                Console.WriteLine($"Connection Failed: {ex.Message}");
+                isManualConnected = true;
+                // This tells the Pixhawk: "Please send me Altitude, Attitude, and Battery info!"
+                Drone.RequestDataStreams();
+            }
+            else
+            {
+                // It's a ghost port (like COM1) or wrong Baud Rate
+                Drone.StopConnection();
                 isManualConnected = false;
             }
+            isAttempting = false;
         }
     }
 
@@ -327,4 +470,21 @@
     };
 
     public void Dispose() => _autoDetectTimer?.Dispose();
+
+    private void HandleTabClick(string tab)
+    {
+        if (tab == "Quick")
+        {
+            // If it's already open, clicking again closes it (Toggle)
+            activeTab = (activeTab == "Quick") ? "" : "Quick";
+        }
+        else
+        {
+            // For now, other buttons just close the sidebar
+            // until we build their specific panels
+            activeTab = "";
+            Console.WriteLine($"Clicked {tab} - Logic coming soon");
+        }
+    }
 }
+

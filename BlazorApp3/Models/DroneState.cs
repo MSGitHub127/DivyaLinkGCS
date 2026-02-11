@@ -12,5 +12,8 @@
     public double Altitude { get; set; }
     public int SatCount { get; set; } = 0;
     public DateTime LastHeartbeat { get; set; } = DateTime.MinValue;
+    public string FlightMode { get; set; } = "Unknown";
+    public float ClimbRate { get; set; } = 0f;
+    public bool IsArmed { get; set; } = false;
 }
 
