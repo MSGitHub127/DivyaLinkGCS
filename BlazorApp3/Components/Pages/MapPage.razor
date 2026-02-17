@@ -16,14 +16,14 @@
 
 <style>
     .map-wrapper {
-        height: calc(100vh - 60px); /* Full height minus navbar */
+        height: calc(100vh - 60px);
         width: 100%;
         position: relative;
     }
 
     .map-overlay {
         position: absolute;
-        top: 20px;
+        top: 120px;
         left: 20px;
         background: rgba(13, 14, 16, 0.85);
         padding: 15px;
@@ -42,25 +42,57 @@
 
 @code {
     private System.Threading.Timer? _mapTimer;
+    private bool _jumpedToDrone = false;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
-            // Initial map load at current drone position
-            await JS.InvokeVoidAsync("initMap", Drone.State.Latitude, Drone.State.Longitude);
+            // India at start
+            await JS.InvokeVoidAsync("initMap", 0.0, 0.0);
 
-            // Start update loop
             _mapTimer = new System.Threading.Timer(async _ =>
             {
                 await InvokeAsync(async () =>
                 {
-                    await JS.InvokeVoidAsync("updateMapPos", Drone.State.Latitude, Drone.State.Longitude, Drone.State.Yaw);
+                    await TryJumpOrUpdateAsync();
                     StateHasChanged();
                 });
-            }, null, 0, 100); // 10Hz update
+            }, null, 0, 200);
         }
+    }
+
+    private static bool HasValidGps(double lat, double lon)
+    {
+        if (double.IsNaN(lat) || double.IsNaN(lon)) return false;
+        if (Math.Abs(lat) < 0.000001 && Math.Abs(lon) < 0.000001) return false;
+        if (lat < -90 || lat > 90) return false;
+        if (lon < -180 || lon > 180) return false;
+        return true;
+    }
+
+    private async Task TryJumpOrUpdateAsync()
+    {
+        var lat = Drone.State.Latitude;
+        var lon = Drone.State.Longitude;
+
+        Console.WriteLine($"[MAP] lat={lat:F7} lon={lon:F7} jumped={_jumpedToDrone}");
+
+        if (!HasValidGps(lat, lon))
+            return;
+
+        // JUMP immediately the moment GPS becomes valid
+        if (!_jumpedToDrone)
+        {
+            await JS.InvokeVoidAsync("jumpToDrone", lat, lon);
+            _jumpedToDrone = true;
+            return;
+        }
+
+        // then follow normally
+        await JS.InvokeVoidAsync("updateMapPos", lat, lon);
     }
 
     public void Dispose() => _mapTimer?.Dispose();
 }
+

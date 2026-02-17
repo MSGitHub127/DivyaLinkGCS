@@ -10,31 +10,149 @@
     <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBuFZlKbvcCiU2GsVw8UyGiONSVq_-HPQ0"></script>
 
     <script>
-        window.initMap = (lat, lng) => {
-            // If the drone hasn't sent coordinates yet (lat/lng are 0), center on India
-            const defaultCenter = { lat: 20.5937, lng: 78.9629 };
-            const centerPoint = (lat !== 0 && lng !== 0) ? { lat: lat, lng: lng } : defaultCenter;
+        window._gcsMap = null;
+        window._gcsMarker = null;
+        window._missionMarkers = [];
+        window._missionPath = null;
 
-            const mapOptions = {
-                center: centerPoint,
-                zoom: 5, // Zoom level 5 perfectly fits India's boundaries
+        // Helper to validate coordinates [cite: 92-95]
+        function _validGps(lat, lng) {
+            if (typeof lat !== "number" || typeof lng !== "number") return false;
+            if (Number.isNaN(lat) || Number.isNaN(lng)) return false;
+            if (Math.abs(lat) < 0.000001 && Math.abs(lng) < 0.000001) return false;
+            return (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180);
+        }
 
-                fullscreenControl: true,
-                fullscreenControlOptions: {
-                    position: google.maps.ControlPosition.LEFT_TOP
-                },
-                mapTypeControl: true,
-                mapTypeControlOptions: {
-                    style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
-                    position: google.maps.ControlPosition.TOP_RIGHT,
-                    mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain']
-                }
-            };
+        // Initialize Map [cite: 106-111]
+        window.initMap = () => {
+            const india = { lat: 20.5937, lng: 78.9629 };
+            const el = document.getElementById("map-element");
+            if (!el) return;
 
-            const mapElement = document.getElementById('map-element');
-            if (mapElement) {
-                window.map = new google.maps.Map(mapElement, mapOptions);
+            if (!window._gcsMap) {
+                window._gcsMap = new google.maps.Map(el, {
+                    center: india,
+                    zoom: 5,
+                    mapTypeId: "roadmap",
+                    clickableIcons: false,
+                    fullscreenControl: true,
+                    streetViewControl: false
+                });
+
+                // Map Click Listener [cite: 108-110]
+                window._gcsMap.addListener("click", (e) => {
+                    const clickedLat = e.latLng.lat();
+                    const clickedLng = e.latLng.lng();
+
+                    // Use the exact Assembly Name 'BlazorApp3'
+                    DotNet.invokeMethodAsync('BlazorApp3', 'AddWaypointFromMap', clickedLat, clickedLng)
+                          .catch(err => console.error("Blazor Bridge Error:", err));
+                });
             }
+        };
+
+        // Draw Mission Waypoints and Lines [cite: 121-131]
+        window.drawMission = (waypoints) => {
+            if (!window._gcsMap) return;
+
+            // Clear existing markers and path [cite: 122-123]
+            window._missionMarkers.forEach(m => m.setMap(null));
+            window._missionMarkers = [];
+            if (window._missionPath) {
+                window._missionPath.setMap(null);
+                window._missionPath = null;
+            }
+
+            if (!waypoints || waypoints.length === 0) return;
+
+            const pathCoords = [];
+
+            waypoints.forEach((wp, index) => {
+                // Handle C# to JS property casing (Lat/lat) [cite: 124]
+                const lat = wp.lat !== undefined ? wp.lat : wp.Lat;
+                const lng = wp.lng !== undefined ? wp.lng : wp.Lng;
+
+                if (lat === undefined || lng === undefined) return;
+
+                const pos = { lat: lat, lng: lng };
+                pathCoords.push(pos);
+
+                // Create Numbered Marker [cite: 125-128]
+                const marker = new google.maps.Marker({
+                    position: pos,
+                    map: window._gcsMap,
+                    label: {
+                        text: (index + 1).toString(),
+                        color: "black",
+                        fontWeight: "bold"
+                    },
+                    icon: {
+                        path: google.maps.SymbolPath.CIRCLE,
+                        fillColor: "#00f2ff",
+                        fillOpacity: 1,
+                        strokeColor: "#ffffff",
+                        strokeWeight: 2,
+                        scale: 12
+                    }
+                });
+                window._missionMarkers.push(marker);
+            });
+
+            // Draw Interconnecting Lines [cite: 129-131]
+            if (pathCoords.length > 1) {
+                window._missionPath = new google.maps.Polyline({
+                    path: pathCoords,
+                    geodesic: true,
+                    strokeColor: "#2b58ff",
+                    strokeOpacity: 0.8,
+                    strokeWeight: 3,
+                    map: window._gcsMap
+                });
+            }
+        };
+
+        // File helpers [cite: 117-119]
+        window.downloadFile = (fileName, content) => {
+            const blob = new Blob([content], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            a.click();
+            URL.revokeObjectURL(url);
+        };
+
+        window.triggerFilePicker = (id) => {
+            const el = document.getElementById(id);
+            if (el) el.click();
+        };
+
+                window.jumpToDrone = (lat, lng, yawDeg) => {
+            // 1. Safety check: ensuring the map object exists [cite: 13, 23]
+            if (!window._gcsMap) return;
+
+            // 2. Validate coordinates before moving the map [cite: 2-5, 23]
+            if (!_validGps(lat, lng)) return;
+
+            const pos = { lat: lat, lng: lng };
+
+            // 3. Center the map and set a close-up zoom level
+            window._gcsMap.setCenter(pos);
+            window._gcsMap.setZoom(18);
+
+            // 4. Ensure the drone marker (the arrow) is created/updated [cite: 13-15, 23]
+            _ensureDroneMarker(pos, yawDeg ?? 0);
+        };
+
+        // Also ensure updateMapPos is present to track the drone as it moves [cite: 25]
+        window.updateMapPos = (lat, lng, yawDeg) => {
+            if (!window._gcsMap || !_validGps(lat, lng) || !window._gcsMarker) return;
+
+            const pos = { lat: lat, lng: lng };
+            _ensureDroneMarker(pos, yawDeg ?? 0);
+
+            // Follow drone smoothly [cite: 27]
+            window._gcsMap.panTo(pos);
         };
     </script>
 

@@ -1,11 +1,12 @@
 ﻿@page "/"
 @inject IJSRuntime JS
 @inject MavlinkService Drone
+@implements IDisposable
 
 <div class="map-wrapper">
     <div id="map-element"></div>
 
-    @* Right Side Telemetry Overlay as seen in image *@
+    @* Right Side Telemetry Overlay *@
     <div class="side-telemetry">
         <div class="stat-box @(Drone.State.BatteryPercent < 20 ? "low-bat" : "")">
             <div class="icon">@(Drone.State.BatteryPercent > 50 ? "🔋" : "🪫")</div>
@@ -42,7 +43,7 @@
 
     #map-element {
         width: 100%;
-        height: calc(100vh - 150px); /* Explicit height is MANDATORY */
+        height: calc(100vh - 150px);
         min-height: 400px;
         background-color: #0a0b0d;
     }
@@ -69,37 +70,108 @@
     }
 
     .stat-box .icon {
-        font-size: 1.2rem;
+            font-size: 1.2rem;
     }
 
     .stat-box .label {
-        font-size: 0.6rem;
-        color: #888;
-        text-transform: uppercase;
+            font-size: 0.6rem;
+            color: #888;
+            text-transform: uppercase;
     }
 
     .stat-box .val {
-        font-size: 0.9rem;
-        font-weight: bold;
-        color: var(--cyan);
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: var(--cyan);
     }
 </style>
 
 @code {
+    private bool _mapInitialized = false;   // we called initMap at least once
+    private bool _jumpedToDrone = false;    // we jumped once when GPS became valid
+
+    private DateTime _lastJsUpdateUtc = DateTime.MinValue;
+    private readonly TimeSpan _jsMinPeriod = TimeSpan.FromMilliseconds(200); // 5 Hz max JS calls
+
+    protected override void OnInitialized()
+    {
+        // Make Home reactive without a timer
+        Drone.OnTelemetryUpdated += HandleTelemetryUpdated;
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
+        if (!firstRender) return;
+
+        try
         {
-            try
-            {
-                // Call the JavaScript function we wrote in App.razor
-                // Passing the Drone's current Lat/Lng to center the map
-                await JS.InvokeVoidAsync("initMap", Drone.State.Latitude, Drone.State.Longitude);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Map Error: {ex.Message}");
-            }
+            // ✅ India view at start, NO marker (your JS initMap(0,0) should do India)
+            await JS.InvokeVoidAsync("initMap", 0.0, 0.0);
+            _mapInitialized = true;
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Map Error: {ex.Message}");
+        }
+    }
+
+    private void HandleTelemetryUpdated()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await TryJumpOrUpdateAsync();
+            StateHasChanged();
+        });
+    }
+
+    private static bool HasValidGps(double lat, double lon)
+    {
+        if (double.IsNaN(lat) || double.IsNaN(lon)) return false;
+        if (Math.Abs(lat) < 0.000001 && Math.Abs(lon) < 0.000001) return false;
+        if (lat < -90 || lat > 90) return false;
+        if (lon < -180 || lon > 180) return false;
+        return true;
+    }
+
+    private async Task TryJumpOrUpdateAsync()
+    {
+        if (!_mapInitialized) return;
+
+        var lat = Drone.State.Latitude;
+        var lon = Drone.State.Longitude;
+        var heading = Drone.State.Yaw;
+
+        if (!HasValidGps(lat, lon))
+            return;
+
+        // throttle JS calls
+        var now = DateTime.UtcNow;
+        if (now - _lastJsUpdateUtc < _jsMinPeriod)
+            return;
+
+        _lastJsUpdateUtc = now;
+
+        try
+        {
+            // ✅ First valid GPS -> jump instantly + create marker
+            if (!_jumpedToDrone)
+            {
+                await JS.InvokeVoidAsync("jumpToDrone", lat, lon, heading);
+                _jumpedToDrone = true;
+                return;
+            }
+
+            // ✅ After jump -> update marker position (marker must already exist)
+            await JS.InvokeVoidAsync("updateMapPos", lat, lon, heading);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Map Error: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        Drone.OnTelemetryUpdated -= HandleTelemetryUpdated;
     }
 }

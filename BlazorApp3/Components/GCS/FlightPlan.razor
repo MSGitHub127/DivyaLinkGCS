@@ -1,5 +1,422 @@
-﻿<h3>FlightPlan</h3>
+﻿@page "/flightplan"
+@inject MavlinkService Drone
+@inject IJSRuntime JS
+@implements IDisposable
+@using System.Text.Json
+
+<InputFile id="importFile" OnChange="HandleImport" style="display:none" accept=".json" />
+
+<div class="flightplan-view-container">
+    <div class="hud-wrapper">
+        <Hud />
+    </div>
+
+    <div class="editor-section">
+        <div class="header-strip">
+            <span class="icon">🛰️</span> FLIGHT PLANNER
+        </div>
+
+        <div class="toolbar-row">
+            <div class="toolbar-left">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="margin-right: 6px; vertical-align: middle; color: mediumpurple">
+                    <path d="M21 7L13 15L9 11L3 17" />
+                    <circle cx="21" cy="7" r="2" fill="currentColor" />
+                    <circle cx="3" cy="17" r="2" fill="currentColor" />
+                </svg>
+                <span class="status-badge-primary">WAYPOINTS</span>
+            </div>
+            <div class="tool-group">
+                <button class="mini-btn blue" @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")'>IMPORT JSON</button>
+                <button class="mini-btn green" @onclick="ExportWaypoints">EXPORT JSON</button>
+                @if (MissionItems.Count > 1)
+                {
+                    <button class="mini-btn red" @onclick="ClearAll">CLEAR ALL</button>
+                }
+            </div>
+        </div>
+
+        <div class="mission-table-container">
+            <table class="mission-planner-table">
+                <thead>
+                    <tr>
+                        <th style="width: 35px;">#</th>
+                        <th>Command</th>
+                        <th>Latitude</th>
+                        <th>Longitude</th>
+                        <th style="width: 60px;">Alt</th>
+                        <th style="width: 80px;">Order</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in MissionItems)
+                    {
+                        <tr class="@(item.IsHome ? "home-row" : "")">
+                            <td class="seq-col">@(item.IsHome ? "H" : item.Sequence.ToString())</td>
+                            <td>
+                                @if (item.IsHome)
+                                {
+                                    <div class="home-text">HOME</div>
+                                }
+                                else
+                                {
+                                    <select @bind="item.Command" class="table-select" @bind:after="TriggerMapRedraw">
+                                        <option value="WAYPOINT">WAYPOINT</option>
+                                        <option value="TAKEOFF">TAKEOFF</option>
+                                        <option value="LAND">LAND</option>
+                                        <option value="RTL">RTL</option>
+                                    </select>
+                                }
+                            </td>
+                            <td><input type="number" step="0.0000001" @bind="item.Lat" @bind:after="TriggerMapRedraw" class="table-input" /></td>
+                            <td><input type="number" step="0.0000001" @bind="item.Lng" @bind:after="TriggerMapRedraw" class="table-input" /></td>
+                            <td><input type="number" @bind="item.Alt" @bind:after="TriggerMapRedraw" class="table-input" /></td>
+                            <td class="actions-cell">
+                                @if (!item.IsHome)
+                                {
+                                    <button class="icon-btn" @onclick="() => MoveUp(item)">▲</button>
+                                    <button class="icon-btn" @onclick="() => MoveDown(item)">▼</button>
+                                    <button class="icon-btn red-text" @onclick="() => RemoveItem(item)">✕</button>
+                                }
+                                else
+                                {
+                                    <button class="icon-btn sync-btn" @onclick="SetHomeToDrone">🛰️</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mission-action-group">
+            <button class="action-btn upload-btn" @onclick="UploadMission">UPLOAD MISSION</button>
+            <button class="action-btn start-btn @(isUploaded ? "ready" : "disabled")"
+                    @onclick="StartMission" disabled="@(!isUploaded)">
+                START MISSION
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* MASTER CONTAINER: Exact match to Messages tab [cite: 187, 188] */
+    .flightplan-view-container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        gap: 16px;
+        padding: 20px;
+        background: transparent;
+        width: 100%;
+        max-width: 500px;
+        margin: 0 auto;
+        overflow: hidden;
+    }
+
+    /* HUD WRAPPER: Exact match to Messages tab [cite: 189, 190] */
+    .hud-wrapper {
+        height: 300px;
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        border: 1px solid #333;
+        flex-shrink: 0;
+    }
+
+    .editor-section {
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+        gap: 10px;
+        min-height: 0;
+    }
+
+    .header-strip {
+        background: rgba(18, 20, 28, 0.8);
+        border: 1px solid rgba(0, 242, 255, 0.2);
+        border-radius: 6px;
+        padding: 8px;
+        text-align: center;
+        color: #00f2ff;
+        font-weight: 800;
+        font-size: 0.85rem;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        backdrop-filter: blur(4px);
+    }
+
+    /* TABLE CONTAINER: Matches the Console Window style  */
+    .mission-table-container {
+        flex-grow: 1;
+        background: rgba(5, 5, 10, 0.9);
+        border: 1px solid #222;
+        border-radius: 6px;
+        padding: 10px;
+        overflow-y: auto;
+        box-shadow: inset 0 0 15px rgba(0,0,0,0.8);
+    }
+
+    .mission-planner-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.75rem;
+        color: #ddd;
+    }
+
+    .mission-planner-table th {
+            background: #111;
+            color: #666;
+            padding: 8px;
+            text-align: left;
+            position: sticky;
+            top: 0;
+            border-bottom: 1px solid #222;
+            font-size: 0.65rem;
+        }
+
+    .mission-planner-table td {
+            padding: 4px;
+            border-bottom: 1px solid #111;
+            vertical-align: middle;
+        }
+
+    .table-input, .table-select {
+        background: #000;
+        border: 1px solid #222;
+        color: #00ff00;
+        border-radius: 4px;
+        padding: 2px;
+        width: 100%;
+        font-size: 0.7rem;
+    }
+
+    .home-row {
+        background: rgba(0, 242, 255, 0.05);
+    }
+
+    .home-text {
+        color: #00f2ff;
+        font-weight: bold;
+    }
+
+    .seq-col {
+        color: #00f2ff;
+        font-weight: bold;
+        text-align: center;
+    }
+
+    .toolbar-row {
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    .toolbar-left {
+        flex-shrink: 0;
+        margin-right: auto;
+    }
+
+    .status-badge-primary {
+        background: rgba(5, 5, 10, 0.9);
+        color: mediumpurple;
+        padding: 5px 12px;
+        border-radius: 4px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+    }
+
+    .tool-group {
+        display: flex;
+        gap: 8px;
+    }
+
+    .mini-btn {
+        padding: 5px 12px;
+        border: none;
+        border-radius: 4px;
+        color: white;
+        font-size: 0.7rem;
+        font-weight: bold;
+        cursor: pointer;
+    }
+
+    .blue {
+        background: #2b58ff;
+    }
+
+    .green {
+        background: #238636;
+    }
+
+    .red {
+        background: #ff3a3a;
+    }
+
+    .mission-action-group {
+        display: flex;
+        gap: 10px;
+        margin-top: auto;
+    }
+
+    .action-btn {
+        flex: 1;
+        padding: 12px;
+        border: none;
+        border-radius: 6px;
+        color: white;
+        font-weight: 900;
+        font-size: 0.85rem;
+        cursor: pointer;
+    }
+
+    .upload-btn {
+        background: #2b58ff;
+        border: 1px solid #333;
+    }
+
+    .start-btn.disabled {
+        background: #222;
+        color: #444;
+        cursor: not-allowed;
+    }
+
+    .start-btn.ready {
+        background: #238636;
+        box-shadow: 0 0 10px rgba(35, 134, 54, 0.3);
+    }
+
+    .icon-btn {
+        background: transparent;
+        border: none;
+        color: #666;
+        cursor: pointer;
+        font-size: 0.8rem;
+        padding: 2px 4px;
+    }
+
+    .icon-btn:hover {
+            color: #00f2ff;
+        }
+</style>
 
 @code {
+    private static List<MissionItem> MissionItems = new();
+    private static event Action? OnMissionChanged;
+    private bool isUploaded = false;
 
+    public class MissionItem
+    {
+        public int Sequence { get; set; }
+        public string Command { get; set; } = "WAYPOINT";
+        public double Lat { get; set; }
+        public double Lng { get; set; }
+        public double Alt { get; set; } = 50;
+        public bool IsHome { get; set; } = false;
+    }
+
+    protected override void OnInitialized()
+    {
+        OnMissionChanged += TriggerMapRedraw;
+        Drone.OnTelemetryUpdated += StateHasChanged;
+        if (!MissionItems.Any())
+        {
+            MissionItems.Add(new MissionItem { IsHome = true, Sequence = 0, Command = "WAYPOINT", Alt = 0 });
+        }
+        TriggerMapRedraw();
+    }
+
+    private void TriggerMapRedraw() => InvokeAsync(async () =>
+    {
+        isUploaded = false;
+        StateHasChanged();
+        await JS.InvokeVoidAsync("drawMission", MissionItems);
+    });
+
+    [JSInvokable]
+    public static void AddWaypointFromMap(double lat, double lng)
+    {
+        if (MissionItems.Count == 1 && MissionItems[0].IsHome && MissionItems[0].Lat == 0)
+        {
+            MissionItems[0].Lat = lat; MissionItems[0].Lng = lng;
+        }
+        else
+        {
+            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Sequence = MissionItems.Count, Alt = 50 });
+        }
+        OnMissionChanged?.Invoke();
+    }
+
+    private void SetHomeToDrone()
+    {
+        var home = MissionItems.FirstOrDefault(x => x.IsHome);
+        if (home != null) { home.Lat = Drone.State.Latitude; home.Lng = Drone.State.Longitude; TriggerMapRedraw(); }
+    }
+
+    private void MoveUp(MissionItem item)
+    {
+        int idx = MissionItems.IndexOf(item);
+        if (idx > 1) { MissionItems.RemoveAt(idx); MissionItems.Insert(idx - 1, item); Resequence(); }
+    }
+
+    private void MoveDown(MissionItem item)
+    {
+        int idx = MissionItems.IndexOf(item);
+        if (idx > 0 && idx < MissionItems.Count - 1) { MissionItems.RemoveAt(idx); MissionItems.Insert(idx + 1, item); Resequence(); }
+    }
+
+    private void RemoveItem(MissionItem item)
+    {
+        if (!item.IsHome) { MissionItems.Remove(item); Resequence(); }
+    }
+
+    private void Resequence()
+    {
+        for (int i = 0; i < MissionItems.Count; i++) MissionItems[i].Sequence = i;
+        OnMissionChanged?.Invoke();
+    }
+
+    private void ClearAll()
+    {
+        var home = MissionItems.FirstOrDefault(x => x.IsHome);
+        MissionItems.Clear(); if (home != null) MissionItems.Add(home);
+        OnMissionChanged?.Invoke();
+    }
+
+    private double CalculateTotalDistance()
+    {
+        double total = 0;
+        for (int i = 0; i < MissionItems.Count - 1; i++) total += GetHaversineDistance(MissionItems[i], MissionItems[i + 1]);
+        return total;
+    }
+
+    private double GetHaversineDistance(MissionItem w1, MissionItem w2)
+    {
+        double r = 6371000;
+        double dLat = (w2.Lat - w1.Lat) * Math.PI / 180;
+        double dLng = (w2.Lng - w1.Lng) * Math.PI / 180;
+        double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) + Math.Cos(w1.Lat * Math.PI / 180) * Math.Cos(w2.Lat * Math.PI / 180) * Math.Sin(dLng / 2) * Math.Sin(dLng / 2);
+        return r * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+    }
+
+    private async Task HandleImport(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            using var stream = e.File.OpenReadStream();
+            var imported = await JsonSerializer.DeserializeAsync<List<MissionItem>>(stream);
+            if (imported != null) { MissionItems = imported; Resequence(); }
+        }
+        catch { }
+    }
+
+    private async Task ExportWaypoints()
+    {
+        if (MissionItems.Count <= 1) return;
+        var json = JsonSerializer.Serialize(MissionItems, new JsonSerializerOptions { WriteIndented = true });
+        await JS.InvokeVoidAsync("downloadFile", "mission.json", json);
+    }
+
+    private void UploadMission() { if (MissionItems.Count > 1) { isUploaded = true; StateHasChanged(); } }
+    private void StartMission() { if (isUploaded) Drone.SetFlightMode("AUTO"); }
+    public void Dispose() { OnMissionChanged -= TriggerMapRedraw; Drone.OnTelemetryUpdated -= StateHasChanged; }
 }

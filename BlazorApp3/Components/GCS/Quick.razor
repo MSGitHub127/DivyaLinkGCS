@@ -1,508 +1,189 @@
-﻿@inject MavlinkService Drone
+﻿@page "/quick"
+@inject MavlinkService Drone
 @implements IDisposable
-@using System.Threading
 
 <div class="quick-view-container">
 
-    <div class="hud-frame">
-
-        <div class="horizon-layer"
-             style="transform: rotate(@(-Drone.State.Roll)deg) translateY(@(Drone.State.Pitch * 4)px);">
-            <div class="sky"></div>
-            <div class="ground"></div>
-            <div class="pitch-ladder">
-                <div class="line pos-20"></div>
-                <div class="line pos-10"></div>
-                <div class="line zero"></div>
-                <div class="line neg-10"></div>
-                <div class="line neg-20"></div>
-            </div>
-        </div>
-
-        <div class="crosshair-svg">
-            <svg viewBox="0 0 100 100" width="60" height="60">
-                <path d="M 10 50 L 35 50 L 50 65 L 65 50 L 90 50"
-                      stroke="yellow" stroke-width="3" fill="none"
-                      filter="drop-shadow(0px 0px 2px rgba(0,0,0,0.8))" />
-                <circle cx="50" cy="50" r="2" fill="yellow" />
-            </svg>
-        </div>
-
-        <div class="hud-top-bar">
-            <div class="heading-box">
-                <span class="heading-val">@Drone.State.Yaw.ToString("0")°</span>
-                <span class="heading-label">@GetCardinal(Drone.State.Yaw)</span>
-            </div>
-        </div>
-
-        <div class="hud-tape left-tape">
-            <div class="tape-label">SPD m/s</div>
-            <div class="tape-window">
-                @Drone.State.GroundSpeed.ToString("0.0")
-            </div>
-        </div>
-
-        <div class="hud-tape right-tape">
-            <div class="tape-label">ALT m</div>
-            <div class="tape-window">
-                @Drone.State.Altitude.ToString("0.0")
-            </div>
-        </div>
-
-        <div class="hud-bottom-panel">
-            <div class="status-msg @(Drone.State.IsArmed ? "armed" : "disarmed")">
-                @(Drone.State.IsArmed ? "ARMED" : "DISARMED")
-            </div>
-
-            <div class="info-row">
-                <div class="info-item">
-                    <span class="icon">🔋</span> @Drone.State.BatteryPercent%
-                </div>
-                <div class="info-item">
-                    <span class="icon">📡</span> @Drone.State.SatCount
-                </div>
-                <div class="info-item">
-                    <span class="icon">⚡</span> @Drone.State.Voltage.ToString("0.0")V
-                </div>
-            </div>
-        </div>
+    <div class="hud-wrapper">
+        <Hud />
     </div>
 
     <div class="telemetry-grid">
 
-        <div class="tele-card">
+        <div class="tele-card mode-card">
             <div class="label">FLIGHT MODE</div>
-
-            <div class="mode-compact-container">
-
-                <div class="mode-text-compact"
-                     style="color: @GetModeColor(Drone.State.FlightMode);">
+            <div class="mode-content">
+                <div class="mode-text" style="color: @GetModeColor(Drone.State.FlightMode);">
                     @(Drone.State.FlightMode == "Unknown" ? "--" : Drone.State.FlightMode)
                 </div>
-
-                <div class="dropdown-wrapper">
-                    <select class="slim-select" @onchange="ChangeMode">
-                        <option value="" disabled selected>CHANGE ▾</option>
-                        <option value="STABILIZE">STABILIZE</option>
-                        <option value="LOITER">LOITER</option>
-                        <option value="ALT_HOLD">ALT HOLD</option>
-                        <option value="RTL">RTL</option>
-                        <option value="LAND">LAND</option>
-                        <option value="AUTO">AUTO</option>
-                        <option value="GUIDED">GUIDED</option>
-                    </select>
-                </div>
-
+                <select class="slim-select" @onchange="ChangeMode">
+                    <option value="" disabled selected>CHANGE ▾</option>
+                    <option value="STABILIZE">STABILIZE</option>
+                    <option value="LOITER">LOITER</option>
+                    <option value="ALT_HOLD">ALT HOLD</option>
+                    <option value="RTL">RTL</option>
+                    <option value="LAND">LAND</option>
+                    <option value="AUTO">AUTO</option>
+                    <option value="GUIDED">GUIDED</option>
+                </select>
             </div>
         </div>
 
         <div class="tele-card">
             <div class="label">ALTITUDE</div>
-            <div class="value">
-                <span class="icon">↑</span> @Drone.State.Altitude.ToString("0.0") <small>m</small>
+            <div class="value-group">
+                <span class="value">@Drone.State.Altitude.ToString("0.0")</span>
+                <span class="unit">m</span>
             </div>
         </div>
 
         <div class="tele-card">
-            <div class="label">HEADING (YAW)</div>
-            <div class="value">
-                <span class="icon">🧭</span> @Drone.State.Yaw.ToString("0")°
+            <div class="label">HEADING</div>
+            <div class="value-group">
+                <span class="value">@Drone.State.Yaw.ToString("0")</span>
+                <span class="unit">deg</span>
             </div>
         </div>
 
         <div class="tele-card">
             <div class="label">BATTERY</div>
-            <div class="value @(Drone.State.BatteryPercent < 20 ? "text-danger" : "text-success")">
-                <span class="icon">🔋</span> @Drone.State.BatteryPercent%
+            <div class="value-group @(Drone.State.BatteryPercent < 20 ? "text-danger" : "text-success")">
+                <span class="value">@Drone.State.BatteryPercent</span>
+                <span class="unit">%</span>
             </div>
         </div>
 
         <div class="tele-card">
             <div class="label">SATELLITES</div>
-            <div class="value">
-                <span class="icon">📡</span> @Drone.State.SatCount
+            <div class="value-group">
+                @* Only show 0 if it stays 0; otherwise show the last valid count *@
+                <span class="value">@(Drone.State.SatCount > 0 ? Drone.State.SatCount : "--")</span>
+                <span class="unit">sats</span>
             </div>
         </div>
 
         <div class="tele-card">
             <div class="label">SPEED</div>
-            <div class="value">
-                <span class="icon">⚡</span> @Drone.State.GroundSpeed.ToString("0.0")
+            <div class="value-group">
+                <span class="value">@Drone.State.GroundSpeed.ToString("0.0")</span>
+                <span class="unit">m/s</span>
             </div>
         </div>
 
         <div class="tele-card">
             <div class="label">VOLTAGE</div>
-            <div class="value">
-                <span class="icon">⚡</span> @Drone.State.Voltage.ToString("0.0") V
+            <div class="value-group">
+                <span class="value">@Drone.State.Voltage.ToString("0.0")</span>
+                <span class="unit">V</span>
             </div>
         </div>
 
         <div class="tele-card">
             <div class="label">LATITUDE</div>
-            <div class="value">
-                <span class="icon">🌐</span> @Drone.State.Latitude.ToString("F6")
+            <div class="value-group">
+                <span class="value small-text">@Drone.State.Latitude.ToString("F6")</span>
             </div>
         </div>
 
         <div class="tele-card">
             <div class="label">LONGITUDE</div>
-            <div class="value">
-                <span class="icon">🌐</span> @Drone.State.Longitude.ToString("F6")
+            <div class="value-group">
+                <span class="value small-text">@Drone.State.Longitude.ToString("F6")</span>
             </div>
         </div>
     </div>
 
     <div class="arm-action-area">
-        <button class="mini-arm-btn @(Drone.State.IsArmed ?   "active-disarm" : "active-arm")"
-                @onclick="HandleArmClick">
-
-            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 2L3 7V11C3 16.55 6.84 21.74 12 23C17.16 21.74 21 16.55 21 11V7L12 2Z"
-                      stroke="currentColor" stroke-width="2" fill="rgba(255,255,255,0.1)" />
-                <path d="M12 7V15M9 11H15" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-            </svg>
-
-            <span>@(Drone.State.IsArmed ? "DISARM" : "ARM VEHICLE")</span>
+        <button class="clean-arm-btn @(Drone.State.IsArmed ? "state-armed" : "state-disarmed")" @onclick="HandleArmClick">
+            <div class="icon-box">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L3 7V11C3 16.55 6.84 21.74 12 23C17.16 21.74 21 16.55 21 11V7L12 2Z" />
+                    <path d="M12 7V15M9 11H15" stroke-linecap="round" />
+                </svg>
+            </div>
+            <span class="btn-label">@(Drone.State.IsArmed ? "DISARM SYSTEM" : "ARM SYSTEM")</span>
         </button>
     </div>
 </div>
 
 <style>
-    /* 1. MAIN CONTAINER */
+    /* 1. CONTAINER LAYOUT */
     .quick-view-container {
         display: flex;
         flex-direction: column;
         height: 100%;
-        gap: 15px;
-        padding: 10px;
-        background: #0b0c10;
-        color: white;
-        width: fit-content;
-        min-width: 500px;
+        gap: 16px; /* Consistent vertical spacing */
+        padding: 20px;
+        background: transparent; /* Let main background show */
+        width: 100%;
+        max-width: 500px; /* Lock width to keep it sharp */
         margin: 0 auto;
     }
 
-    /* 2. HUD */
-    /* 1. MAIN FRAME */
-    .hud-frame {
-        position: relative;
+    /* 2. HUD WRAPPER */
+    .hud-wrapper {
+        height: 300px; /* Clean height */
         width: 100%;
-        height: 280px; /* Adjust height as needed */
-        background: #000;
-        border-radius: 12px;
-        overflow: hidden; /* Clips the spinning horizon */
-        border: 2px solid #333;
-        box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
-        font-family: 'Consolas', 'Courier New', monospace;
-        color: white;
-    }
-
-    /* 2. HORIZON LAYER (Sky/Ground) */
-    .horizon-layer {
-        position: absolute;
-        top: -50%;
-        left: -50%;
-        width: 200%;
-        height: 200%;
-        /* Transition makes the movement smooth */
-        transition: transform 0.1s linear;
-        z-index: 1;
-    }
-
-    .sky {
-        height: 50%;
-        background: linear-gradient(to bottom, #3a86ff 0%, #87ceeb 100%);
-        border-bottom: 2px solid white;
-    }
-
-    .ground {
-        height: 50%;
-        background: linear-gradient(to bottom, #8b4513 0%, #cd853f 100%);
-    }
-
-    /* 3. PITCH LADDER LINES */
-    .pitch-ladder {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-    }
-
-    .line {
-        width: 100px;
-        height: 1px;
-        background: rgba(255,255,255,0.7);
-        position: absolute;
-    }
-
-    .pos-20 {
-        top: 30%;
-        width: 60px;
-    }
-
-    .pos-10 {
-        top: 40%;
-        width: 80px;
-    }
-
-    .zero {
-        top: 50%;
-        width: 120px;
-        height: 2px;
-        background: #00f2ff;
-        box-shadow: 0 0 5px #00f2ff;
-    }
-    /* Center Line */
-    .neg-10 {
-        top: 60%;
-        width: 80px;
-        border-top: 1px dashed white;
-        background: transparent;
-    }
-
-    .neg-20 {
-        top: 70%;
-        width: 60px;
-        border-top: 1px dashed white;
-        background: transparent;
-    }
-
-    /* 4. STATIC OVERLAYS */
-    .crosshair-svg {
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        z-index: 5;
-    }
-
-    /* 5. TAPES (Left/Right) */
-    .hud-tape {
-        position: absolute;
-        top: 20px;
-        bottom: 60px;
-        width: 60px;
-        background: rgba(0, 0, 0, 0.4); /* Semi-transparent background */
-        backdrop-filter: blur(2px);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid rgba(255,255,255,0.2);
-        z-index: 10;
-    }
-
-    .left-tape {
-        left: 0;
-        border-right: none;
-        border-radius: 0 8px 8px 0;
-    }
-
-    .right-tape {
-        right: 0;
-        border-left: none;
-        border-radius: 8px 0 0 8px;
-    }
-
-    .tape-label {
-        font-size: 0.7rem;
-        color: #aaa;
-        margin-bottom: 5px;
-    }
-
-    .tape-window {
-        font-size: 1.4rem;
-        font-weight: bold;
-        color: white;
-        text-shadow: 0 0 5px black;
-        border: 1px solid white;
-        padding: 2px 5px;
-        background: rgba(0,0,0,0.6);
-        border-radius: 4px;
-    }
-
-    /* 6. TOP & BOTTOM BARS */
-    .hud-top-bar {
-        position: absolute;
-        top: 10px;
-        left: 0;
-        width: 100%;
-        display: flex;
-        justify-content: center;
-        z-index: 10;
-    }
-
-    .heading-box {
-        background: rgba(0,0,0,0.6);
-        padding: 5px 15px;
-        border-radius: 20px;
-        border: 1px solid #555;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-    }
-
-    .heading-val {
-        font-weight: bold;
-        color: #00f2ff;
-    }
-
-    .hud-bottom-panel {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        background: rgba(0,0,0,0.85); /* Dark footer */
-        padding: 8px;
-        z-index: 20;
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-        border-top: 1px solid #444;
-    }
-
-    .status-msg {
-        text-align: center;
-        font-weight: 900;
-        letter-spacing: 2px;
-        font-size: 1rem;
-    }
-
-    .status-msg.disarmed {
-        color: #ff3a3a;
-        text-shadow: 0 0 10px #ff3a3a;
-    }
-
-    .status-msg.armed {
-        color: #00ff00;
-        text-shadow: 0 0 10px #00ff00;
-    }
-
-    .info-row {
-        display: flex;
-        justify-content: space-around;
-        font-size: 0.9rem;
-        color: #ddd;
-    }
-
-    .info-item {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-    }
-
-    /* 3. GRID */
-    .telemetry-grid {
-        display: grid;
-        grid-template-columns: 150px 150px 150px;
-        gap: 12px;
-        width: 480px;
-        margin: 0 auto;
-        justify-content: center;
-    }
-
-    /* 4. CARDS */
-    /* COMPACT MODE LAYOUT */
-    .mode-compact-container {
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        height: 100%; /* Fill the standard card height */
-        padding-top: 2px;
-    }
-
-    /* 1. The Text (Fits in top half) */
-    .mode-text-compact {
-        font-size: 1.1rem; /* Standard size matches other cards */
-        font-weight: 900;
-        text-transform: uppercase;
-        text-align: center;
-        line-height: 1.2;
-        white-space: nowrap; /* Prevent wrapping */
+        border-radius: 8px;
         overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    /* 2. The Dropdown Wrapper (Fits in bottom half) */
-    .dropdown-wrapper {
-        margin-top: 4px;
-        width: 100%;
-    }
-
-    /* 3. The Slim Select Input */
-    .slim-select {
-        width: 100%;
-        background: rgba(255, 255, 255, 0.05);
-        color: #aaa;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
         border: 1px solid #333;
-        border-radius: 3px;
-        padding: 2px 0; /* Very slim padding */
-        font-size: 0.7rem; /* Small text for the button */
-        text-align: center;
-        cursor: pointer;
-        outline: none;
-        /* Remove default arrow */
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        appearance: none;
+        flex-shrink: 0;
     }
 
-    .slim-select:hover {
-        background: rgba(255, 255, 255, 0.1);
-        border-color: #00f2ff;
-        color: white;
+    /* 3. TELEMETRY GRID */
+    .quick-view-container .telemetry-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr); /* 3 Equal columns */
+        gap: 8px; /* Clean, tight gap */
+        width: 100%;
     }
 
-    .slim-select option {
-        background: #0b0c10;
-        color: white;
-        padding: 5px;
-    }
-
-    /* COLOR HELPERS (Keep these simple) */
-    .tele-card {
-        transition: border-color 0.3s ease;
-    }
-
-    .tele-card {
-        background-color: #050510;
-        border: 1px solid rgba(255, 255, 255, 0.8);
-        border-radius: 15px;
-        padding: 10px;
+    /* 4. CLEAN CARD STYLE */
+    .quick-view-container .tele-card {
+        background: rgba(18, 20, 28, 0.6); /* Glassy dark */
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        padding: 10px 8px;
         display: flex;
         flex-direction: column;
-        justify-content: center;
-        min-height: 80px;
-        min-width: 150px;
-    }
-
-    .label {
-        font-size: 0.7rem;
-        color: #ffffff;
-        text-transform: uppercase;
-        margin-bottom: 5px;
-        letter-spacing: 0.5px;
-    }
-
-    .value {
-        font-size: 1.1rem;
-        font-weight: 700;
-        color: #00f2ff;
-        display: flex;
         align-items: center;
-        gap: 6px;
-        white-space: nowrap;
+        justify-content: center;
+        min-height: 70px; /* Consistent height */
+        backdrop-filter: blur(4px);
     }
 
-    .mode-text {
-        color: #d946ef;
-        text-shadow: 0 0 5px #d946ef;
+    .quick-view-container .label {
+        font-size: 0.65rem;
+        font-weight: 700;
+        color: #6c757d; /* Muted text */
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+        text-transform: uppercase;
+    }
+
+    .quick-view-container .value-group {
+        display: flex;
+        align-items: baseline;
+        gap: 2px;
+        color: #e0e0e0;
+    }
+
+    .quick-view-container .value {
+        font-size: 1.2rem; /* Clean, readable number */
+        font-weight: 600;
+        font-family: 'Consolas', monospace; /* Monospace for numbers aligns better */
+    }
+
+    .small-text {
+        font-size: 0.9rem;
+    }
+    /* For Lat/Lon */
+
+    .unit {
+        font-size: 0.7rem;
+        color: #888;
+        font-weight: 400;
     }
 
     .text-success {
@@ -513,120 +194,102 @@
         color: #ff3a3a;
     }
 
-    .icon {
-        font-size: 1rem;
-        opacity: 0.8;
+    /* 5. FLIGHT MODE SPECIAL CARD */
+    .mode-card {
+        /* Optional: make it stand out */
+        background: rgba(18, 20, 28, 0.8);
+        border-color: rgba(255, 255, 255, 0.15);
     }
 
-    /* 5. FOOTER BUTTONS */
-    .arm-action-area {
-        margin-top: 10px;
-        width: 100%;
+    .mode-content {
         display: flex;
-        justify-content: center;
+        flex-direction: column;
+        align-items: center;
+        width: 100%;
     }
 
-    .mini-arm-btn {
+    .mode-text {
+        font-size: 1rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+        text-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+
+    .slim-select {
+        background: transparent;
+        color: #aaa;
+        border: 1px solid #444;
+        border-radius: 4px;
+        font-size: 0.7rem;
+        padding: 2px 8px;
+        cursor: pointer;
+        width: 90%;
+        text-align: center;
+        outline: none;
+    }
+
+    .slim-select:hover {
+            border-color: #00f2ff;
+            color: white;
+    }
+
+    .slim-select option {
+            background: #0b0c10;
+    }
+
+    /* 6. CLEAN ARM BUTTON */
+    .arm-action-area {
+        width: 100%;
+        margin-top: 5px;
+    }
+
+    .clean-arm-btn {
+        width: 100%;
+        height: 50px;
+        border: none;
+        border-radius: 6px;
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 8px; /* Space between icon and text */
-        width: 100%;
-        max-width: 340px; /* Matches your 3-column grid width */
-        height: 35px; /* Short height to save space */
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: 800;
+        gap: 12px;
         cursor: pointer;
         transition: all 0.2s ease;
-        border: 1px solid transparent;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        font-size: 0.9rem;
+        color: white;
     }
 
-    .btn-icon {
-        width: 18px;
-        height: 18px;
+    .state-armed {
+        background: linear-gradient(90deg, #3a0d0d 0%, #ff3a3a 100%);
+        box-shadow: 0 4px 15px rgba(255, 58, 58, 0.2);
     }
 
-    /* Red/Green States */
-    .active-arm {
-        background: rgba(0, 255, 0, 0.1);
-        color: #00ff00;
-        border-color: #00ff00;
+    .state-disarmed {
+        background: linear-gradient(90deg, #0d3a1a 0%, #00ff66 100%);
+        box-shadow: 0 4px 15px rgba(0, 255, 102, 0.2);
+        color: #0b0c10; /* Dark text on bright green */
     }
 
-    .active-disarm {
-        background: rgba(255, 0, 0, 0.1);
-        color: #ff3a3a;
-        border-color: #ff3a3a;
+    .clean-arm-btn:hover {
+        filter: brightness(1.1);
+        transform: translateY(-1px);
     }
 
-    .mini-arm-btn:hover {
-        filter: brightness(1.2);
-        box-shadow: 0 0 10px rgba(0, 255, 255, 0.2);
+    .icon-box svg {
+        width: 20px;
+        height: 20px;
     }
 </style>
 
 @code {
-    private PeriodicTimer _timer;
-    private CancellationTokenSource _cts = new();
+    protected override void OnInitialized() => Drone.OnTelemetryUpdated += RefreshUi;
+    private void RefreshUi() => InvokeAsync(StateHasChanged);
+    public void Dispose() => Drone.OnTelemetryUpdated -= RefreshUi;
 
-    protected override void OnInitialized()
-    {
-        // THIS IS THE FIX:
-        // Start a timer that runs every 100ms (10 times a second)
-        // This acts as a "heartbeat" for the UI, forcing it to look at the latest drone data.
-        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
-        _ = RunTimer();
-    }
-
-    private async Task RunTimer()
-    {
-        // This loop keeps running as long as the sidebar is open
-        while (await _timer.WaitForNextTickAsync(_cts.Token))
-        {
-            // "StateHasChanged" tells Blazor to repaint the numbers
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    public void Dispose()
-    {
-        // Cleanup when sidebar closes to prevent errors
-        _cts.Cancel();
-        _timer?.Dispose();
-    }
-
-    // Helper for Compass Direction
-    private string GetCardinal(double heading)
-    {
-        string[] cardinals = { "N", "NE", "E", "SE", "S", "SW", "W", "NW", "N" };
-        return cardinals[(int)Math.Round(((double)heading % 360) / 45)];
-    }
-
-    // 1. Color Logic (Red for Safety, Green for GPS, Yellow for Manual)
-    private string GetModeColor(string mode) => mode.ToUpper() switch
-    {
-        "RTL" or "LAND" => "#ff3a3a",       // Red
-        "LOITER" or "POSHOLD" => "#00ff00", // Green
-        "AUTO" or "GUIDED" => "#d946ef",    // Purple
-        "STABILIZE" or "ALT_HOLD" => "#ffcc00", // Yellow
-        "UNKNOWN" => "#666666",             // Grey
-        _ => "#00f2ff"                      // Cyan
-    };
-
-    // DELETED: GetModeIcon method
-
-    private void ChangeMode(ChangeEventArgs e)
-    {
-        if (e.Value is string s && !string.IsNullOrEmpty(s)) Drone.SetFlightMode(s);
-    }
-
-    private void HandleArmClick()
-    {
-        // Toggle logic: If currently armed, we want to disarm (false), and vice versa.
-        bool targetArmState = !Drone.State.IsArmed;
-
-        // Call the service method we created in MavlinkService.cs
-        Drone.SendArmRequest(targetArmState);
-    }
+    private void HandleArmClick() => Drone.SendArmRequest(!Drone.State.IsArmed);
+    private void ChangeMode(ChangeEventArgs e) { if (e.Value is string s && !string.IsNullOrEmpty(s)) Drone.SetFlightMode(s); }
+    private string GetModeColor(string mode) => mode.ToUpper() switch { "RTL" or "LAND" => "#ff3a3a", "LOITER" or "POSHOLD" => "#00ff00", "AUTO" or "GUIDED" => "#d946ef", "STABILIZE" or "ALT_HOLD" => "#ffcc00", "UNKNOWN" => "#666666", _ => "#00f2ff" };
 }
