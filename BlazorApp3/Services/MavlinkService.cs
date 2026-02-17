@@ -356,7 +356,8 @@ public class MavlinkService : BackgroundService
             var gps = (MAVLink.mavlink_gps_raw_int_t)packet.data;
             UpdateState(s =>
             {
-                s.SatCount = gps.satellites_visible;
+                if(gps.satellites_visible > 0)
+                    s.SatCount = gps.satellites_visible;
             });
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS)
@@ -403,16 +404,6 @@ public class MavlinkService : BackgroundService
                 s.GroundSpeed = hud.groundspeed;
                 s.AirSpeed = hud.airspeed;
                 s.ClimbRate = hud.climb;
-
-                s.HeadingRawDeg = rawHeading;
-
-                if (s.HeadingSource == "Unknown" || s.HeadingDeg == 0)
-                    s.HeadingDeg = rawHeading;
-                else
-                    s.HeadingDeg = SmoothHeading(s.HeadingDeg, rawHeading, alpha: 0.15f);
-
-                s.HeadingSource = "VFR_HUD.heading";
-                s.Yaw = s.HeadingDeg;
 
                 if (!s.HasRelAlt)
                     s.Altitude = hud.alt;
