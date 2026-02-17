@@ -53,9 +53,9 @@
             </select>
 
             <div class="v-divider"></div>
-            <span class="status-indicator @(IsConnected ? "online" : "offline")"></span>
+            <span class="status-indicator @(IsDroneActuallyTalking ? "online" : "offline")"></span>
 
-            <button class="connect-btn @(isManualConnected ? "online-red" : "offline-blue")"
+            <button class="connect-btn @(IsDroneActuallyTalking ? "online-red" : "offline-blue")"
                     @onclick="ToggleConnection"
                     disabled="@isAttempting">
                 @if (isAttempting)
@@ -64,7 +64,7 @@
                 }
                 else
                 {
-                    @(isManualConnected ? "DISCONNECT" : "CONNECT")
+                    @(IsDroneActuallyTalking ? "DISCONNECT" : "CONNECT")
                 }
             </button>
         </div>

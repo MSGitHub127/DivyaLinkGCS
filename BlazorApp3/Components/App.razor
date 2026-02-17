@@ -23,6 +23,28 @@
             return (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180);
         }
 
+        function _ensureDroneMarker(pos, yaw) {
+            if (!window._gcsMarker) {
+                window._gcsMarker = new google.maps.Marker({
+                    position: pos,
+                    map: window._gcsMap,
+                    icon: {
+                        path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                        scale: 6,
+                        fillColor: "#00f2ff",
+                        fillOpacity: 1,
+                        strokeWeight: 2,
+                        rotation: yaw
+                    }
+                });
+            } else {
+                window._gcsMarker.setPosition(pos);
+                const icon = window._gcsMarker.getIcon();
+                icon.rotation = yaw;
+                window._gcsMarker.setIcon(icon);
+            }
+        }
+
         // Initialize Map [cite: 106-111]
         window.initMap = () => {
             const india = { lat: 20.5937, lng: 78.9629 };
