@@ -1,0 +1,319 @@
+﻿@inject MavlinkService Drone
+@implements IDisposable
+
+<div class="hud-component-container">
+    <div class="hud-frame">
+
+        <div class="horizon-layer"
+             style="transform: rotate(@(-Drone.State.Roll)deg) translateY(@(Drone.State.Pitch * 4)px);">
+            <div class="sky"></div>
+            <div class="ground"></div>
+            <div class="pitch-ladder">
+                <div class="line pos-20"></div>
+                <div class="line pos-10"></div>
+                <div class="line zero"></div>
+                <div class="line neg-10"></div>
+                <div class="line neg-20"></div>
+            </div>
+        </div>
+
+        <div class="crosshair-svg">
+            <svg viewBox="0 0 100 100" width="60" height="60">
+                <path d="M 10 50 L 35 50 L 50 65 L 65 50 L 90 50"
+                      stroke="yellow" stroke-width="3" fill="none"
+                      filter="drop-shadow(0px 0px 2px rgba(0,0,0,0.8))" />
+                <circle cx="50" cy="50" r="2" fill="yellow" />
+            </svg>
+        </div>
+
+        <div class="hud-top-bar">
+            <div class="heading-box">
+                <span class="heading-val">@Drone.State.Yaw.ToString("0")°</span>
+                <span class="heading-label">@GetCardinal(Drone.State.Yaw)</span>
+            </div>
+        </div>
+
+        <div class="hud-tape left-tape">
+            <div class="tape-label">SPD m/s</div>
+            <div class="tape-window">
+                @Drone.State.GroundSpeed.ToString("0.0")
+            </div>
+        </div>
+
+        <div class="hud-tape right-tape">
+            <div class="tape-label">ALT m</div>
+            <div class="tape-window">
+                @Drone.State.Altitude.ToString("0.0")
+            </div>
+        </div>
+
+        <div class="hud-bottom-panel">
+            <div class="status-msg @(Drone.State.IsArmed ? "armed" : "disarmed")">
+                @(Drone.State.IsArmed ? "ARMED" : "DISARMED")
+            </div>
+
+            <div class="info-row">
+                <div class="info-item">
+                    <span class="icon">🔋</span> @Drone.State.BatteryPercent%
+                </div>
+                <div class="info-item">
+                    <span class="icon">📡</span> @Drone.State.SatCount
+                </div>
+                <div class="info-item">
+                    <span class="icon">⚡</span> @Drone.State.Voltage.ToString("0.0")V
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* COMPONENT WRAPPER */
+    .hud-component-container {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        justify-content: center;
+    }
+
+    .hud-frame {
+        position: relative;
+        width: 100%;
+        height: 100%; /* Fills the parent container */
+        min-height: 280px; /* Minimum height safety */
+        background: #000;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 2px solid #333;
+        box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+        font-family: 'Consolas', 'Courier New', monospace;
+        color: white;
+    }
+
+    /* HORIZON */
+    .horizon-layer {
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        transition: transform 0.1s linear; /* Smooth 60fps feel */
+        z-index: 1;
+    }
+
+    .sky {
+        height: 50%;
+        background: linear-gradient(to bottom, #3a86ff 0%, #87ceeb 100%);
+        border-bottom: 2px solid white;
+    }
+
+    .ground {
+        height: 50%;
+        background: linear-gradient(to bottom, #8b4513 0%, #cd853f 100%);
+    }
+
+    /* PITCH LADDER */
+    .pitch-ladder {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .line {
+        width: 100px;
+        height: 1px;
+        background: rgba(255,255,255,0.7);
+        position: absolute;
+    }
+
+    .pos-20 {
+        top: 30%;
+        width: 60px;
+    }
+
+    .pos-10 {
+        top: 40%;
+        width: 80px;
+    }
+
+    .zero {
+        top: 50%;
+        width: 120px;
+        height: 2px;
+        background: #00f2ff;
+        box-shadow: 0 0 5px #00f2ff;
+    }
+
+    .neg-10 {
+        top: 60%;
+        width: 80px;
+        border-top: 1px dashed white;
+        background: transparent;
+    }
+
+    .neg-20 {
+        top: 70%;
+        width: 60px;
+        border-top: 1px dashed white;
+        background: transparent;
+    }
+
+    /* CROSSHAIR */
+    .crosshair-svg {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 5;
+    }
+
+    /* TAPES */
+    .hud-tape {
+        position: absolute;
+        top: 20px;
+        bottom: 60px;
+        width: 60px;
+        background: rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(2px);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255,255,255,0.2);
+        z-index: 10;
+    }
+
+    .left-tape {
+        left: 0;
+        border-right: none;
+        border-radius: 0 8px 8px 0;
+    }
+
+    .right-tape {
+        right: 0;
+        border-left: none;
+        border-radius: 8px 0 0 8px;
+    }
+
+    .tape-label {
+        font-size: 0.7rem;
+        color: #aaa;
+        margin-bottom: 5px;
+    }
+
+    .tape-window {
+        font-size: 1.4rem;
+        font-weight: bold;
+        color: white;
+        text-shadow: 0 0 5px black;
+    }
+
+    /* TOP BAR */
+    .hud-top-bar {
+        position: absolute;
+        top: 10px;
+        left: 0;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+        z-index: 10;
+    }
+
+    .heading-box {
+        background: rgba(0,0,0,0.6);
+        padding: 5px 15px;
+        border-radius: 20px;
+        border: 1px solid #555;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .heading-val {
+        font-weight: bold;
+        color: #00f2ff;
+    }
+
+    /* BOTTOM PANEL */
+    .hud-bottom-panel {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: rgba(0,0,0,0.85);
+        padding: 8px;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        border-top: 1px solid #444;
+    }
+
+    .status-msg {
+        text-align: center;
+        font-weight: 900;
+        letter-spacing: 2px;
+        font-size: 1rem;
+    }
+
+        .status-msg.disarmed {
+            color: #ff3a3a;
+            text-shadow: 0 0 10px #ff3a3a;
+        }
+
+        .status-msg.armed {
+            color: #00ff00;
+            text-shadow: 0 0 10px #00ff00;
+        }
+
+    .info-row {
+        display: flex;
+        justify-content: space-around;
+        font-size: 0.9rem;
+        color: #ddd;
+    }
+
+    .info-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+    }
+</style>
+
+@code {
+    private PeriodicTimer _timer;
+    private CancellationTokenSource _cts = new();
+
+    protected override void OnInitialized()
+    {
+        // Smooth 60FPS update for Horizon
+        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
+        _ = RunTimer();
+    }
+
+    private async Task RunTimer()
+    {
+        while (await _timer.WaitForNextTickAsync(_cts.Token))
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _timer?.Dispose();
+    }
+
+    private string GetCardinal(double heading)
+    {
+        string[] cardinals = { "N", "NE", "E", "SE", "S", "SW", "W", "NW", "N" };
+        return cardinals[(int)Math.Round(((double)heading % 360) / 45)];
+    }
+}

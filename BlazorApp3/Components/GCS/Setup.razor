@@ -1,5 +1,55 @@
-﻿<h3>Setup</h3>
+﻿@page "/setup"
+@inject MavlinkService Drone
 
-@code {
+<div class="tab-view-container">
+    <div class="hud-wrapper">
+        <Hud />
+    </div>
 
-}
+    <div class="content-section">
+        <div class="header-strip">HARDWARE SETUP</div>
+        <div class="placeholder-body">
+            <span class="icon">🛠️</span>
+            <p>Parameter Tuning & Sensor Calibration.</p>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* Container to center content in the drawer */
+    .tab-view-container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        gap: 16px;
+        padding: 20px;
+        width: 100%;
+        max-width: 500px; /* Uniform Width */
+        margin: 0 auto;
+    }
+
+    /* HUD WRAPPER: The "Master" dimension */
+    .hud-wrapper {
+        height: 300px; /* Uniform Height [cite: 32] */
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        border: 1px solid #333;
+        flex-shrink: 0; /* Prevents squashing */
+    }
+
+    .header-strip {
+        background: rgba(18, 20, 28, 0.8);
+        border: 1px solid rgba(0, 242, 255, 0.2);
+        border-radius: 6px;
+        padding: 8px;
+        text-align: center;
+        color: #00f2ff;
+        font-weight: 800;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+    }
+</style>
+
+@code { }

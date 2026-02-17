@@ -1,5 +1,276 @@
-﻿<h3>Actions</h3>
+﻿@page "/actions"
+@inject MavlinkService Drone
+@inject IJSRuntime JS
+@implements IDisposable
+@using System.Threading
+
+<div class="actions-view-container">
+
+    <div class="hud-wrapper">
+        <Hud />
+    </div>
+
+    <div class="actions-grid">
+
+        <div class="header-strip">
+            <span class="gear-icon">⚙️</span> DRONE OPERATIONS
+        </div>
+
+        <div class="section-label">FLIGHT CONTROLS</div>
+
+        <div class="button-grid-2x2">
+            <button class="action-btn cyan-grad" @onclick="DoTakeoff">
+                <span class="btn-icon">🛫</span>
+                <span class="btn-text">TAKEOFF (10m)</span>
+            </button>
+
+            <button class="action-btn purple-grad" @onclick="DoLand">
+                <span class="btn-icon">🛬</span>
+                <span class="btn-text">LAND NOW</span>
+            </button>
+
+            <button class="action-btn cyan-grad" @onclick="StartMission">
+                <span class="btn-icon">▶️</span>
+                <span class="btn-text">START MISSION</span>
+            </button>
+
+            <button class="action-btn purple-grad" @onclick="DoRTL">
+                <span class="btn-icon">🏠</span>
+                <span class="btn-text">RETURN HOME</span>
+            </button>
+        </div>
+
+        <div class="section-label mt-3">NAVIGATION & SAFETY</div>
+
+        <div class="button-grid-bottom">
+            <button class="action-btn cyan-grad wide-btn" @onclick="ChangeAltitude">
+                <span class="btn-icon">⬆️</span>
+                <span class="btn-text">CHANGE ALTITUDE</span>
+            </button>
+
+            <button class="action-btn @(IsArmed ? "red-grad" : "blue-grad") square-btn" @onclick="ToggleArming">
+                <span class="btn-icon">@(IsArmed ? "🛑" : "🔌")</span>
+                <span class="btn-text">@(IsArmed ? "DISARM" : "ARM")</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* 1. MAIN CONTAINER */
+    .actions-view-container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        gap: 16px;
+        padding: 20px;
+        background: transparent;
+        width: 100%;
+        max-width: 500px;
+        margin: 0 auto;
+        overflow-y: auto;
+    }
+
+    /* 2. HUD WRAPPER */
+    .hud-wrapper {
+        height: 300px;
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        border: 1px solid #333;
+        flex-shrink: 0;
+    }
+
+    /* 3. ACTIONS CONTENT */
+    .actions-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    /* HEADER */
+    .header-strip {
+        background: rgba(18, 20, 28, 0.8);
+        border: 1px solid rgba(126, 63, 242, 0.3);
+        border-radius: 6px;
+        padding: 8px;
+        text-align: center;
+        color: white;
+        font-weight: 800;
+        font-size: 0.9rem;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin-bottom: 5px;
+        backdrop-filter: blur(4px);
+    }
+
+    /* LABELS */
+    .section-label {
+        font-size: 0.65rem;
+        font-weight: 700;
+        color: #6c757d;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        margin-left: 2px;
+        margin-bottom: 2px;
+    }
+
+    .mt-3 {
+        margin-top: 12px;
+    }
+
+    /* GRIDS */
+    .button-grid-2x2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+
+    .button-grid-bottom {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 8px;
+    }
+
+    /* BUTTONS */
+    .action-btn {
+        border: none;
+        border-radius: 6px;
+        padding: 0;
+        height: 70px;
+        color: white;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        transition: transform 0.2s, box-shadow 0.2s, filter 0.2s;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    }
+
+        .action-btn:active {
+            transform: scale(0.97);
+        }
+
+        .action-btn:hover {
+            filter: brightness(1.15);
+        }
+
+    .btn-icon {
+        font-size: 1.4rem;
+    }
+
+    .btn-text {
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+    }
+
+    /* COLORS */
+    .cyan-grad {
+        background: linear-gradient(180deg, rgba(0, 180, 219, 0.8) 0%, rgba(0, 131, 176, 0.8) 100%);
+        border: 1px solid rgba(0, 242, 255, 0.3);
+    }
+
+    .purple-grad {
+        background: linear-gradient(180deg, rgba(106, 17, 203, 0.8) 0%, rgba(37, 117, 252, 0.8) 100%);
+        border: 1px solid rgba(126, 63, 242, 0.3);
+    }
+
+    .blue-grad {
+        background: linear-gradient(180deg, rgba(43, 88, 255, 0.8) 0%, rgba(5, 39, 163, 0.8) 100%);
+        border: 1px solid #00f2ff;
+        box-shadow: 0 0 10px rgba(0, 242, 255, 0.1);
+    }
+
+    .red-grad {
+        background: linear-gradient(180deg, rgba(255, 65, 108, 0.8) 0%, rgba(255, 75, 43, 0.8) 100%);
+        border: 1px solid #ff4b2b;
+        animation: pulse-red 2s infinite;
+    }
+
+    @@keyframes pulse-red {
+        0% {
+            box-shadow: 0 0 5px rgba(255, 75, 43, 0.4);
+        }
+
+        50% {
+            box-shadow: 0 0 15px rgba(255, 75, 43, 0.6);
+        }
+
+        100% {
+            box-shadow: 0 0 5px rgba(255, 75, 43, 0.4);
+        }
+    }
+</style>
 
 @code {
+    private bool IsArmed => Drone.State.IsArmed;
 
+    protected override void OnInitialized() => Drone.OnTelemetryUpdated += RefreshUi;
+    private void RefreshUi() => InvokeAsync(StateHasChanged);
+    public void Dispose() => Drone.OnTelemetryUpdated -= RefreshUi;
+
+    // --- LOGIC IMPLEMENTATION ---
+
+    private async Task DoTakeoff()
+    {
+        Console.WriteLine("Initiating Takeoff Sequence...");
+
+        // 1. Switch to GUIDED mode
+        Drone.SetFlightMode("GUIDED");
+        await Task.Delay(200);
+
+        // 2. Arm the drone if not already armed
+        if (!IsArmed)
+        {
+            Drone.SendArmRequest(true);
+            await Task.Delay(1500);
+        }
+
+        // 3. Send Takeoff Command
+        // We use (MAVLink.MAV_CMD)22 to force the compiler to accept ID 22 (NAV_TAKEOFF)
+        // Params: Pitch(0), Empty, Empty, Yaw(0), Lat(0), Lon(0), Altitude(10 meters)
+        Drone.SendCommand((MAVLink.MAV_CMD)22, 0, 0, 0, 0, 0, 0, 10);
+    }
+
+    private void DoLand()
+    {
+        // Switch to LAND mode - drone will land at current location
+        Drone.SetFlightMode("LAND");
+    }
+
+    private void StartMission()
+    {
+        // Switch to AUTO mode to begin loaded Waypoint mission
+        Drone.SetFlightMode("AUTO");
+    }
+
+    private void DoRTL()
+    {
+        // Return To Launch
+        Drone.SetFlightMode("RTL");
+    }
+
+    private async Task ChangeAltitude()
+    {
+        // Ask user for input (Simple JS Prompt)
+        string input = await JS.InvokeAsync<string>("prompt", "Enter Target Altitude (meters):", "20");
+
+        if (float.TryParse(input, out float newAlt))
+        {
+            // Send Reposition Command
+            // Uses current Lat/Lon (0,0 with mask) but new Altitude
+            Drone.SendReposition(Drone.State.Latitude, Drone.State.Longitude, newAlt);
+            Console.WriteLine($"Changing Altitude to {newAlt}m");
+        }
+    }
+
+    private void ToggleArming()
+    {
+        // Toggle the state
+        Drone.SendArmRequest(!IsArmed);
+    }
 }

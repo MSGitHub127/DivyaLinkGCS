@@ -1,0 +1,286 @@
+﻿@inject MavlinkService Drone
+@implements IDisposable
+
+@if (_isOpen)
+{
+    <div class="conn-overlay">
+        <div class="conn-box @(_isError ? "error-box" : "")">
+
+            @if (_isError)
+            {
+                <div class="icon-area error-anim">⚠️</div>
+            }
+            else
+            {
+                <div class="spinner"></div>
+            }
+
+            <div class="conn-title">
+                @(_isError ? "CONNECTION FAILED" : "CONNECTING TO DRONE")
+            </div>
+
+            <div class="conn-status @(_isError ? "text-red" : "")">
+                @_statusMessage
+            </div>
+
+            <div class="btn-row">
+                @if (_isError)
+                {
+                    <button class="action-btn close-btn" @onclick="ForceClose">CLOSE</button>
+                }
+                else
+                {
+                    <button class="action-btn cancel-btn" @onclick="UserCancel">CANCEL</button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    /* 1. OVERLAY: Dark & Blurred */
+    .conn-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(5, 6, 8, 0.85);
+        backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 99999;
+        animation: fadeIn 0.2s ease-out;
+    }
+
+    /* 2. MAIN BOX */
+    .conn-box {
+        width: 380px;
+        background: #0b0c10;
+        border: 1px solid #2b58ff; /* Default Blue */
+        border-radius: 8px;
+        padding: 30px 20px;
+        box-shadow: 0 0 50px rgba(43, 88, 255, 0.15);
+        text-align: center;
+        color: white;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 15px;
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+
+        /* ERROR STATE */
+    .conn-box.error-box {
+        border-color: #ff3a3a;
+        box-shadow: 0 0 50px rgba(255, 58, 58, 0.2);
+    }
+
+    /* 3. ANIMATIONS & ICONS */
+    .spinner {
+        width: 45px;
+        height: 45px;
+        border: 3px solid rgba(0, 242, 255, 0.1);
+        border-top: 3px solid #00f2ff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    .icon-area {
+        font-size: 3rem;
+        line-height: 1;
+    }
+
+    .error-anim {
+        animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    /* 4. TEXT */
+    .conn-title {
+        font-weight: 800;
+        font-size: 1.1rem;
+        letter-spacing: 1px;
+    }
+
+    .conn-status {
+        font-family: 'Consolas', monospace;
+        font-size: 0.9rem;
+        color: #888;
+        min-height: 1.2em;
+    }
+
+    .text-red {
+        color: #ff3a3a;
+        font-weight: bold;
+    }
+
+    /* 5. BUTTONS */
+    .btn-row {
+        margin-top: 10px;
+        display: flex;
+        gap: 10px;
+    }
+
+    .action-btn {
+        padding: 8px 25px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        font-size: 0.8rem;
+        transition: 0.2s;
+        text-transform: uppercase;
+    }
+
+    .cancel-btn {
+        background: transparent;
+        border: 1px solid #555;
+        color: #ccc;
+    }
+
+    .cancel-btn:hover {
+        border-color: white;
+        color: white;
+    }
+
+    .close-btn {
+        background: #3a0d0d;
+        border: 1px solid #ff3a3a;
+        color: #ff3a3a;
+    }
+
+    .close-btn:hover {
+        background: #ff3a3a;
+        color: white;
+    }
+
+    /* Keyframes */
+    @@keyframes spin {
+        100% {
+            transform: rotate(360deg);
+        }
+    }
+
+    @@keyframes fadeIn {
+        from {
+            opacity: 0;
+        }
+
+        to {
+            opacity: 1;
+        }
+    }
+
+    @@keyframes popIn {
+        from {
+            transform: scale(0);
+        }
+
+        to {
+            transform: scale(1);
+        }
+    }
+</style>
+
+@code {
+    private bool _isOpen = false;
+    private bool _isError = false;
+    private bool _heartbeatReceived = false;
+    private bool _userCancelled = false;
+
+    private string _statusMessage = "Initializing...";
+
+    protected override void OnInitialized()
+    {
+        // 1. Listen for "Show/Hide" signals from Service
+        Drone.OnConnectionDialog += HandleDialogSignal;
+        // 2. Listen for status text updates ("Opening Port COM3...")
+        Drone.OnConnectionStatus += UpdateMessage;
+        // 3. Listen for REAL data to know when to finally close
+        Drone.OnTelemetryUpdated += CheckForValidData;
+    }
+
+    private void HandleDialogSignal(bool shouldOpen)
+    {
+        if (shouldOpen)
+        {
+            _isOpen = true;
+            _isError = false;
+            _heartbeatReceived = false;
+            _userCancelled = false;
+            _statusMessage = "Initializing...";
+            InvokeAsync(StateHasChanged);
+        }
+        else
+        {
+            if (_userCancelled)
+            {
+                _isOpen = false;
+            }
+            else if (Drone.IsConnected)
+            {
+                // SUCCESS (Heartbeat Found)
+                _heartbeatReceived = true;
+                // Note: We DO NOT set a hardcoded message here anymore.
+                // We let MainLayout send "Link Established (25s)..."
+            }
+            else
+            {
+                // FAILURE
+                _isError = true;
+                _statusMessage = "Connection Timed Out";
+            }
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void UpdateMessage(string msg)
+    {
+        // Only block updates if we are in a hard ERROR state
+        if (_isError) return;
+
+        // REMOVED: The check that blocked messages after heartbeat.
+        // Now "Link Established (24s)" can overwrite the previous text.
+        _statusMessage = msg;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void CheckForValidData()
+    {
+        // Only run this check if:
+        // 1. Dialog is open
+        // 2. We have a heartbeat (Connection is technicaly alive)
+        // 3. We are NOT showing an error
+        if (!_isOpen || !_heartbeatReceived || _isError) return;
+
+        // Check for ANY valid non-zero data
+        bool hasRoll = Drone.State.Roll != 0;
+        bool hasAlt = Drone.State.Altitude != 0;
+        bool hasSats = Drone.State.SatCount > 0;
+        bool hasVoltage = Drone.State.Voltage > 0;
+
+        if (hasRoll || hasAlt || hasSats || hasVoltage)
+        {
+            // DATA IS FLOWING!
+            // Close the dialog smoothly.
+            _isOpen = false;
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void UserCancel()
+    {
+        _userCancelled = true;
+        Drone.StopConnection(); // Kill the backend process
+        _isOpen = false;        // Close UI immediately
+    }
+
+    private void ForceClose()
+    {
+        _isOpen = false; // Close UI after viewing error
+    }
+
+    public void Dispose()
+    {
+        Drone.OnConnectionDialog -= HandleDialogSignal;
+        Drone.OnConnectionStatus -= UpdateMessage;
+        Drone.OnTelemetryUpdated -= CheckForValidData;
+    }
+}

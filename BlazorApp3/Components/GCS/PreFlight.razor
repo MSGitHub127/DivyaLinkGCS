@@ -1,5 +1,177 @@
-﻿<h3>PreFlight</h3>
+﻿@page "/preflight"
+@inject MavlinkService Drone
+@implements IDisposable
+
+<div class="preflight-view-container">
+    <div class="hud-wrapper">
+        <Hud />
+    </div>
+
+    <div class="checklist-section">
+        <div class="header-strip">
+            <span class="icon">🛡️</span> PRE-ARM SAFETY CHECKS
+        </div>
+
+        <div class="check-list-scroll">
+            @* GPS CHECK *@
+            <div class="check-item @(Drone.State.SatCount >= 8 ? "pass" : "fail")">
+                <div class="status-indicator"></div>
+                <div class="check-details">
+                    <span class="check-label">GPS SATELLITES</span>
+                    <span class="check-value">@Drone.State.SatCount Sats (Min 8)</span>
+                </div>
+            </div>
+
+            @* BATTERY CHECK *@
+            <div class="check-item @(Drone.State.BatteryPercent > 20 ? "pass" : "fail")">
+                <div class="status-indicator"></div>
+                <div class="check-details">
+                    <span class="check-label">BATTERY CAPACITY</span>
+                    <span class="check-value">@Drone.State.BatteryPercent% (@Drone.State.Voltage.ToString("0.0")V)</span>
+                </div>
+            </div>
+
+            @* FLIGHT MODE CHECK *@
+            <div class="check-item @(Drone.State.FlightMode != "Unknown" ? "pass" : "fail")">
+                <div class="status-indicator"></div>
+                <div class="check-details">
+                    <span class="check-label">FLIGHT MODE VALID</span>
+                    <span class="check-value">@Drone.State.FlightMode</span>
+                </div>
+            </div>
+
+            @* LINK QUALITY (Simulated logic based on heartbeat) *@
+            <div class="check-item @(IsLinkHealthy() ? "pass" : "fail")">
+                <div class="status-indicator"></div>
+                <div class="check-details">
+                    <span class="check-label">GCS TELEMETRY LINK</span>
+                    <span class="check-value">@(IsLinkHealthy() ? "STABLE" : "LOST HEARTBEAT")</span>
+                </div>
+            </div>
+        </div>
+
+        @if (Drone.State.SatCount < 8 && Drone.State.FlightMode == "LOITER")
+        {
+            <div class="warning-box">
+                ⚠️ GPS WEAK: Switch to STABILIZE mode for indoor testing.
+            </div>
+        }
+    </div>
+</div>
+
+<style>
+    /* CSS ISOLATION: Scoped to prevent Home screen bugs */
+    .preflight-view-container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        gap: 16px; /* Match Messages [cite: 56] */
+        padding: 20px; /* Match Messages [cite: 56] */
+        background: transparent;
+        width: 100%;
+        max-width: 500px;
+        margin: 0 auto;
+        overflow: hidden;
+    }
+
+    .hud-wrapper {
+        height: 300px; /* Locked uniformity  */
+        width: 100%;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #333;
+        flex-shrink: 0;
+    }
+
+    .checklist-section {
+        display: flex;
+        flex-direction: column;
+        flex-grow: 1;
+        gap: 10px;
+        min-height: 0;
+    }
+
+    .header-strip {
+        background: rgba(18, 20, 28, 0.8);
+        border: 1px solid rgba(0, 242, 255, 0.2);
+        border-radius: 6px;
+        padding: 8px;
+        text-align: center;
+        color: #00f2ff;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        backdrop-filter: blur(4px);
+    }
+
+    .check-list-scroll {
+        flex-grow: 1;
+        background: rgba(5, 5, 10, 0.9);
+        border: 1px solid #222;
+        border-radius: 6px;
+        padding: 12px;
+        overflow-y: auto;
+    }
+
+    /* Checklist Items */
+    .check-item {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        padding: 12px;
+        border-bottom: 1px solid #111;
+        transition: background 0.2s;
+    }
+
+    .status-indicator {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+
+    .pass .status-indicator {
+        background: #00ff00;
+        box-shadow: 0 0 10px #00ff00;
+    }
+
+    .fail .status-indicator {
+        background: #ff3a3a;
+        box-shadow: 0 0 10px #ff3a3a;
+    }
+
+    .check-details {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .check-label {
+        font-size: 0.65rem;
+        color: #888;
+        font-weight: bold;
+    }
+
+    .check-value {
+        font-size: 0.9rem;
+        color: #ddd;
+        font-family: 'Consolas', monospace;
+    }
+
+    .warning-box {
+        background: rgba(255, 165, 0, 0.1);
+        border: 1px solid orange;
+        color: orange;
+        padding: 10px;
+        border-radius: 6px;
+        font-size: 0.75rem;
+        font-weight: bold;
+        text-align: center;
+    }
+</style>
 
 @code {
-
+    protected override void OnInitialized() => Drone.OnTelemetryUpdated += RefreshUi;
+    private void RefreshUi() => InvokeAsync(StateHasChanged);
+    public void Dispose() => Drone.OnTelemetryUpdated -= RefreshUi;
+    private bool IsLinkHealthy() => (DateTime.Now - Drone.LastPacketTime).TotalSeconds < 3;
 }
