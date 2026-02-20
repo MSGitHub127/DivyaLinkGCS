@@ -24,6 +24,13 @@ builder.Services.Configure<CircuitOptions>(options => {
     options.DetailedErrors = true;
 });
 
+// In Program.cs
+builder.Services.AddServerSideBlazor().AddHubOptions(options => {
+    options.MaximumReceiveMessageSize = 1024 * 1024;
+    options.HandshakeTimeout = TimeSpan.FromSeconds(30);
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

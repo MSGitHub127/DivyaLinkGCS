@@ -1,4 +1,12 @@
-﻿public class DroneState
+﻿public class WaypointModel
+{
+    public int Index { get; set; }
+    public double Lat { get; set; }
+    public double Lng { get; set; }
+    public int Alt { get; set; }
+    public bool IsHome { get; set; }
+}
+public class DroneState
 {
     // --- Vehicle identity (discovered from HEARTBEAT) ---
     public string ConnectionStatus { get; set; } = "Disconnected";
@@ -38,6 +46,9 @@
     public bool IsArmed { get; set; }
     public string FlightMode { get; set; } = "Unknown"; // Critical for your UI
 
+    public int CpuLoad { get; set; } = 0;       // Drone CPU load in %
+    public float ImuTemp { get; set; } = 0.0f;
+    public ushort[] RawChannels { get; set; } = new ushort[8];
     public DroneState() { }
 
     // Copy ctor for atomic snapshots
