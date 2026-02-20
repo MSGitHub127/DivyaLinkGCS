@@ -7,307 +7,579 @@
 
 <InputFile id="importFile" OnChange="HandleImport" style="display:none" accept=".json" />
 
-<div class="flightplan-view-container">
-    <div class="hud-wrapper">
+<div class="flight-plan-master">
+    <div class="hud-viewport">
         <Hud />
     </div>
 
-    <div class="editor-section">
-        <div class="header-strip">
-            <span class="icon">🛰️</span> FLIGHT PLANNER
-        </div>
-
-        <div class="toolbar-row">
-            <div class="toolbar-left">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="margin-right: 6px; vertical-align: middle; color: mediumpurple">
-                    <path d="M21 7L13 15L9 11L3 17" />
-                    <circle cx="21" cy="7" r="2" fill="currentColor" />
-                    <circle cx="3" cy="17" r="2" fill="currentColor" />
-                </svg>
-                <span class="status-badge-primary">WAYPOINTS</span>
-            </div>
-            <div class="tool-group">
-                <button class="mini-btn blue" @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")'>IMPORT JSON</button>
-                <button class="mini-btn green" @onclick="ExportWaypoints">EXPORT JSON</button>
-                @if (MissionItems.Count > 1)
-                {
-                    <button class="mini-btn red" @onclick="ClearAll">CLEAR ALL</button>
-                }
+    <div class="main-interface">
+        <div class="map-viewport">
+            <div id="map-element"></div>
+            <div class="map-controls">
+                <button class="map-btn" @onclick="SetHomeToDrone" title="Sync Home to Drone Location">
+                    <i class="bi bi-house-door-fill"></i>
+                </button>
+                <button class="map-btn" @onclick="CenterMapOnDrone" title="Center Map on Drone">
+                    <i class="bi bi-crosshair"></i>
+                </button>
             </div>
         </div>
 
-        <div class="mission-table-container">
-            <table class="mission-planner-table">
-                <thead>
-                    <tr>
-                        <th style="width: 35px;">#</th>
-                        <th>Command</th>
-                        <th>Latitude</th>
-                        <th>Longitude</th>
-                        <th style="width: 60px;">Alt</th>
-                        <th style="width: 80px;">Order</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var item in MissionItems)
+        <div class="editor-sidebar">
+            <div class="sidebar-header">
+                <i class="bi bi-geo-alt-fill text-primary"></i> FLIGHT PLAN EDITOR
+            </div>
+
+            <div class="param-grid">
+                <div class="param-tile">
+                    <label><i class="bi bi-arrows-vertical"></i> DEFAULT ALT (m)</label>
+                    <input type="number" @bind="globalAlt" class="editor-input" @bind:after="ApplyGlobalAlt" />
+                </div>
+                <div class="param-tile">
+                    <label><i class="bi bi-speedometer2"></i> SPEED</label>
+                    <div class="readout">@Drone.State.GroundSpeed.ToString("0.0") <span class="unit">m/s</span></div>
+                </div>
+                <div class="param-tile">
+                    <label><i class="bi bi-rulers"></i> DISTANCE</label>
+                    <div class="readout">@CalculateTotalDistance().ToString("0") <span class="unit">m</span></div>
+                </div>
+                <div class="param-tile">
+                    <label><i class="bi bi-stopwatch"></i> EST. TIME</label>
+                    <div class="readout">~@((CalculateTotalDistance() / 5 / 60).ToString("0")) <span class="unit">min</span></div>
+                </div>
+            </div>
+
+            <div class="wp-section">
+                <div class="wp-header">
+                    <span>WAYPOINTS (@(MissionItems.Count > 0 ? MissionItems.Count - 1 : 0))</span>
+                    @if (MissionItems.Count > 1)
                     {
-                        <tr class="@(item.IsHome ? "home-row" : "")">
-                            <td class="seq-col">@(item.IsHome ? "H" : item.Sequence.ToString())</td>
-                            <td>
-                                @if (item.IsHome)
-                                {
-                                    <div class="home-text">HOME</div>
-                                }
-                                else
-                                {
-                                    <select @bind="item.Command" class="table-select" @bind:after="TriggerMapRedraw">
-                                        <option value="WAYPOINT">WAYPOINT</option>
-                                        <option value="TAKEOFF">TAKEOFF</option>
-                                        <option value="LAND">LAND</option>
-                                        <option value="RTL">RTL</option>
-                                    </select>
-                                }
-                            </td>
-                            <td><input type="number" step="0.0000001" @bind="item.Lat" @bind:after="TriggerMapRedraw" class="table-input" /></td>
-                            <td><input type="number" step="0.0000001" @bind="item.Lng" @bind:after="TriggerMapRedraw" class="table-input" /></td>
-                            <td><input type="number" @bind="item.Alt" @bind:after="TriggerMapRedraw" class="table-input" /></td>
-                            <td class="actions-cell">
-                                @if (!item.IsHome)
-                                {
-                                    <button class="icon-btn" @onclick="() => MoveUp(item)">▲</button>
-                                    <button class="icon-btn" @onclick="() => MoveDown(item)">▼</button>
-                                    <button class="icon-btn red-text" @onclick="() => RemoveItem(item)">✕</button>
-                                }
-                                else
-                                {
-                                    <button class="icon-btn sync-btn" @onclick="SetHomeToDrone">🛰️</button>
-                                }
-                            </td>
-                        </tr>
+                        <button class="clear-btn" @onclick="ClearAllWaypoints"><i class="bi bi-trash3"></i> Clear All</button>
                     }
-                </tbody>
-            </table>
-        </div>
+                </div>
 
-        <div class="mission-action-group">
-            <button class="action-btn upload-btn" @onclick="UploadMission">UPLOAD MISSION</button>
-            <button class="action-btn start-btn @(isUploaded ? "ready" : "disabled")"
-                    @onclick="StartMission" disabled="@(!isUploaded)">
-                START MISSION
-            </button>
+                <div class="wp-actions">
+                    <button class="wp-btn import" @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")'>
+                        <i class="bi bi-folder2-open"></i> IMPORT
+                    </button>
+                    <button class="wp-btn export" @onclick="ExportWaypoints">
+                        <i class="bi bi-download"></i> EXPORT
+                    </button>
+                </div>
+
+                <div class="wp-scroll-area">
+                    @if (MissionItems.Count <= 1)
+                    {
+                        <div class="empty-notif">
+                            <i class="bi bi-cursor-fill" style="font-size: 1.5rem; color: #30363d; margin-bottom: 8px; display: block;"></i>
+                            No waypoints added.<br />Click the map to define a flight path.
+                        </div>
+                    }
+                    else
+                    {
+                        @foreach (var wp in MissionItems.Where(x => !x.IsHome))
+                        {
+                            <div class="wp-card @(activeWpIndex == wp.Index ? "active" : "")" @onclick="() => activeWpIndex = wp.Index">
+                                <div class="wp-idx">@wp.Index</div>
+                                <div class="wp-data">
+                                    <span class="wp-coord">@wp.Lat.ToString("F5"), @wp.Lng.ToString("F5")</span>
+                                    <div class="wp-edit-row">
+                                        <label>ALT (m):</label>
+                                        <input type="number" @bind="wp.Alt" class="mini-input" @bind:after="TriggerMapRedraw" />
+                                    </div>
+                                </div>
+                                <button class="wp-del" @onclick="() => RemoveItem(wp)" title="Remove Waypoint">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </div>
+                        }
+                    }
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <button class="action-btn upload" @onclick="UploadMission">
+                    <i class="bi bi-cloud-arrow-up-fill"></i> UPLOAD TO DRONE
+                </button>
+                <button class="action-btn start @(isUploaded ? "ready" : "disabled")"
+                        @onclick="StartMission" disabled="@(!isUploaded)">
+                    <i class="bi bi-rocket-takeoff-fill"></i> START MISSION
+                </button>
+            </div>
         </div>
     </div>
 </div>
 
 <style>
-    /* MASTER CONTAINER: Exact match to Messages tab [cite: 187, 188] */
-    .flightplan-view-container {
+    /* MASTER LAYOUT */
+    .flight-plan-master {
         display: flex;
         flex-direction: column;
         height: 100%;
-        gap: 16px;
-        padding: 20px;
-        background: transparent;
         width: 100%;
-        max-width: 500px;
-        margin: 0 auto;
+        background: #0b0e14;
         overflow: hidden;
     }
 
-    /* HUD WRAPPER: Exact match to Messages tab [cite: 189, 190] */
-    .hud-wrapper {
+    .hud-viewport {
         height: 300px;
         width: 100%;
-        border-radius: 8px;
-        overflow: hidden;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-        border: 1px solid #333;
+        border-bottom: 1px solid #242731;
         flex-shrink: 0;
+        background: #000;
     }
 
-    .editor-section {
+    .main-interface {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        position: relative;
+    }
+
+    /* MAP VIEWPORT & CONTROLS */
+    .map-viewport {
+        flex: 1;
+        position: relative;
+        background: #06090f;
+    }
+
+    #map-element {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    .map-controls {
+        position: absolute;
+        top: 15px;
+        left: 15px;
         display: flex;
         flex-direction: column;
-        flex-grow: 1;
-        gap: 10px;
-        min-height: 0;
+        gap: 8px;
+        z-index: 10;
     }
 
-    .header-strip {
-        background: rgba(18, 20, 28, 0.8);
-        border: 1px solid rgba(0, 242, 255, 0.2);
-        border-radius: 6px;
-        padding: 8px;
-        text-align: center;
-        color: #00f2ff;
-        font-weight: 800;
-        font-size: 0.85rem;
-        letter-spacing: 1.5px;
-        text-transform: uppercase;
+    .map-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 8px;
+        background: rgba(13, 17, 23, 0.85);
+        border: 1px solid #30363d;
+        color: #58a6ff;
+        cursor: pointer;
+        transition: all 0.2s ease;
         backdrop-filter: blur(4px);
-    }
-
-    /* TABLE CONTAINER: Matches the Console Window style  */
-    .mission-table-container {
-        flex-grow: 1;
-        background: rgba(5, 5, 10, 0.9);
-        border: 1px solid #222;
-        border-radius: 6px;
-        padding: 10px;
-        overflow-y: auto;
-        box-shadow: inset 0 0 15px rgba(0,0,0,0.8);
-    }
-
-    .mission-planner-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.75rem;
-        color: #ddd;
-    }
-
-    .mission-planner-table th {
-            background: #111;
-            color: #666;
-            padding: 8px;
-            text-align: left;
-            position: sticky;
-            top: 0;
-            border-bottom: 1px solid #222;
-            font-size: 0.65rem;
-        }
-
-    .mission-planner-table td {
-            padding: 4px;
-            border-bottom: 1px solid #111;
-            vertical-align: middle;
-        }
-
-    .table-input, .table-select {
-        background: #000;
-        border: 1px solid #222;
-        color: #00ff00;
-        border-radius: 4px;
-        padding: 2px;
-        width: 100%;
-        font-size: 0.7rem;
-    }
-
-    .home-row {
-        background: rgba(0, 242, 255, 0.05);
-    }
-
-    .home-text {
-        color: #00f2ff;
-        font-weight: bold;
-    }
-
-    .seq-col {
-        color: #00f2ff;
-        font-weight: bold;
-        text-align: center;
-    }
-
-    .toolbar-row {
+        font-size: 1.2rem;
         display: flex;
-        justify-content: flex-end;
+        align-items: center;
+        justify-content: center;
     }
 
-    .toolbar-left {
-        flex-shrink: 0;
-        margin-right: auto;
+        .map-btn:hover {
+            background: #58a6ff;
+            color: #0d1117;
+            transform: scale(1.05);
+        }
+
+    /* MODERN SIDEBAR */
+    .editor-sidebar {
+        width: 400px;
+        background: rgba(13, 17, 23, 0.98);
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        border-left: 1px solid #242731;
+        z-index: 10;
+        box-shadow: -4px 0 20px rgba(0,0,0,0.4);
     }
 
-    .status-badge-primary {
-        background: rgba(5, 5, 10, 0.9);
-        color: mediumpurple;
-        padding: 5px 12px;
-        border-radius: 4px;
+    .sidebar-header {
+        font-weight: 900;
+        color: #fff;
+        font-size: 0.9rem;
+        letter-spacing: 1px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-bottom: 1px solid #30363d;
+        padding-bottom: 12px;
+    }
+
+    .text-primary {
+        color: #58a6ff;
+    }
+
+    /* COMPACT PARAMS */
+    .param-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+    }
+
+    .param-tile {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        transition: 0.2s;
+    }
+
+        .param-tile:hover {
+            border-color: #444c56;
+        }
+
+        .param-tile label {
+            font-size: 0.6rem;
+            color: #8b949e;
+            font-weight: 800;
+            text-transform: uppercase;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+    .readout {
+        font-size: 1rem;
         font-weight: 800;
-        letter-spacing: 0.5px;
+        color: #58a6ff;
+        display: flex;
+        align-items: baseline;
+        gap: 4px;
     }
 
-    .tool-group {
+    .unit {
+        font-size: 0.65rem;
+        color: #8b949e;
+        font-weight: 600;
+    }
+
+    .editor-input {
+        width: 100%;
+        background: #010409;
+        border: 1px solid #30363d;
+        color: #3fb950;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
+        font-size: 0.85rem;
+        outline: none;
+        transition: 0.2s;
+    }
+
+        .editor-input:focus {
+            border-color: #58a6ff;
+            box-shadow: 0 0 0 1px #58a6ff;
+        }
+
+    /* WAYPOINTS SECTION */
+    .wp-section {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow: hidden;
+    }
+
+    .wp-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0 2px;
+    }
+
+        .wp-header span {
+            font-size: 0.75rem;
+            font-weight: 800;
+            color: #8b949e;
+        }
+
+    .clear-btn {
+        background: transparent;
+        border: none;
+        color: #f85149;
+        font-size: 0.7rem;
+        font-weight: bold;
+        cursor: pointer;
+        padding: 0;
+        transition: 0.2s;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+        .clear-btn:hover {
+            color: #ff7b72;
+            text-decoration: underline;
+        }
+
+    .wp-actions {
         display: flex;
         gap: 8px;
     }
 
-    .mini-btn {
-        padding: 5px 12px;
+    .wp-btn {
+        flex: 1;
+        padding: 10px;
+        font-size: 0.75rem;
+        font-weight: 800;
+        border-radius: 6px;
         border: none;
-        border-radius: 4px;
-        color: white;
-        font-size: 0.7rem;
-        font-weight: bold;
         cursor: pointer;
-    }
-
-    .blue {
-        background: #2b58ff;
-    }
-
-    .green {
-        background: #238636;
-    }
-
-    .red {
-        background: #ff3a3a;
-    }
-
-    .mission-action-group {
+        color: white;
+        transition: 0.2s;
         display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 6px;
+    }
+
+        .wp-btn.import {
+            background: #238636;
+        }
+
+            .wp-btn.import:hover {
+                background: #2ea043;
+            }
+
+        .wp-btn.export {
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+        }
+
+            .wp-btn.export:hover {
+                background: #30363d;
+                color: #fff;
+            }
+
+    /* SCROLL AREA & CUSTOM SCROLLBAR */
+    .wp-scroll-area {
+        flex: 1;
+        overflow-y: auto;
+        background: #010409;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+        .wp-scroll-area::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .wp-scroll-area::-webkit-scrollbar-track {
+            background: #010409;
+        }
+
+        .wp-scroll-area::-webkit-scrollbar-thumb {
+            background: #30363d;
+            border-radius: 3px;
+        }
+
+            .wp-scroll-area::-webkit-scrollbar-thumb:hover {
+                background: #484f58;
+            }
+
+    .empty-notif {
+        padding: 40px 10px;
+        text-align: center;
+        color: #484f58;
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+
+    /* WAYPOINT CARDS */
+    .wp-card {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 10px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+        .wp-card:hover {
+            transform: translateX(2px);
+            border-color: #444c56;
+        }
+
+        .wp-card.active {
+            border-color: #58a6ff;
+            background: rgba(88, 166, 255, 0.08);
+            box-shadow: inset 3px 0 0 #58a6ff;
+        }
+
+    .wp-idx {
+        width: 28px;
+        height: 28px;
+        background: #21262d;
+        color: #8b949e;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.75rem;
+        font-weight: 800;
+        border: 1px solid #30363d;
+        transition: 0.2s;
+    }
+
+    .wp-card.active .wp-idx {
+        background: #58a6ff;
+        color: #0d1117;
+        border-color: #58a6ff;
+    }
+
+    .wp-data {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+    }
+
+    .wp-coord {
+        font-size: 0.7rem;
+        font-family: 'Courier New', monospace;
+        color: #c9d1d9;
+        font-weight: 600;
+    }
+
+    .wp-edit-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+    }
+
+        .wp-edit-row label {
+            font-size: 0.6rem;
+            color: #8b949e;
+            font-weight: 800;
+            margin: 0;
+        }
+
+    .mini-input {
+        width: 65px;
+        background: #010409;
+        border: 1px solid #30363d;
+        color: #3fb950;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: bold;
+        outline: none;
+        transition: 0.2s;
+    }
+
+        .mini-input:focus {
+            border-color: #3fb950;
+        }
+
+    .wp-del {
+        margin-left: auto;
+        background: transparent;
+        border: none;
+        color: #8b949e;
+        font-size: 1.1rem;
+        cursor: pointer;
+        padding: 6px;
+        transition: 0.2s;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+        .wp-del:hover {
+            color: #f85149;
+            background: rgba(248,81,73,0.1);
+        }
+
+    /* FOOTER ACTIONS */
+    .sidebar-footer {
+        display: flex;
+        flex-direction: column;
         gap: 10px;
         margin-top: auto;
+        padding-top: 15px;
+        border-top: 1px solid #30363d;
     }
 
     .action-btn {
-        flex: 1;
-        padding: 12px;
+        width: 100%;
+        padding: 14px;
+        border-radius: 8px;
         border: none;
-        border-radius: 6px;
-        color: white;
-        font-weight: 900;
-        font-size: 0.85rem;
+        font-weight: 800;
+        letter-spacing: 1px;
         cursor: pointer;
+        transition: all 0.2s ease;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
     }
 
-    .upload-btn {
-        background: #2b58ff;
-        border: 1px solid #333;
-    }
-
-    .start-btn.disabled {
-        background: #222;
-        color: #444;
-        cursor: not-allowed;
-    }
-
-    .start-btn.ready {
-        background: #238636;
-        box-shadow: 0 0 10px rgba(35, 134, 54, 0.3);
-    }
-
-    .icon-btn {
-        background: transparent;
-        border: none;
-        color: #666;
-        cursor: pointer;
-        font-size: 0.8rem;
-        padding: 2px 4px;
-    }
-
-    .icon-btn:hover {
-            color: #00f2ff;
+        .action-btn.upload {
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
         }
+
+            .action-btn.upload:hover {
+                background: #30363d;
+                color: #fff;
+            }
+
+        .action-btn.start {
+            background: #238636;
+            color: white;
+        }
+
+            .action-btn.start.disabled {
+                background: #161b22;
+                color: #484f58;
+                border: 1px solid #30363d;
+                cursor: not-allowed;
+            }
+
+            .action-btn.start.ready {
+                background: #2ea043;
+                box-shadow: 0 0 15px rgba(46, 160, 67, 0.4);
+            }
+
+                .action-btn.start.ready:hover {
+                    background: #3fb950;
+                    transform: translateY(-2px);
+                    box-shadow: 0 4px 20px rgba(46, 160, 67, 0.6);
+                }
 </style>
 
 @code {
     private static List<MissionItem> MissionItems = new();
     private static event Action? OnMissionChanged;
+
     private bool isUploaded = false;
+    private bool isUploading = false;
+    private int globalAlt = 50;
+    private int activeWpIndex = -1;
 
     public class MissionItem
     {
-        public int Sequence { get; set; }
+        public int Index { get; set; }
         public string Command { get; set; } = "WAYPOINT";
         public double Lat { get; set; }
         public double Lng { get; set; }
@@ -319,10 +591,55 @@
     {
         OnMissionChanged += TriggerMapRedraw;
         Drone.OnTelemetryUpdated += StateHasChanged;
+
         if (!MissionItems.Any())
         {
-            MissionItems.Add(new MissionItem { IsHome = true, Sequence = 0, Command = "WAYPOINT", Alt = 0 });
+            MissionItems.Add(new MissionItem { IsHome = true, Index = 0, Command = "WAYPOINT", Alt = 0 });
         }
+        TriggerMapRedraw();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("initMap", Drone.State.Latitude, Drone.State.Longitude);
+            }
+            catch { }
+        }
+    }
+
+    [JSInvokable]
+    public static void AddWaypointFromMap(double lat, double lng)
+    {
+        if (MissionItems.Count == 1 && MissionItems[0].IsHome && MissionItems[0].Lat == 0)
+        {
+            MissionItems[0].Lat = lat;
+            MissionItems[0].Lng = lng;
+        }
+        else
+        {
+            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Index = MissionItems.Count, Alt = 50 });
+        }
+        OnMissionChanged?.Invoke();
+    }
+
+    [JSInvokable]
+    public static void UpdateWaypointPosition(int listIndex, double newLat, double newLng)
+    {
+        if (listIndex >= 0 && listIndex < MissionItems.Count)
+        {
+            MissionItems[listIndex].Lat = newLat;
+            MissionItems[listIndex].Lng = newLng;
+            OnMissionChanged?.Invoke();
+        }
+    }
+
+    private void ApplyGlobalAlt()
+    {
+        foreach (var wp in MissionItems.Where(x => !x.IsHome)) wp.Alt = globalAlt;
         TriggerMapRedraw();
     }
 
@@ -333,60 +650,72 @@
         await JS.InvokeVoidAsync("drawMission", MissionItems);
     });
 
-    [JSInvokable]
-    public static void AddWaypointFromMap(double lat, double lng)
+    private async Task CenterMapOnDrone()
     {
-        if (MissionItems.Count == 1 && MissionItems[0].IsHome && MissionItems[0].Lat == 0)
-        {
-            MissionItems[0].Lat = lat; MissionItems[0].Lng = lng;
-        }
-        else
-        {
-            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Sequence = MissionItems.Count, Alt = 50 });
-        }
-        OnMissionChanged?.Invoke();
+        await JS.InvokeVoidAsync("jumpToDrone", Drone.State.Latitude, Drone.State.Longitude, Drone.State.Yaw);
     }
 
     private void SetHomeToDrone()
     {
         var home = MissionItems.FirstOrDefault(x => x.IsHome);
-        if (home != null) { home.Lat = Drone.State.Latitude; home.Lng = Drone.State.Longitude; TriggerMapRedraw(); }
+        if (home != null)
+        {
+            home.Lat = Drone.State.Latitude;
+            home.Lng = Drone.State.Longitude;
+            TriggerMapRedraw();
+        }
     }
 
     private void MoveUp(MissionItem item)
     {
         int idx = MissionItems.IndexOf(item);
-        if (idx > 1) { MissionItems.RemoveAt(idx); MissionItems.Insert(idx - 1, item); Resequence(); }
+        if (idx > 1)
+        {
+            MissionItems.RemoveAt(idx);
+            MissionItems.Insert(idx - 1, item);
+            Resequence();
+        }
     }
 
     private void MoveDown(MissionItem item)
     {
         int idx = MissionItems.IndexOf(item);
-        if (idx > 0 && idx < MissionItems.Count - 1) { MissionItems.RemoveAt(idx); MissionItems.Insert(idx + 1, item); Resequence(); }
+        if (idx > 0 && idx < MissionItems.Count - 1)
+        {
+            MissionItems.RemoveAt(idx);
+            MissionItems.Insert(idx + 1, item);
+            Resequence();
+        }
     }
 
     private void RemoveItem(MissionItem item)
     {
-        if (!item.IsHome) { MissionItems.Remove(item); Resequence(); }
+        if (!item.IsHome)
+        {
+            MissionItems.Remove(item);
+            Resequence();
+        }
+    }
+
+    private void ClearAllWaypoints()
+    {
+        var home = MissionItems.FirstOrDefault(x => x.IsHome);
+        MissionItems.Clear();
+        if (home != null) MissionItems.Add(home);
+        OnMissionChanged?.Invoke();
     }
 
     private void Resequence()
     {
-        for (int i = 0; i < MissionItems.Count; i++) MissionItems[i].Sequence = i;
-        OnMissionChanged?.Invoke();
-    }
-
-    private void ClearAll()
-    {
-        var home = MissionItems.FirstOrDefault(x => x.IsHome);
-        MissionItems.Clear(); if (home != null) MissionItems.Add(home);
+        for (int i = 0; i < MissionItems.Count; i++) MissionItems[i].Index = i;
         OnMissionChanged?.Invoke();
     }
 
     private double CalculateTotalDistance()
     {
         double total = 0;
-        for (int i = 0; i < MissionItems.Count - 1; i++) total += GetHaversineDistance(MissionItems[i], MissionItems[i + 1]);
+        for (int i = 0; i < MissionItems.Count - 1; i++)
+            total += GetHaversineDistance(MissionItems[i], MissionItems[i + 1]);
         return total;
     }
 
@@ -395,7 +724,8 @@
         double r = 6371000;
         double dLat = (w2.Lat - w1.Lat) * Math.PI / 180;
         double dLng = (w2.Lng - w1.Lng) * Math.PI / 180;
-        double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) + Math.Cos(w1.Lat * Math.PI / 180) * Math.Cos(w2.Lat * Math.PI / 180) * Math.Sin(dLng / 2) * Math.Sin(dLng / 2);
+        double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                   Math.Cos(w1.Lat * Math.PI / 180) * Math.Cos(w2.Lat * Math.PI / 180) * Math.Sin(dLng / 2) * Math.Sin(dLng / 2);
         return r * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
     }
 
@@ -405,7 +735,11 @@
         {
             using var stream = e.File.OpenReadStream();
             var imported = await JsonSerializer.DeserializeAsync<List<MissionItem>>(stream);
-            if (imported != null) { MissionItems = imported; Resequence(); }
+            if (imported != null)
+            {
+                MissionItems = imported;
+                Resequence();
+            }
         }
         catch { }
     }
@@ -417,7 +751,52 @@
         await JS.InvokeVoidAsync("downloadFile", "mission.json", json);
     }
 
-    private void UploadMission() { if (MissionItems.Count > 1) { isUploaded = true; StateHasChanged(); } }
-    private void StartMission() { if (isUploaded) Drone.SetFlightMode("AUTO"); }
-    public void Dispose() { OnMissionChanged -= TriggerMapRedraw; Drone.OnTelemetryUpdated -= StateHasChanged; }
+    private async Task UploadMission()
+    {
+        if (MissionItems.Count > 1)
+        {
+            isUploading = true;
+            StateHasChanged(); // Updates UI to show it's working
+
+            // Now the compiler knows it's allowed to 'await' these calls
+            bool success = await Drone.UploadMissionAsync(MissionItems);
+
+            if (success)
+            {
+                isUploaded = true;
+            }
+            else
+            {
+                isUploaded = false;
+                await JS.InvokeVoidAsync("alert", "Mission Upload Failed. Check telemetry connection.");
+            }
+
+            isUploading = false;
+            StateHasChanged(); // Refreshes the UI to light up the Start Mission button
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        OnMissionChanged -= TriggerMapRedraw;
+        Drone.OnTelemetryUpdated -= StateHasChanged;
+
+        // Hide and save the map safely before the tab is destroyed
+        try
+        {
+            await JS.InvokeVoidAsync("preserveMap");
+        }
+        catch { }
+    }
+
+    private void StartMission()
+    {
+        if (isUploaded) Drone.SetFlightMode("AUTO");
+    }
+
+    public void Dispose()
+    {
+        OnMissionChanged -= TriggerMapRedraw;
+        Drone.OnTelemetryUpdated -= StateHasChanged;
+    }
 }

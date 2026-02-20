@@ -1,55 +1,611 @@
 ﻿@page "/setup"
 @inject MavlinkService Drone
+@inject IJSRuntime JS
+@implements IDisposable
 
-<div class="tab-view-container">
-    <div class="hud-wrapper">
-        <Hud />
+<div class="gcs-setup-container">
+    <div class="setup-header">
+        <div class="hud-frame">
+            <Hud />
+            <div class="hud-overlay-text">CALIBRATION & CONFIGURATION ENVIRONMENT</div>
+            <div class="hud-status-bar">
+                <span class="status-item"><i class="bi bi-cpu"></i> CPU: @Drone.State.CpuLoad%</span>
+                <span class="status-item"><i class="bi bi-thermometer-half"></i> IMU TEMP: @Drone.State.ImuTemp.ToString("0.0")°C</span>
+                <span class="status-item"><i class="bi bi-battery-full"></i> VOLTAGE: @Drone.State.Voltage.ToString("0.0")V</span>
+            </div>
+        </div>
     </div>
 
-    <div class="content-section">
-        <div class="header-strip">HARDWARE SETUP</div>
-        <div class="placeholder-body">
-            <span class="icon">🛠️</span>
-            <p>Parameter Tuning & Sensor Calibration.</p>
+    <div class="setup-list">
+
+        <div class="setup-module">
+            <div class="module-header">
+                <i class="bi bi-gear-wide-connected"></i>
+                <span>FRAME GEOMETRY</span>
+                <button class="btn-gcs-primary" @onclick="ApplyFrame">SYNC PARAMS</button>
+            </div>
+            <div class="module-content">
+                <div class="readout-row">
+                    <div class="readout">
+                        <label>ACTIVE TYPE</label>
+                        <div class="value">@currentType</div>
+                    </div>
+                    <div class="readout">
+                        <label>ACTIVE CLASS</label>
+                        <div class="value">@currentClass</div>
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label class="input-label">FRAME TYPE</label>
+                    <select class="gcs-select" @bind="selectedFrameType">
+                        <option value="1">QUADCOPTER</option>
+                        <option value="2">HEXACOPTER</option>
+                        <option value="3">OCTACOPTER</option>
+                    </select>
+                    <label class="input-label">FRAME CLASS</label>
+                    <select class="gcs-select" @bind="selectedFrameClass">
+                        <option value="0">PLUS (+)</option>
+                        <option value="1">X-FRAME</option>
+                        <option value="2">V-FRAME</option>
+                    </select>
+                </div>
+            </div>
         </div>
+
+        <div class="setup-module">
+            <div class="module-header">
+                <i class="bi bi-compass"></i>
+                <span>SENSORS & IMU</span>
+                <button class="btn-gcs-outline" @onclick='() => StartCal("ACCEL")'>CALIBRATE IMU</button>
+            </div>
+            <div class="module-content">
+                <div class="status-box-pro @(isAccelCalibrating ? "active-cal" : "")">
+                    <div class="status-label">@(isAccelCalibrating ? "ACTION REQUIRED" : "SYSTEM STANDBY")</div>
+                    <div class="status-value">@lastAccelMsg</div>
+                    @if (isAccelCalibrating)
+                    {
+                        <div class="cal-pulse"></div>
+                    }
+                </div>
+                <div class="compass-mini-grid">
+                    <div class="axis">ROLL: <span class="val">@Drone.State.Roll.ToString("0.0")°</span></div>
+                    <div class="axis">PITCH: <span class="val">@Drone.State.Pitch.ToString("0.0")°</span></div>
+                    <div class="axis">YAW: <span class="val">@Drone.State.AttitudeYawDeg.ToString("0.0")°</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="setup-module">
+            <div class="module-header">
+                <i class="bi bi-controller"></i>
+                <span>RADIO CHANNELS (RC)</span>
+                <button class="btn-gcs-outline" @onclick='() => StartCal("RADIO")'>CALIBRATE RC</button>
+            </div>
+            <div class="module-content radio-layout">
+                @for (int i = 0; i < 4; i++)
+                {
+                    var chanName = (new[] { "ROLL", "PITCH", "THROTTLE", "YAW" })[i];
+                    var rawVal = Drone.State.RawChannels[i];
+                    <div class="radio-strip">
+                        <span class="label">@chanName</span>
+                        <div class="bar-container">
+                            <div class="bar-fill" style="width:@(CalculatePercent(rawVal))%"></div>
+                            <div class="center-line"></div>
+                        </div>
+                        <span class="raw-val">@rawVal</span>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="setup-module">
+            <div class="module-header">
+                <i class="bi bi-shield-shaded"></i>
+                <span>FLIGHT MODES</span>
+                <button class="btn-gcs-primary" @onclick="SyncFlightModes">SAVE MODES</button>
+            </div>
+            <div class="module-content">
+                @for (int i = 0; i < 3; i++)
+                {
+                    var index = i;
+                    <div class="mode-row">
+                        <label class="input-label">SWITCH POS @(index + 1)</label>
+                        <select class="gcs-select" @bind="flightModeSettings[index]">
+                            <option value="STABILIZE">STABILIZE</option>
+                            <option value="ALT_HOLD">ALT_HOLD</option>
+                            <option value="LOITER">LOITER</option>
+                            <option value="RTL">RTL</option>
+                            <option value="AUTO">AUTO</option>
+                        </select>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="setup-module border-amber">
+            <div class="module-header warning">
+                <i class="bi bi-lightning-charge"></i>
+                <span>MOTOR & ESC TEST</span>
+                <button class="btn-gcs-outline" @onclick="ToggleEscCalMode">ESC CAL MODE</button>
+            </div>
+            <div class="module-content">
+                <div class="warning-banner">
+                    <i class="bi bi-propeller"></i> REMOVE PROPS BEFORE MOTOR TEST
+                </div>
+                <div class="motor-grid">
+                    @for (int m = 1; m <= 4; m++)
+                    {
+                        var motorId = m;
+                        <button class="btn-motor" @onmousedown="() => StartMotor(motorId)" @onmouseup="StopMotor">
+                            M @motorId
+                        </button>
+                    }
+                </div>
+                <div class="footer-hint">HOLD BUTTON TO SPIN (5% PWR)</div>
+            </div>
+        </div>
+
+        <div class="setup-module border-amber">
+            <div class="module-header warning">
+                <i class="bi bi-exclamation-triangle"></i>
+                <span>FAILSAFES</span>
+                <button class="btn-gcs-amber" @onclick="SaveFailsafes">SAVE ALL</button>
+            </div>
+            <div class="module-content">
+                <div class="fs-toggle-row">
+                    <label class="input-label">RC LOSS</label>
+                    <select class="gcs-select-sm" @bind="rcLossAction">
+                        <option value="1">RTL</option>
+                        <option value="2">LAND</option>
+                    </select>
+                </div>
+                <div class="fs-toggle-row">
+                    <label class="input-label">LOW BATT</label>
+                    <select class="gcs-select-sm" @bind="lowBattAction">
+                        <option value="1">RTL</option>
+                        <option value="2">LAND</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
     </div>
 </div>
 
 <style>
-    /* Container to center content in the drawer */
-    .tab-view-container {
+    :root {
+        --gcs-bg: #0d1117;
+        --gcs-card: #161b22;
+        --gcs-border: #30363d;
+        --gcs-cyan: #58a6ff;
+        --gcs-amber: #d29922;
+        --gcs-text: #c9d1d9;
+    }
+
+    .gcs-setup-container {
+        background: var(--gcs-bg);
+        height: 100%;
+        padding: 20px;
+        color: var(--gcs-text);
         display: flex;
         flex-direction: column;
-        height: 100%;
-        gap: 16px;
-        padding: 20px;
-        width: 100%;
-        max-width: 500px; /* Uniform Width */
-        margin: 0 auto;
-    }
-
-    /* HUD WRAPPER: The "Master" dimension */
-    .hud-wrapper {
-        height: 300px; /* Uniform Height [cite: 32] */
-        width: 100%;
-        border-radius: 8px;
         overflow: hidden;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-        border: 1px solid #333;
-        flex-shrink: 0; /* Prevents squashing */
     }
 
-    .header-strip {
-        background: rgba(18, 20, 28, 0.8);
-        border: 1px solid rgba(0, 242, 255, 0.2);
-        border-radius: 6px;
-        padding: 8px;
-        text-align: center;
-        color: #00f2ff;
+    .setup-header {
+        height: 320px;
+        margin-bottom: 20px;
+        flex-shrink: 0;
+    }
+
+    .hud-frame {
+        height: 100%;
+        background: #000;
+        border: 1px solid var(--gcs-border);
+        border-radius: 12px;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .hud-overlay-text {
+        position: absolute;
+        top: 15px;
+        left: 20px;
+        font-size: 0.7rem;
+        color: var(--gcs-cyan);
+        letter-spacing: 2px;
+        opacity: 0.8;
         font-weight: 800;
-        font-size: 0.85rem;
+    }
+
+    .hud-status-bar {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        background: rgba(0,0,0,0.7);
+        padding: 8px 20px;
+        display: flex;
+        gap: 25px;
+        font-size: 0.65rem;
+        font-family: 'Courier New', monospace;
+        border-top: 1px solid var(--gcs-border);
+    }
+
+    /* SINGLE COLUMN LIST */
+    .setup-list {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        overflow-y: auto;
+        padding-right: 5px;
+    }
+
+    .setup-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+    .setup-list::-webkit-scrollbar-thumb {
+            background: var(--gcs-border);
+            border-radius: 10px;
+        }
+
+    .setup-module {
+        background: var(--gcs-card);
+        border: 1px solid var(--gcs-border);
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+    }
+
+    .border-amber {
+        border-left: 4px solid var(--gcs-amber);
+    }
+
+    .module-header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--gcs-border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 800;
+        font-size: 0.75rem;
         text-transform: uppercase;
+    }
+
+    .module-content {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+    }
+
+    .readout-row {
+        display: flex;
+        gap: 12px;
+    }
+
+    .readout {
+        flex: 1;
+        background: #0d1117;
+        padding: 10px;
+        border-radius: 6px;
+        border: 1px solid var(--gcs-border);
+    }
+
+    .readout label {
+            display: block;
+            font-size: 0.55rem;
+            color: #8b949e;
+            margin-bottom: 4px;
+            font-weight: 800;
+        }
+
+    .readout .value {
+            font-size: 0.8rem;
+            font-weight: 800;
+            color: var(--gcs-cyan);
+        }
+
+    .input-label {
+        font-size: 0.6rem;
+        font-weight: 800;
+        color: #8b949e;
+        margin-bottom: 2px;
+    }
+
+    .gcs-select, .gcs-select-sm {
+        background: #010409;
+        color: white;
+        border: 1px solid var(--gcs-border);
+        border-radius: 4px;
+        padding: 8px;
+        font-size: 0.75rem;
+        width: 100%;
+        outline: none;
+    }
+
+    .gcs-select-sm {
+        width: 100px;
+        padding: 4px;
+    }
+
+    .status-box-pro {
+        background: #010409;
+        border: 1px dashed var(--gcs-border);
+        padding: 18px;
+        text-align: center;
+        border-radius: 8px;
+        position: relative;
+    }
+
+    .status-box-pro.active-cal {
+            border: 1px solid var(--gcs-cyan);
+            background: rgba(88, 166, 255, 0.05);
+        }
+
+    .status-value {
+        font-size: 0.85rem;
+        font-weight: 800;
+        color: var(--gcs-cyan);
+        margin-top: 5px;
+    }
+
+    .radio-strip {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+
+    .radio-strip .label {
+            width: 85px;
+            font-size: 0.6rem;
+            font-weight: 800;
+            color: #8b949e;
+        }
+
+    .bar-container {
+        flex: 1;
+        height: 12px;
+        background: #010409;
+        border-radius: 6px;
+        position: relative;
+        border: 1px solid var(--gcs-border);
+        overflow: hidden;
+    }
+
+    .bar-fill {
+        height: 100%;
+        background: var(--gcs-cyan);
+        transition: width 0.1s;
+    }
+
+    .center-line {
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: rgba(255,255,255,0.1);
+    }
+
+    .raw-val {
+        width: 45px;
+        font-family: monospace;
+        font-size: 0.7rem;
+        text-align: right;
+        color: var(--gcs-cyan);
+    }
+
+    .motor-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+    }
+
+    .btn-motor {
+        background: #21262d;
+        border: 1px solid var(--gcs-border);
+        color: #fff;
+        padding: 15px;
+        border-radius: 6px;
+        font-weight: 800;
+        cursor: pointer;
+        font-size: 0.7rem;
+    }
+
+    .btn-motor:active {
+            background: #238636;
+            border-color: #2ea043;
+        }
+
+    .footer-hint {
+        font-size: 0.55rem;
+        text-align: center;
+        color: #484f58;
+        font-weight: 800;
+    }
+
+    .btn-gcs-primary {
+        background: var(--gcs-cyan);
+        border: none;
+        color: #000;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        cursor: pointer;
+        margin-left: auto;
+    }
+
+    .btn-gcs-outline {
+        background: transparent;
+        border: 1px solid var(--gcs-cyan);
+        color: var(--gcs-cyan);
+        padding: 5px 12px;
+        border-radius: 4px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        cursor: pointer;
+    }
+
+    .btn-gcs-amber {
+        background: var(--gcs-amber);
+        border: none;
+        color: #000;
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        cursor: pointer;
+    }
+
+    .warning-banner {
+        background: rgba(210, 153, 34, 0.1);
+        border: 1px solid var(--gcs-amber);
+        color: var(--gcs-amber);
+        padding: 10px;
+        border-radius: 4px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        text-align: center;
+    }
+
+    .fs-toggle-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .cal-pulse {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 6px;
+        height: 6px;
+        background: #ff4444;
+        border-radius: 50%;
+        animation: pulse 1s infinite;
+    }
+    @@keyframes pulse {
+        0% {
+            opacity: 1;
+        }
+
+        50% {
+            opacity: 0.3;
+        }
+
+        100% {
+            opacity: 1;
+        }
+    }
+
+    .compass-mini-grid {
+        display: flex;
+        justify-content: space-around;
+        font-family: monospace;
+        font-size: 0.7rem;
+    }
+
+    .axis .val {
+        color: var(--gcs-cyan);
+        font-weight: 800;
     }
 </style>
 
-@code { }
+@code {
+    private string selectedFrameType = "1";
+    private string selectedFrameClass = "1";
+    private string currentType = "QUAD";
+    private string currentClass = "X-FRAME";
+    private string rcLossAction = "1";
+    private string lowBattAction = "1";
+    private string[] flightModeSettings = { "STABILIZE", "LOITER", "RTL" };
+
+    private string lastAccelMsg = "SYSTEM STANDBY";
+    private bool isAccelCalibrating = false;
+
+    protected override void OnInitialized()
+    {
+        Drone.OnTelemetryUpdated += RefreshUi;
+        Drone.OnMessageReceived += HandleMavlinkMessage;
+    }
+
+    private void RefreshUi() => InvokeAsync(StateHasChanged);
+
+    private void HandleMavlinkMessage()
+    {
+        var msg = Drone.StatusMessages.FirstOrDefault();
+        if (string.IsNullOrEmpty(msg)) return;
+
+        if (msg.Contains("Place vehicle", StringComparison.OrdinalIgnoreCase) ||
+            msg.Contains("level", StringComparison.OrdinalIgnoreCase))
+        {
+            lastAccelMsg = msg.ToUpper();
+            isAccelCalibrating = true;
+        }
+        else if (msg.Contains("Successful", StringComparison.OrdinalIgnoreCase))
+        {
+            lastAccelMsg = "CALIBRATION SUCCESS";
+            isAccelCalibrating = false;
+        }
+        else if (msg.Contains("Failed", StringComparison.OrdinalIgnoreCase))
+        {
+            lastAccelMsg = "CALIBRATION FAILED";
+            isAccelCalibrating = false;
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ApplyFrame()
+    {
+        Drone.SetFrameConfig(int.Parse(selectedFrameType), int.Parse(selectedFrameClass));
+        currentType = selectedFrameType switch { "1" => "QUAD", "2" => "HEXA", "3" => "OCTA", _ => "CUSTOM" };
+        currentClass = selectedFrameClass switch { "0" => "PLUS (+)", "1" => "X-FRAME", "2" => "V-FRAME", _ => "CUSTOM" };
+        await Task.CompletedTask;
+    }
+
+    private void SyncFlightModes()
+    {
+        for (int i = 0; i < flightModeSettings.Length; i++)
+        {
+            Drone.SaveFlightMode(i + 1, flightModeSettings[i]);
+        }
+    }
+
+    private void ToggleEscCalMode()
+    {
+        Drone.SetEscCalibrationMode();
+        lastAccelMsg = "ESC CAL: REBOOT DRONE";
+    }
+
+    private void StartCal(string type)
+    {
+        if (type == "ACCEL") { isAccelCalibrating = true; lastAccelMsg = "WAITING FOR POSITION..."; }
+        Drone.StartCalibration(type);
+    }
+
+    private void StartMotor(int id) => Drone.TestMotor(id, true);
+    private void StopMotor() => Drone.TestMotor(1, false);
+
+    private void SaveFailsafes()
+    {
+        Drone.SendParameter("FS_THR_ENABLE", float.Parse(rcLossAction));
+        Drone.SendParameter("FS_BATT_ENABLE", float.Parse(lowBattAction));
+    }
+
+    private double CalculatePercent(ushort raw)
+    {
+        if (raw < 1000) return 0;
+        if (raw > 2000) return 100;
+        return (raw - 1000) / 10.0;
+    }
+
+    public void Dispose()
+    {
+        Drone.OnTelemetryUpdated -= RefreshUi;
+        Drone.OnMessageReceived -= HandleMavlinkMessage;
+    }
+}

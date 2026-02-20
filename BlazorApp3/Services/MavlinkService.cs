@@ -1,7 +1,9 @@
-﻿using Microsoft.Extensions.Hosting;
+﻿using BlazorApp3.Components.GCS;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.JSInterop;
 using System.IO.Ports;
+using static MAVLink;
 
 public enum ConnectionType { Serial, UDP, TCP }
 
@@ -11,6 +13,8 @@ public class MavlinkService : BackgroundService
 
     private readonly object _sync = new();
     private readonly MAVLink.MavlinkParse _parser = new();
+    // Change from 50ms to 100ms (10Hz is standard for GCS stability)
+    private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(100);
 
     private SerialPort? _serialPort;
 
@@ -30,17 +34,20 @@ public class MavlinkService : BackgroundService
     // 1. Add a list to store messages
     public List<string> StatusMessages { get; private set; } = new();
     // 2. Add an event to notify UI when a new message arrives
-    public event Action OnMessageReceived;
+    public event Action? OnMessageReceived;
 
     private void ReportConn(string msg) => OnConnectionStatus?.Invoke(msg);
     private void ShowConnDialog(bool show) => OnConnectionDialog?.Invoke(show);
 
+
+    public byte TargetSysId { get; set; } = 1;
+    public byte TargetCompId { get; set; } = 1;
     // --- UI telemetry push ---
     public event Action? OnTelemetryUpdated;
 
     // UI notifications throttled (20 Hz)
     private DateTime _lastUiNotifyUtc = DateTime.MinValue;
-    private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(50);
+    //private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(50);
 
     // Packet rate
     private int _rxPacketCounter = 0;
@@ -51,15 +58,29 @@ public class MavlinkService : BackgroundService
     // Battery anti-flicker
     private int? _lastGoodBatteryPercent = null;
     private DateTime _lastGoodBatteryUtc = DateTime.MinValue;
+    private bool _wasAlerting = false;
 
     // Snapshot-based state (UI reads this)
     private DroneState _state = new();
+    public byte target_sysid { get; set; } = 1;  // The drone's system ID (usually 1)
+    public byte target_compid { get; set; } = 1;
     public DroneState State => _state;
 
     // Inside MavlinkService.cs
     public async Task DownloadFile(IJSRuntime js, string fileName, string content)
     {
         await js.InvokeVoidAsync("downloadFile", fileName, content);
+    }
+    private void SendPacket(object msg)
+    {
+        // Right now, this is a placeholder. 
+        // Later, we will put your SerialPort writing logic here.
+        Console.WriteLine($"Ready to send: {msg.GetType().Name}");
+    }
+    private void SendPacket(MAVLink.MAVLINK_MSG_ID msgid, object data)
+    {
+        var buffer = _parser.GenerateMAVLinkPacket20(msgid, data);
+        SendBuffer(buffer);
     }
     public bool IsConnected
     {
@@ -151,13 +172,61 @@ public class MavlinkService : BackgroundService
     }
 
     // ---------------- BACKGROUND LOOP ----------------
+    // --- FLIGHT MODE CONFIGURATION ---
+    public void SaveFlightMode(int position, string modeName)
+    {
+        // ArduPilot uses specific integers for flight modes
+        // 0:Stabilize, 2:AltHold, 5:Loiter, 6:RTL, 10:Auto
+        float modeValue = modeName.ToUpper() switch
+        {
+            "STABILIZE" => 0,
+            "ALT_HOLD" => 2,
+            "LOITER" => 5,
+            "RTL" => 6,
+            "AUTO" => 10,
+            _ => 0
+        };
 
+        // ArduPilot parameters for modes are FLTMODE1 through FLTMODE6
+        SendParameter($"FLTMODE{position}", modeValue);
+    }
+
+    // --- ESC CALIBRATION MODE ---
+    public void SetEscCalibrationMode()
+    {
+        // Setting ESC_CALIBRATION to 3 tells the drone 
+        // to enter ESC cal mode on the next boot.
+        SendParameter("ESC_CALIBRATION", 3);
+    }
+
+    // --- MOTOR TESTING ---
+    public void TestMotor(int motorIndex, bool start)
+    {
+        var cmd = new MAVLink.mavlink_command_long_t();
+        cmd.target_system = target_sysid;
+        cmd.target_component = target_compid;
+
+        // MAV_CMD_DO_MOTOR_TEST = 183
+        cmd.command = (ushort)MAVLink.MAV_CMD.DO_MOTOR_TEST;
+
+        // Param 1: Motor instance (1, 2, 3, 4...)
+        cmd.param1 = motorIndex;
+        // Param 2: Test type (0 = percent throttle)
+        cmd.param2 = 0;
+        // Param 3: Throttle value (Start at 5% for safety, 0 to stop)
+        cmd.param3 = start ? 5 : 0;
+        // Param 4: Timeout (seconds)
+        cmd.param4 = 2;
+
+        SendPacket(cmd);
+    }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
             bool shouldConnect;
             lock (_sync) { shouldConnect = _shouldBeConnected; }
+            CheckLinkHealth();
 
             if (!shouldConnect)
             {
@@ -199,7 +268,7 @@ public class MavlinkService : BackgroundService
                 CloseSerialPort();
             }
 
-            await Task.Delay(5, stoppingToken);
+            await Task.Delay(15, stoppingToken);
         }
     }
 
@@ -284,7 +353,7 @@ public class MavlinkService : BackgroundService
                 s.IsArmed = armed;
 
                 // Optional: if you want flight mode from heartbeat:
-                // s.FlightMode = GetFlightModeString(hb.custom_mode);
+                 s.FlightMode = GetFlightModeString(hb.custom_mode);
             });
 
             // FIRST HEARTBEAT = truly connected => CLOSE dialog
@@ -433,6 +502,45 @@ public class MavlinkService : BackgroundService
                 // 3. CRITICAL: Ensure the UI event is triggered
                 OnMessageReceived?.Invoke();
             }
+        }
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS_RAW)
+        {
+            var rc = (MAVLink.mavlink_rc_channels_raw_t)packet.data;
+            UpdateState(s => {
+                s.RawChannels[0] = rc.chan1_raw;
+                s.RawChannels[1] = rc.chan2_raw;
+                s.RawChannels[2] = rc.chan3_raw;
+                s.RawChannels[3] = rc.chan4_raw;
+                s.RawChannels[4] = rc.chan5_raw;
+                s.RawChannels[5] = rc.chan6_raw;
+                s.RawChannels[6] = rc.chan7_raw;
+                s.RawChannels[7] = rc.chan8_raw;
+            });
+        }
+        // Inside the HandlePacket method...
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST)
+        {
+            var req = (MAVLink.mavlink_mission_request_int_t)packet.data;
+            // Map the old request type to your internal handler
+            var reqInt = new MAVLink.mavlink_mission_request_int_t { seq = req.seq };
+            HandleMissionRequest(reqInt);
+        }
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT)
+        {
+            var req = (MAVLink.mavlink_mission_request_int_t)packet.data;
+            HandleMissionRequest(req);
+        }
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ACK)
+        {
+            var ack = (MAVLink.mavlink_mission_ack_t)packet.data;
+            string status = ack.type == 0 ? "Mission Upload Success" : $"Mission Error: {ack.type}";
+
+            // Log it so it shows up in your Message Tab
+            lock (StatusMessages)
+            {
+                StatusMessages.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {status}");
+            }
+            OnMessageReceived?.Invoke();
         }
 
         NotifyUi(force: false);
@@ -630,10 +738,95 @@ public class MavlinkService : BackgroundService
     }
 
     // --- ADD THIS TO MavlinkService.cs ---
+    private List<WaypointModel> _uploadQueue = new();
 
+    public void UploadMission(List<WaypointModel> waypoints)
+    {
+        if (waypoints == null || waypoints.Count == 0) return;
+        _uploadQueue = waypoints;
+
+        // Step 1: Start the transaction by sending the count
+        var msg = new MAVLink.mavlink_mission_count_t
+        {
+            count = (ushort)_uploadQueue.Count,
+            target_system = 1,
+            target_component = 1,
+            mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
+        };
+
+        SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_COUNT, msg);
+    }
+
+    // Call this inside your MAVLink message parser loop
+    private void HandleMissionRequest(MAVLink.mavlink_mission_request_int_t req)
+    {
+        if (req.seq < _uploadQueue.Count)
+        {
+            var wp = _uploadQueue[req.seq];
+            var item = new MAVLink.mavlink_mission_item_int_t
+            {
+                seq = (ushort)req.seq,
+                target_system = 1,
+                target_component = 1,
+                command = (ushort)MAVLink.MAV_CMD.WAYPOINT,
+                frame = (byte)MAVLink.MAV_FRAME.GLOBAL_RELATIVE_ALT,
+                x = (int)(wp.Lat * 1e7), // Scaled to 7 decimal places for MAVLink
+                y = (int)(wp.Lng * 1e7),
+                z = (float)wp.Alt,
+                autocontinue = 1
+            };
+
+            SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_ITEM_INT, item);
+        }
+    }
+
+
+    // 3. Helper to send Parameters (CRITICAL for Setup Tab)
+    public void SendParameter(string paramId, float value)
+    {
+        TryGetTarget(out var sysId, out var compId); //
+
+        var req = new MAVLink.mavlink_param_set_t
+        {
+            target_system = sysId,
+            target_component = compId,
+            param_value = value,
+            param_type = (byte)MAVLink.MAV_PARAM_TYPE.REAL32
+        };
+
+        // Correctly format the 16-character parameter ID
+        byte[] temp = System.Text.Encoding.ASCII.GetBytes(paramId);
+        req.param_id = new byte[16];
+        Array.Copy(temp, req.param_id, Math.Min(temp.Length, 16));
+
+        var buffer = _parser.GenerateMAVLinkPacket20(MAVLink.MAVLINK_MSG_ID.PARAM_SET, req); //
+        SendBuffer(buffer); //
+    }
+
+    private static string GetFlightModeString(uint customMode)
+    {
+        return customMode switch
+        {
+            0 => "STABILIZE",
+            2 => "ALT_HOLD",
+            3 => "AUTO",
+            4 => "GUIDED",
+            5 => "LOITER",
+            6 => "RTL",
+            9 => "LAND",
+            _ => "Unknown"
+        };
+    }
     public void SendCommand(MAVLink.MAV_CMD command, float p1, float p2, float p3, float p4, float p5, float p6, float p7)
     {
         if (_serialPort == null || !_serialPort.IsOpen) return;
+
+        if (!TryGetTarget(out byte sysId, out byte compId))
+        {
+            // Fallback to default broadcast IDs if no vehicle is identified yet
+            sysId = 1;
+            compId = 1;
+        }
 
         var cmd = new MAVLink.mavlink_command_long_t
         {
@@ -645,12 +838,12 @@ public class MavlinkService : BackgroundService
             param5 = p5,
             param6 = p6,
             param7 = p7,
-            target_system = 1,    // Standard Drone System ID
-            target_component = 0, // Target all components
+            target_system = sysId,    // Standard Drone System ID
+            target_component = compId, // Target all components
             confirmation = 0
         };
 
-        var packet = _parser.GenerateMAVLinkPacket10(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
+        var packet = _parser.GenerateMAVLinkPacket20(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
 
         // Send the packet safely
         lock (_sendLock) // Ensure thread safety if you have a lock object, otherwise just send
@@ -674,8 +867,112 @@ public class MavlinkService : BackgroundService
             1, // 1 = Force Change to Guided Mode
             0,
             0,
-            (int)(lat * 10000000), // Lat
-            (int)(lon * 10000000), // Lon
+            (float)lat, // Lat
+            (float)lon, // Lon
             alt); // Alt (meters)
+    }
+
+    private void CheckLinkHealth()
+    {
+        if (_shouldBeConnected && _gotFirstHeartbeatThisSession)
+        {
+            var timeSinceLast = (DateTime.UtcNow - State.LastHeartbeat).TotalSeconds;
+
+            if (timeSinceLast > 3.0) // 3-second timeout threshold [cite: 151, 170]
+            {
+                if (!_wasAlerting)
+                {
+                    _wasAlerting = true;
+                    ReportConn("CRITICAL: LINK LOST"); // Updates the status text [cite: 228-229]
+                    ShowConnDialog(true); // Pops the window back up [cite: 218, 221]
+                }
+            }
+            else
+            {
+                if (_wasAlerting)
+                {
+                    _wasAlerting = false;
+                    ShowConnDialog(false); // Auto-close if link recovers
+                }
+            }
+        }
+    }
+
+    public async Task<bool> UploadMissionAsync(dynamic items)
+    {
+        try
+        {
+            var count = new MAVLink.mavlink_mission_count_t();
+            count.target_system = target_sysid;
+            count.target_component = target_compid;
+            count.count = (ushort)items.Count;
+            count.mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION;
+
+            SendPacket(count);
+
+            for (ushort i = 0; i < items.Count; i++)
+            {
+                var wp = items[i];
+                var msg = new MAVLink.mavlink_mission_item_int_t();
+
+                msg.target_system = target_sysid;
+                msg.target_component = target_compid;
+                msg.seq = i;
+                msg.frame = (byte)MAVLink.MAV_FRAME.GLOBAL_RELATIVE_ALT_INT;
+                msg.command = (ushort)TranslateCommand(wp.Command);
+                msg.current = (byte)(i == 0 ? 1 : 0);
+                msg.autocontinue = 1;
+
+                msg.x = (int)(wp.Lat * 10000000);
+                msg.y = (int)(wp.Lng * 10000000);
+                msg.z = (float)wp.Alt;
+                msg.mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION;
+
+                SendPacket(msg);
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private MAVLink.MAV_CMD TranslateCommand(string cmd)
+    {
+        return cmd.ToUpper() switch
+        {
+            "TAKEOFF" => MAVLink.MAV_CMD.TAKEOFF,
+            "LAND" => MAVLink.MAV_CMD.LAND,
+            "RTL" => MAVLink.MAV_CMD.RETURN_TO_LAUNCH,
+            _ => MAVLink.MAV_CMD.WAYPOINT
+        };
+    }
+
+    // --- Placeholder Methods for your specific Serial/UDP implementation ---
+    private void SendPacket<T>(T packet, MAVLINK_MSG_ID msgId) { /* Your byte serialization/writing logic */ }
+    private Task<T?> WaitForMessageAsync<T>(MAVLINK_MSG_ID msgId, int timeoutMs) { /* Your listener logic */ return Task.FromResult(default(T)); }
+    // Inside MavlinkService.cs
+    public void SetFrameConfig(int frameType, int frameClass)
+    {
+        // FRAME_TYPE and FRAME_CLASS are standard ArduPilot parameters
+        SendParameter("FRAME_TYPE", frameType);
+        SendParameter("FRAME_CLASS", frameClass);
+    }
+
+    public void StartCalibration(string type)
+    {
+        switch (type.ToUpper())
+        {
+            case "ACCEL":
+                // MAV_CMD_ACCELCAL_VEHICLE_POS triggers the 6-axis routine
+                SendCommand(MAVLink.MAV_CMD.ACCELCAL_VEHICLE_POS, 0, 0, 0, 0, 0, 0, 0);
+                break;
+            case "RADIO":
+                // Triggers the RC calibration mode
+                SendCommand((MAVLink.MAV_CMD)210, 1, 0, 0, 0, 0, 0, 0);
+                break;
+            case "ESC":
+                // High safety command; requires specific sequence
+                SendCommand(MAVLink.MAV_CMD.PREFLIGHT_CALIBRATION, 0, 0, 0, 0, 1, 0, 0);
+                break;
+        }
     }
 }

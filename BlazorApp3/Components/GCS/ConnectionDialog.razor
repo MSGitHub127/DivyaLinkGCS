@@ -6,6 +6,11 @@
     <div class="conn-overlay">
         <div class="conn-box @(_isError ? "error-box" : "")">
 
+            @if (_isLinkLost)
+            {
+                <div class="icon-area error-anim">📡❌</div>
+                <div class="conn-title text-red">LINK DISCONNECTED</div>
+            }
             @if (_isError)
             {
                 <div class="icon-area error-anim">⚠️</div>
@@ -151,7 +156,12 @@
         color: white;
     }
 
-    /* Keyframes */
+    .hud-container.link-dead {
+        border: 3px solid #ff3a3a;
+        animation: flash-red 1s infinite;
+    } 
+
+    /* Fix for Line 164 (and others) in ConnectionDialog.razor */
     @@keyframes spin {
         100% {
             transform: rotate(360deg);
@@ -177,6 +187,24 @@
             transform: scale(1);
         }
     }
+
+    /* If you added the HUD flash alert, do the same there: */
+    @@keyframes flash-red {
+        0% {
+            opacity: 1;
+            border-color: rgba(255, 58, 58, 1);
+        }
+
+        50% {
+            opacity: 0.5;
+            border-color: rgba(255, 58, 58, 0.2);
+        }
+
+        100% {
+            opacity: 1;
+            border-color: rgba(255, 58, 58, 1);
+        }
+    }
 </style>
 
 @code {
@@ -184,6 +212,7 @@
     private bool _isError = false;
     private bool _heartbeatReceived = false;
     private bool _userCancelled = false;
+    private bool _isLinkLost = false;
 
     private string _statusMessage = "Initializing...";
 
