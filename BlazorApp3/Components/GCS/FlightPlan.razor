@@ -1,8 +1,9 @@
 ﻿@page "/flightplan"
+@using BlazorApp3
+@using System.Text.Json
 @inject MavlinkService Drone
 @inject IJSRuntime JS
 @implements IDisposable
-@using System.Text.Json
 
 <InputFile id="importFile" OnChange="HandleImport" style="display:none" accept=".json" />
 
