@@ -164,12 +164,12 @@
     }
 
     .gcs-drawer.open {
-        left: 0; /* Slide in */
-    }
+            left: 0; /* Slide in */
+        }
 
     .drawer-content {
         min-width: 480px;
-        padding: 10px; /* Slight padding so the X doesn't cover text immediately */
+        padding: 0; /* Slight padding so the X doesn't cover text immediately */
         box-sizing: border-box;
     }
 
@@ -186,11 +186,11 @@
 
         /* Title Styling */
     .drawer-header span {
-        font-size: 1.1rem;
-        font-weight: bold;
-        color: white;
-        letter-spacing: 1px;
-    }
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: white;
+            letter-spacing: 1px;
+        }
 
     .close-overlay {
         position: absolute; /* Floats over content */
@@ -210,9 +210,9 @@
 
         /* Hover Effect */
     .close-overlay:hover {
-        color: #ff3a3a; /* Bright red on hover */
-        transform: scale(1.2);
-    }
+            color: #ff3a3a; /* Bright red on hover */
+            transform: scale(1.2);
+        }
     /* HEADER STYLING */
     .header {
         height: 60px;
@@ -391,23 +391,23 @@
     }
 
     .nav-btn i.cyan {
-        color: var(--cyan);
-        font-style: normal;
-        margin-bottom: 5px;
-    }
+            color: var(--cyan);
+            font-style: normal;
+            margin-bottom: 5px;
+        }
 
     .nav-btn span {
-        font-size: 0.75rem;
-    }
+            font-size: 0.75rem;
+        }
 
     .nav-btn.active {
-        background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
-        border: none;
-    }
+            background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
+            border: none;
+        }
 
     .nav-btn.active i {
-        color: white;
-    }
+                color: white;
+            }
 </style>
 
 @code {
@@ -462,7 +462,7 @@
                         selectedPort = "";
 
                         // Force button to update to "CONNECT" instantly
-                        StateHasChanged();
+                        // StateHasChanged();
                     }
                 }
 
@@ -476,9 +476,8 @@
                     {
                         selectedPort = "";
                     }
-
-                    StateHasChanged();
                 }
+                StateHasChanged();
             });
         }
         catch { /* Ignore scanning errors */ }
