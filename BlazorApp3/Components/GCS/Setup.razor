@@ -4,10 +4,8 @@
 @implements IDisposable
 
 <div class="gcs-setup-container">
-    <div class="setup-header">
-        <div class="hud-frame">
-            <Hud />
-        </div>
+    <div class="hud-wrapper">
+        <Hud/>
     </div>
 
     <div class="setup-list">
@@ -44,7 +42,9 @@
             <div class="module-header">
                 <i class="bi bi-compass"></i>
                 <span>SENSORS & IMU</span>
-                <button class="btn-gcs-outline" @onclick='() => StartCal("ACCEL")'>START CALIBRATION</button>
+                <button class="btn-gcs-outline" @onclick="HandleAccelClick">
+                    @(isAccelCalibrating ? "NEXT STEP" : "START CALIBRATION")
+                </button>
             </div>
             <div class="module-content">
                 <div class="status-box-pro @(isAccelCalibrating ? "active-cal" : "")">
@@ -67,7 +67,9 @@
             <div class="module-header">
                 <i class="bi bi-controller"></i>
                 <span>RADIO CHANNELS (RC)</span>
-                <button class="btn-gcs-outline" @onclick='() => StartCal("RADIO")'>CALIBRATE RC</button>
+                <button class="btn-gcs-outline" @onclick="HandleRcClick">
+                    @(Drone.IsRcCalibrating ? "SAVE RC CAL" : "CALIBRATE RC")
+                </button>
             </div>
             <div class="module-content radio-layout">
                 @for (int i = 0; i < 4; i++)
@@ -113,25 +115,47 @@
         <div class="setup-module border-amber">
             <div class="module-header warning">
                 <i class="bi bi-propeller"></i>
-                <span>MOTOR DIRECTION TEST</span>
+                <span>MOTOR TEST</span>
             </div>
             <div class="module-content">
-                <div class="warning-banner">
-                    <i class="bi bi-exclamation-triangle"></i> REMOVE PROPS BEFORE TESTING
+
+                <div class="mp-top-row">
+                    <div class="mp-input-group">
+                        <label>Throttle %</label>
+                        <input type="number" class="mp-input" @bind="motorTestThrottle" min="0" max="100" />
+                    </div>
+                    <div class="mp-input-group">
+                        <label>Duration (s)</label>
+                        <input type="number" class="mp-input" @bind="motorTestDuration" min="1" max="15" />
+                    </div>
                 </div>
-                <div class="motor-grid">
-                    @for (int m = 1; m <= 4; m++)
-                    {
-                        var motorId = m;
-                        <button class="btn-motor"
-                                @onmousedown="() => StartMotor(motorId)"
-                                @onmouseup="StopMotor"
-                                @onmouseleave="StopMotor">
-                            M @motorId
-                        </button>
-                    }
+
+                <div class="mp-info-row">
+                    <span>Class: @currentType</span>
+                    <span>Type: @currentClass</span>
                 </div>
-                <div class="footer-hint">HOLD BUTTON TO SPIN (5% PWR)</div>
+
+                <div class="mp-motor-grid">
+                    <button class="btn-mp" @onclick="() => RunMotorTest(1)">Test motor A</button>
+                    <span class="mp-label">Motor Number: 1, CCW</span>
+
+                    <button class="btn-mp" @onclick="() => RunMotorTest(4)">Test motor B</button>
+                    <span class="mp-label">Motor Number: 4, CW</span>
+
+                    <button class="btn-mp" @onclick="() => RunMotorTest(2)">Test motor C</button>
+                    <span class="mp-label">Motor Number: 2, CW</span>
+
+                    <button class="btn-mp" @onclick="() => RunMotorTest(3)">Test motor D</button>
+                    <span class="mp-label">Motor Number: 3, CCW</span>
+                </div>
+
+
+                <div class="mp-action-row">
+                    <button class="btn-mp" @onclick="TestAllMotors">Test All</button>
+                    <button class="btn-mp-stop" @onclick="StopAllMotors">Stop All</button>
+                    <button class="btn-mp" @onclick="TestSequence">Sequence</button>
+                </div>
+
             </div>
         </div>
 
@@ -199,27 +223,22 @@
         overflow: hidden;
     }
 
-    .setup-header {
-        height: 300px; /* Aligned with other tabs (was 320px) */
+    .hud-wrapper {
+        height: 300px;
         width: 100%;
-        flex-shrink: 0;
-    }
-
-    .hud-frame {
-        height: 100%;
-        width: 100%;
-        background: #000;
-        border: 1px solid var(--gcs-border);
-        border-radius: 8px; /* Aligned with other tabs (was 12px) */
-        box-shadow: 0 4px 20px rgba(0,0,0,0.4); /* Aligned with other tabs */
-        position: relative;
+        border-radius: 8px;
         overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        border: 1px solid var(--gcs-border);
+        flex-shrink: 0;
+        background: #000;
+        position: relative; /* Keeps your text overlays perfectly positioned */
     }
 
     .hud-overlay-text {
         position: absolute;
         top: 15px;
-        left: 20px;
+        left: 25px;
         font-size: 0.7rem;
         color: var(--gcs-cyan);
         letter-spacing: 2px;
@@ -408,6 +427,112 @@
         text-align: right;
     }
 
+    /* MISSION PLANNER MOTOR TEST CSS */
+    .mp-top-row {
+        display: flex;
+        gap: 20px;
+        align-items: center;
+    }
+
+    .mp-input-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .mp-input-group label {
+            font-size: 0.65rem;
+            color: #8b949e;
+            font-weight: 800;
+        }
+
+    .mp-input {
+        background: #010409;
+        color: var(--gcs-cyan);
+        border: 1px solid var(--gcs-border);
+        width: 50px;
+        padding: 4px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-weight: bold;
+        text-align: center;
+        outline: none;
+        transition: border 0.2s;
+    }
+
+    .mp-input:focus {
+            border-color: var(--gcs-cyan);
+        }
+
+    .mp-info-row {
+        display: flex;
+        gap: 30px;
+        font-size: 0.7rem;
+        color: var(--gcs-cyan);
+        margin: 5px 0 10px 0;
+        font-weight: 800;
+    }
+
+    .mp-motor-grid {
+        display: grid;
+        grid-template-columns: 120px 1fr; /* Locks buttons to 120px, text takes the rest */
+        gap: 10px 15px;
+        align-items: center;
+    }
+
+    .mp-label {
+        font-size: 0.7rem;
+        color: #c9d1d9;
+        font-family: monospace;
+    }
+
+    .mp-action-row {
+        display: flex;
+        gap: 10px;
+        margin-top: 15px;
+        border-top: 1px dashed var(--gcs-border);
+        padding-top: 15px;
+    }
+
+    .btn-mp {
+        background: #21262d;
+        border: 1px solid var(--gcs-border);
+        color: #c9d1d9;
+        padding: 6px 12px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: all 0.2s ease;
+        width: 100%;
+        text-align: center;
+    }
+
+    .btn-mp:hover {
+            background: #2ea043; /* Mission Planner Green Accent */
+            border-color: #3fb950;
+            color: white;
+        }
+
+    .btn-mp-stop {
+        background: #21262d;
+        border: 1px solid var(--gcs-border);
+        color: #ff3a3a; /* Danger Red for Stop */
+        padding: 6px 12px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: all 0.2s ease;
+        width: 100%;
+        text-align: center;
+    }
+
+    .btn-mp-stop:hover {
+            background: rgba(255, 58, 58, 0.15);
+            border-color: #ff3a3a;
+        }
+
     .motor-grid {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
@@ -533,7 +658,10 @@
     private string[] flightModeSettings = { "STABILIZE", "LOITER", "RTL" };
     private string lastAccelMsg = "SYSTEM STANDBY";
     private bool isAccelCalibrating = false;
-    private int _activeMotorId = 0;
+
+    // Mission Planner Motor Test Settings
+    private int motorTestThrottle = 5;
+    private int motorTestDuration = 2;
 
     protected override void OnInitialized()
     {
@@ -566,6 +694,32 @@
         InvokeAsync(StateHasChanged);
     }
 
+    private void HandleAccelClick()
+    {
+        if (isAccelCalibrating)
+        {
+            Drone.AckCalibrationStep();
+        }
+        else
+        {
+            isAccelCalibrating = true;
+            lastAccelMsg = "WAITING...";
+            Drone.StartCalibration("ACCEL");
+        }
+    }
+
+    private void HandleRcClick()
+    {
+        if (Drone.IsRcCalibrating)
+        {
+            Drone.SaveRcCalibration();
+        }
+        else
+        {
+            Drone.StartCalibration("RADIO");
+        }
+    }
+
     private async Task ApplyFrame()
     {
         Drone.SetFrameConfig(int.Parse(selectedFrameType), int.Parse(selectedFrameClass));
@@ -588,24 +742,39 @@
         escCalStatus = "REBOOT REQUIRED";
     }
 
-    private void StartCal(string type)
+    // --- MISSION PLANNER MOTOR TEST LOGIC ---
+    private void RunMotorTest(int motorId) 
     {
-        if (type == "ACCEL") { isAccelCalibrating = true; lastAccelMsg = "WAITING..."; }
-        Drone.StartCalibration(type);
+        Drone.TestMotor(motorId, motorTestThrottle, motorTestDuration);
     }
 
-    private void StartMotor(int id)
+    private void TestAllMotors() 
     {
-        _activeMotorId = id;
-        Drone.TestMotor(id, true);
-    }
-
-    private void StopMotor()
-    {
-        if (_activeMotorId > 0)
+        // Cycles through all 4 motors simultaneously 
+        for (int i = 1; i <= 4; i++) 
         {
-            Drone.TestMotor(_activeMotorId, false);
-            _activeMotorId = 0; // Reset after stopping
+            Drone.TestMotor(i, motorTestThrottle, motorTestDuration);
+        }
+    }
+
+    private void StopAllMotors() 
+    {
+        // Sends 0% throttle to abort immediately
+        for (int i = 1; i <= 4; i++) 
+        {
+            Drone.TestMotor(i, 0, 0);
+        }
+    }
+
+    private async Task TestSequence() 
+    {
+        // Tests in standard ArduPilot Quad X Order (A->B->C->D)
+        int[] sequence = { 1, 4, 2, 3 }; 
+        foreach(var motorId in sequence)
+        {
+            RunMotorTest(motorId);
+            // Waits for the current motor to finish its duration + a small 500ms gap before starting the next
+            await Task.Delay((motorTestDuration * 1000) + 500); 
         }
     }
 
