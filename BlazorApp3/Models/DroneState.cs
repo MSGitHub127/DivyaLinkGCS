@@ -45,10 +45,16 @@ public class DroneState
     // State
     public bool IsArmed { get; set; }
     public string FlightMode { get; set; } = "Unknown"; // Critical for your UI
+    public uint CustomMode { get; set; } = 0;
 
+    public int SatellitesVisible { get; set; } = 0;
+    public int GpsFixType { get; set; } = 0; // 0-1 = No Fix, 2 = 2D Fix, 3 = 3D Fix
     public int CpuLoad { get; set; } = 0;       // Drone CPU load in %
     public float ImuTemp { get; set; } = 0.0f;
     public ushort[] RawChannels { get; set; } = new ushort[8];
+    public bool IsRcConnected { get; set; } = false;
+
+
     public DroneState() { }
 
     // Copy ctor for atomic snapshots
@@ -90,5 +96,12 @@ public class DroneState
 
         // Flags
         IsArmed = other.IsArmed;
+
+        FlightMode = other.FlightMode;
+        CustomMode = other.CustomMode;
+
+        SatCount = other.SatCount;
+        SatellitesVisible = other.SatellitesVisible;
+        GpsFixType = other.GpsFixType;
     }
 }

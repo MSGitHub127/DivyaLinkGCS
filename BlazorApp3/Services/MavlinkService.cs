@@ -39,7 +39,10 @@ public class MavlinkService : BackgroundService
     private void ReportConn(string msg) => OnConnectionStatus?.Invoke(msg);
     private void ShowConnDialog(bool show) => OnConnectionDialog?.Invoke(show);
 
-
+    // --- CALIBRATION TRACKING ---
+    public bool IsRcCalibrating { get; private set; } = false;
+    public ushort[] RcMin { get; private set; } = new ushort[8];
+    public ushort[] RcMax { get; private set; } = new ushort[8];
     public byte TargetSysId { get; set; } = 1;
     public byte TargetCompId { get; set; } = 1;
     // --- UI telemetry push ---
@@ -99,6 +102,14 @@ public class MavlinkService : BackgroundService
     }
 
     public string[] GetAvailablePorts() => SerialPort.GetPortNames();
+
+    public string[] GetSafeStatusMessages()
+    {
+        lock (StatusMessages)
+        {
+            return StatusMessages.ToArray();
+        }
+    }
 
     public void ReportStatus(string msg)
     {
@@ -349,11 +360,14 @@ public class MavlinkService : BackgroundService
                     TryConfigureMessageIntervals();
                 }
 
+                if (packet.compid == (byte)MAVLink.MAV_COMPONENT.MAV_COMP_ID_AUTOPILOT1)
+                {
+                    s.CustomMode = hb.custom_mode;
+                    s.FlightMode = GetFlightModeString(hb.custom_mode);
+                }
+
                 var armed = (((MAVLink.MAV_MODE_FLAG)hb.base_mode) & MAVLink.MAV_MODE_FLAG.SAFETY_ARMED) != 0;
                 s.IsArmed = armed;
-
-                // Optional: if you want flight mode from heartbeat:
-                 s.FlightMode = GetFlightModeString(hb.custom_mode);
             });
 
             // FIRST HEARTBEAT = truly connected => CLOSE dialog
@@ -425,8 +439,15 @@ public class MavlinkService : BackgroundService
             var gps = (MAVLink.mavlink_gps_raw_int_t)packet.data;
             UpdateState(s =>
             {
-                if(gps.satellites_visible > 0)
-                    s.SatCount = gps.satellites_visible;
+                if (packet.compid == target_compid && gps.satellites_visible != 255)
+                { 
+                    if (gps.satellites_visible > 0 || gps.fix_type <= 1)
+                    {
+                        s.SatCount = gps.satellites_visible;
+                        s.SatellitesVisible = gps.satellites_visible;
+                    }
+                    s.GpsFixType = gps.fix_type;
+                }
             });
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS)
@@ -516,6 +537,15 @@ public class MavlinkService : BackgroundService
                 s.RawChannels[6] = rc.chan7_raw;
                 s.RawChannels[7] = rc.chan8_raw;
             });
+
+            if(IsRcCalibrating)
+            {
+                for(int i = 0; i < 8; i++)
+                {
+                    if (State.RawChannels[i] < RcMin[i] && State.RawChannels[i] > 800) RcMin[i] = State.RawChannels[i];
+                    if (State.RawChannels[i] > RcMax[i] && State.RawChannels[i] < 2200) RcMax[i] = State.RawChannels[i];
+                }
+            }
         }
         // Inside the HandlePacket method...
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST)
@@ -962,17 +992,50 @@ public class MavlinkService : BackgroundService
         switch (type.ToUpper())
         {
             case "ACCEL":
-                // MAV_CMD_ACCELCAL_VEHICLE_POS triggers the 6-axis routine
-                SendCommand(MAVLink.MAV_CMD.ACCELCAL_VEHICLE_POS, 0, 0, 0, 0, 0, 0, 0);
-                break;
-            case "RADIO":
-                // Triggers the RC calibration mode
-                SendCommand((MAVLink.MAV_CMD)210, 1, 0, 0, 0, 0, 0, 0);
-                break;
-            case "ESC":
-                // High safety command; requires specific sequence
+                // Param 5 = 1 starts the 6-axis Accel Cal
                 SendCommand(MAVLink.MAV_CMD.PREFLIGHT_CALIBRATION, 0, 0, 0, 0, 1, 0, 0);
                 break;
+            case "RADIO":
+                // Start internal C# tracking
+                IsRcCalibrating = true;
+                for (int i = 0; i < 8; i++) { RcMin[i] = 2200; RcMax[i] = 800; }
+                break;
         }
+    }
+
+    public void AckCalibrationStep()
+    {
+        // This tells the drone "I have moved the drone to the next position, proceed"
+        SendCommand(MAVLink.MAV_CMD.ACCELCAL_VEHICLE_POS, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    public void SaveRcCalibration()
+    {
+        IsRcCalibrating = false;
+        // Save the Max and Min for the 4 primary flight channels to the drone's memory
+        for (int i = 0; i < 4; i++)
+        {
+            SendParameter($"RC{i + 1}_MIN", RcMin[i]);
+            SendParameter($"RC{i + 1}_MAX", RcMax[i]);
+        }
+    }
+
+    public void SendArmRequest(bool arm, bool force = false)
+    {
+        if (!TryGetTarget(out var sysId, out var compId)) return;
+
+        var req = new MAVLink.mavlink_command_long_t
+        {
+            target_system = sysId,
+            target_component = compId,
+            command = (ushort)MAVLink.MAV_CMD.COMPONENT_ARM_DISARM,
+            // Param1: 1 to arm, 0 to disarm
+            param1 = arm ? 1 : 0,
+            // Param2: 21196 is the force-disarm magic number for ArduPilot
+            param2 = (!arm && force) ? 21196 : 0
+        };
+
+        var buffer = _parser.GenerateMAVLinkPacket20(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, req);
+        SendBuffer(buffer);
     }
 }

@@ -14,6 +14,18 @@
 
         <div class="command-scroll-area">
 
+            <div class="arm-action-area">
+                <button class="clean-arm-btn @(Drone.State.IsArmed ? "state-armed" : "state-disarmed")" @onclick="HandleArmClick">
+                    <div class="icon-box">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L3 7V11C3 16.55 6.84 21.74 12 23C17.16 21.74 21 16.55 21 11V7L12 2Z" />
+                            <path d="M12 7V15M9 11H15" stroke-linecap="round" />
+                        </svg>
+                    </div>
+                    <span class="btn-label">@(Drone.State.IsArmed ? "DISARM SYSTEM" : "ARM SYSTEM")</span>
+                </button>
+            </div>
+
             <div class="action-card">
                 <div class="card-header">
                     <span class="card-icon">🚀</span>
@@ -22,7 +34,7 @@
                 <div class="input-container">
                     <label>TARGET ALTITUDE (METERS)</label>
                     <div class="input-group">
-                        <input type="number" @bind="TakeoffAlt" step="0.5" min="1" class="cmd-input" />
+                        <input type="number" @bind="TakeoffAlt" step="1.0" min="1" class="cmd-input" />
                         <button class="btn btn-green @(CanTakeoff ? "" : "disabled")"
                                 @onclick="HandleTakeoff">
                             @(Drone.State.IsArmed ? "EXECUTE TAKEOFF" : "ARM REQUIRED")
@@ -34,7 +46,7 @@
 
             <div class="action-card">
                 <div class="card-header">
-                    <span class="card-icon">🏠</span>
+                    <span class="card-icon">🏠</span> 
                     <span class="card-title">Safe Return to Home</span>
                 </div>
                 <div class="input-container">
@@ -239,12 +251,58 @@
         background: #333;
         border-radius: 10px;
     }
+
+    .arm-action-area {
+        width: 100%;
+        margin-top: 5px;
+    }
+
+    .clean-arm-btn {
+        width: 100%;
+        height: 50px;
+        border: none;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        font-size: 0.9rem;
+        color: white;
+    }
+
+    .state-armed {
+        background: linear-gradient(90deg, #3a0d0d 0%, #ff3a3a 100%);
+        box-shadow: 0 4px 15px rgba(255, 58, 58, 0.2);
+    }
+
+    .state-disarmed {
+        background: linear-gradient(90deg, #0d3a1a 0%, #00ff66 100%);
+        box-shadow: 0 4px 15px rgba(0, 255, 102, 0.2);
+        color: #0b0c10; /* Dark text on bright green */
+    }
+
+    .clean-arm-btn:hover {
+        filter: brightness(1.1);
+        transform: translateY(-1px);
+    }
+
+    .icon-box svg {
+        width: 20px;
+        height: 20px;
+    }
 </style>
 
 @code {
     private float TakeoffAlt = 10.0f;
     private float RtlAlt = 30.0f;
     private bool CanTakeoff => Drone.State.IsArmed;
+
+    private void HandleArmClick() => Drone.SendArmRequest(!Drone.State.IsArmed);
 
     protected override void OnInitialized()
     {
@@ -263,6 +321,7 @@
         Console.WriteLine($"Command Sent: Takeoff to {TakeoffAlt}m");
     }
 
+
     private void HandleRTL()
     {
         // For professional ArduPilot/PX4 setups, we set the RTL_ALT parameter first
@@ -275,7 +334,7 @@
     private void HandleEmergencyDisarm()
     {
         // Second parameter 21196 is the "Force" magic number for ArduPilot disarm
-        Drone.SendArmRequest(false);
+        Drone.SendArmRequest(false, true);
     }
 
     public void Dispose()

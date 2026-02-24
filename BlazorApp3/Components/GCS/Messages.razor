@@ -24,7 +24,7 @@
             else
             {
                 <div class="log-list">
-                    @foreach (var msg in Drone.StatusMessages)
+                    @foreach (var msg in Drone.GetSafeStatusMessages())
                     {
                         @* Logic to highlight Arming/PreArm failures in Red *@
                         <div class="log-entry @(msg.Contains("Arm") ? "critical-log" : "")">
