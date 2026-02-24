@@ -93,7 +93,7 @@
         </div>
     </div>
 
-    <div class="arm-action-area">
+    @* <div class="arm-action-area">
         <button class="clean-arm-btn @(Drone.State.IsArmed ? "state-armed" : "state-disarmed")" @onclick="HandleArmClick">
             <div class="icon-box">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -103,7 +103,7 @@
             </div>
             <span class="btn-label">@(Drone.State.IsArmed ? "DISARM SYSTEM" : "ARM SYSTEM")</span>
         </button>
-    </div>
+    </div> *@
 </div>
 
 <style>
