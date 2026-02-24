@@ -776,6 +776,13 @@
         }
     }
 
+
+    private void StartMission()
+    {
+        if (isUploaded) Drone.SetFlightMode("AUTO");
+    }
+
+
     public async ValueTask DisposeAsync()
     {
         OnMissionChanged -= TriggerMapRedraw;
