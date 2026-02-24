@@ -1017,6 +1017,7 @@ public class MavlinkService : BackgroundService
         {
             SendParameter($"RC{i + 1}_MIN", RcMin[i]);
             SendParameter($"RC{i + 1}_MAX", RcMax[i]);
+            SendParameter($"RC{i + 1}_TRIM", State.RawChannels[i]);
         }
     }
 
@@ -1037,5 +1038,40 @@ public class MavlinkService : BackgroundService
 
         var buffer = _parser.GenerateMAVLinkPacket20(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, req);
         SendBuffer(buffer);
+    }
+
+    // --- MOTOR TESTING (MISSION PLANNER STYLE) ---
+    public void TestMotor(int motorIndex, float throttlePercent, float durationSec)
+    {
+        var cmd = new MAVLink.mavlink_command_long_t();
+
+        // Ensure we are targeting the correct drone and component
+        cmd.target_system = target_sysid;
+        cmd.target_component = target_compid;
+
+        // MAV_CMD_DO_MOTOR_TEST = 183
+        cmd.command = (ushort)MAVLink.MAV_CMD.DO_MOTOR_TEST;
+
+        // Param 1: Motor instance (1, 2, 3, 4...)
+        cmd.param1 = motorIndex;
+
+        // Param 2: Test type (0 = percent throttle, 1 = PWM, 2 = Pilot throttle)
+        cmd.param2 = 0;
+
+        // Param 3: Throttle value (%)
+        cmd.param3 = throttlePercent;
+
+        // Param 4: Timeout (seconds)
+        cmd.param4 = durationSec;
+
+        // Params 5, 6, 7 are unused for this command
+        cmd.param5 = 0;
+        cmd.param6 = 0;
+        cmd.param7 = 0;
+
+        // Generate and send the MAVLink packet
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
+
+        Console.WriteLine($"[MOTOR TEST] Commanded Motor {motorIndex} at {throttlePercent}% for {durationSec}s");
     }
 }
