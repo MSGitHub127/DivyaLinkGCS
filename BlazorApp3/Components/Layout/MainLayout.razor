@@ -34,9 +34,9 @@
                     else
                     {
                         <option value="" disabled selected="@(string.IsNullOrEmpty(selectedPort))">-- Select Port --</option>
-                        @foreach (var p in availablePorts)
+                        @foreach (var port in Drone.GetAvailablePorts())
                         {
-                            <option value="@p">@p</option>
+                            <option value="@port.PortId">@port.DisplayName</option>
                         }
                     }
                 </select>
@@ -47,9 +47,15 @@
             }
 
             <select class="gcs-input" @bind="selectedBaud">
-                <option value="57600">57600</option>
-                <option value="115200">115200</option>
-                <option value="14550">14550 (SITL)</option>
+                <option value="9600">9600 (Legacy)</option>
+                <option value="19200">19200</option>
+                <option value="38400">38400</option>
+                <option value="57600">57600 (SiK Telemetry Radio)</option>
+                <option value="115200">115200 (Direct USB Standard)</option>
+                <option value="230400">230400</option>
+                <option value="460800">460800</option>
+                <option value="921600">921600 (High-Speed ESP Bridge)</option>
+                <option value="1500000">1500000 (Advanced/Custom)</option>
             </select>
 
             <div class="v-divider"></div>
