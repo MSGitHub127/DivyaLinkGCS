@@ -42,18 +42,33 @@
             <div class="module-header">
                 <i class="bi bi-compass"></i>
                 <span>SENSORS & IMU</span>
-                <button class="btn-gcs-outline" @onclick="HandleAccelClick">
-                    @(isAccelCalibrating ? "NEXT STEP" : "START CALIBRATION")
-                </button>
+                <div style="margin-left: auto; display: flex; gap: 8px;">
+                    <button class="btn-gcs-outline" @onclick="HandleAccelClick">
+                        @(isAccelCalibrating ? "NEXT (ACCEL)" : "CAL ACCEL")
+                    </button>
+                    <button class="btn-gcs-outline" @onclick="HandleMagClick">
+                        @(isMagCalibrating ? "CANCEL MAG" : "CAL COMPASS")
+                    </button>
+                </div>
             </div>
             <div class="module-content">
-                <div class="status-box-pro @(isAccelCalibrating ? "active-cal" : "")">
-                    <div class="status-label">@(isAccelCalibrating ? "ACTION REQUIRED" : "SYSTEM STANDBY")</div>
-                    <div class="status-value">@lastAccelMsg</div>
-                    @if (isAccelCalibrating)
-                    {
-                        <div class="cal-pulse"></div>
-                    }
+                <div class="dual-status-grid">
+                    <div class="status-box-pro @(isAccelCalibrating ? "active-cal" : "")">
+                        <div class="status-label">ACCELEROMETER</div>
+                        <div class="status-value">@lastAccelMsg</div>
+                        @if (isAccelCalibrating)
+                        {
+                            <div class="cal-pulse"></div>
+                        }
+                    </div>
+                    <div class="status-box-pro @(isMagCalibrating ? "active-cal" : "")">
+                        <div class="status-label">COMPASS (MAG)</div>
+                        <div class="status-value">@lastMagMsg</div>
+                        @if (isMagCalibrating)
+                        {
+                            <div class="cal-pulse"></div>
+                        }
+                    </div>
                 </div>
                 <div class="compass-mini-grid">
                     <div class="axis">ROLL: <span class="val">@Drone.State.Roll.ToString("0.0")°</span></div>
@@ -645,6 +660,12 @@
         color: var(--gcs-cyan);
         font-weight: 800;
     }
+
+    .dual-status-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+    }
 </style>
 
 @code {
@@ -658,6 +679,8 @@
     private string[] flightModeSettings = { "STABILIZE", "LOITER", "RTL" };
     private string lastAccelMsg = "SYSTEM STANDBY";
     private bool isAccelCalibrating = false;
+    private bool isMagCalibrating = false;
+    private string lastMagMsg = "STANDBY";
 
     // Mission Planner Motor Test Settings
     private int motorTestThrottle = 5;
@@ -676,21 +699,31 @@
         var msg = Drone.StatusMessages.FirstOrDefault();
         if (string.IsNullOrEmpty(msg)) return;
 
-        if (msg.Contains("Place vehicle", StringComparison.OrdinalIgnoreCase))
+        string upperMsg = msg.ToUpper();
+
+        // 1. Route Compass (Mag) Messages
+        if (upperMsg.Contains("MAG") || upperMsg.Contains("COMPASS"))
         {
-            lastAccelMsg = msg.ToUpper();
+            // Truncate long progress messages so they fit in the UI box
+            lastMagMsg = upperMsg.Length > 20 ? upperMsg.Substring(0, 20) + "..." : upperMsg;
+
+            if (upperMsg.Contains("SUCCESS") || upperMsg.Contains("FAIL") || upperMsg.Contains("DONE"))
+                isMagCalibrating = false;
+            else
+                isMagCalibrating = true;
+        }
+        // 2. Route Accel Messages
+        else if (upperMsg.Contains("PLACE VEHICLE") || upperMsg.Contains("ACCEL"))
+        {
+            lastAccelMsg = upperMsg.Contains("LEVEL") ? "PLACE LEVEL" : upperMsg;
             isAccelCalibrating = true;
         }
-        else if (msg.Contains("Successful", StringComparison.OrdinalIgnoreCase))
+        else if (isAccelCalibrating && (upperMsg.Contains("SUCCESS") || upperMsg.Contains("FAIL")))
         {
-            lastAccelMsg = "SUCCESS";
+            lastAccelMsg = upperMsg.Contains("SUCCESS") ? "SUCCESS" : "FAILED";
             isAccelCalibrating = false;
         }
-        else if (msg.Contains("Failed", StringComparison.OrdinalIgnoreCase))
-        {
-            lastAccelMsg = "FAILED";
-            isAccelCalibrating = false;
-        }
+
         InvokeAsync(StateHasChanged);
     }
 
@@ -705,6 +738,22 @@
             isAccelCalibrating = true;
             lastAccelMsg = "WAITING...";
             Drone.StartCalibration("ACCEL");
+        }
+    }
+
+    private void HandleMagClick()
+    {
+        if (isMagCalibrating)
+        {
+            isMagCalibrating = false;
+            lastMagMsg = "CANCELLED";
+            Drone.StartCalibration("CANCEL_MAG");
+        }
+        else
+        {
+            isMagCalibrating = true;
+            lastMagMsg = "STARTING...";
+            Drone.StartCalibration("MAG");
         }
     }
 

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.JSInterop;
 using System.IO.Ports;
 using static MAVLink;
+using System.Management;
 
 public enum ConnectionType { Serial, UDP, TCP }
 
@@ -45,6 +46,11 @@ public class MavlinkService : BackgroundService
     public ushort[] RcMax { get; private set; } = new ushort[8];
     public byte TargetSysId { get; set; } = 1;
     public byte TargetCompId { get; set; } = 1;
+    public class PortProfile
+    {
+        public string PortId { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+    }
     // --- UI telemetry push ---
     public event Action? OnTelemetryUpdated;
 
@@ -101,7 +107,38 @@ public class MavlinkService : BackgroundService
         _logger = logger;
     }
 
-    public string[] GetAvailablePorts() => SerialPort.GetPortNames();
+    public List<PortProfile> GetAvailablePorts()
+    {
+        var portProfiles = new List<PortProfile>();
+        string[] basicPorts = SerialPort.GetPortNames();
+
+        try
+        {
+            // Only ask Windows for hardware names if we are actually running on Windows
+            if (OperatingSystem.IsWindows())
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_PnPEntity WHERE Caption like '%(COM%'");
+                var hardwareList = searcher.Get().Cast<ManagementBaseObject>().ToList();
+
+                foreach (string port in basicPorts)
+                {
+                    // Find the hardware description that contains the (COM#)
+                    var match = hardwareList.FirstOrDefault(h => h["Caption"]?.ToString()?.Contains($"({port})") == true);
+                    string fullName = match?["Caption"]?.ToString() ?? port;
+
+                    portProfiles.Add(new PortProfile { PortId = port, DisplayName = fullName });
+                }
+                return portProfiles;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to fetch full COM port names.");
+        }
+
+        // Fallback: If not on Windows or WMI fails, just return the basic COM names
+        return basicPorts.Select(p => new PortProfile { PortId = p, DisplayName = p }).ToList();
+    }
 
     public string[] GetSafeStatusMessages()
     {
@@ -987,22 +1024,6 @@ public class MavlinkService : BackgroundService
         SendParameter("FRAME_CLASS", frameClass);
     }
 
-    public void StartCalibration(string type)
-    {
-        switch (type.ToUpper())
-        {
-            case "ACCEL":
-                // Param 5 = 1 starts the 6-axis Accel Cal
-                SendCommand(MAVLink.MAV_CMD.PREFLIGHT_CALIBRATION, 0, 0, 0, 0, 1, 0, 0);
-                break;
-            case "RADIO":
-                // Start internal C# tracking
-                IsRcCalibrating = true;
-                for (int i = 0; i < 8; i++) { RcMin[i] = 2200; RcMax[i] = 800; }
-                break;
-        }
-    }
-
     public void AckCalibrationStep()
     {
         // This tells the drone "I have moved the drone to the next position, proceed"
@@ -1073,5 +1094,33 @@ public class MavlinkService : BackgroundService
         SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
 
         Console.WriteLine($"[MOTOR TEST] Commanded Motor {motorIndex} at {throttlePercent}% for {durationSec}s");
+    }
+
+    public void StartCalibration(string type)
+    {
+        switch (type.ToUpper())
+        {
+            case "ACCEL":
+                // Param 5 = 1 starts the 6-axis Accel Cal
+                SendCommand(MAVLink.MAV_CMD.PREFLIGHT_CALIBRATION, 0, 0, 0, 0, 1, 0, 0);
+                break;
+
+            case "MAG":
+                // MAV_CMD_DO_START_MAG_CAL = 424
+                // Params: (0=All compasses, 1=Retry on fail, 1=Autosave, 0=Delay, 1=Auto-accept)
+                SendCommand((MAVLink.MAV_CMD)424, 0, 1, 1, 0, 1, 0, 0);
+                break;
+
+            case "CANCEL_MAG":
+                // MAV_CMD_DO_CANCEL_MAG_CAL = 425
+                SendCommand((MAVLink.MAV_CMD)425, 0, 0, 0, 0, 0, 0, 0);
+                break;
+
+            case "RADIO":
+                // Start internal C# tracking
+                IsRcCalibrating = true;
+                for (int i = 0; i < 8; i++) { RcMin[i] = 2200; RcMax[i] = 800; }
+                break;
+        }
     }
 }

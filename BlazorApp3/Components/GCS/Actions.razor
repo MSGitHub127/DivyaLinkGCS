@@ -35,8 +35,7 @@
                     <label>TARGET ALTITUDE (METERS)</label>
                     <div class="input-group">
                         <input type="number" @bind="TakeoffAlt" step="1.0" min="1" class="cmd-input" />
-                        <button class="btn btn-green @(CanTakeoff ? "" : "disabled")"
-                                @onclick="HandleTakeoff">
+                        <button class="btn btn-green @(CanTakeoff ? "" : "disabled")" @onclick="HandleTakeoff">
                             @(Drone.State.IsArmed ? "EXECUTE TAKEOFF" : "ARM REQUIRED")
                         </button>
                     </div>
@@ -46,7 +45,7 @@
 
             <div class="action-card">
                 <div class="card-header">
-                    <span class="card-icon">🏠</span> 
+                    <span class="card-icon">🏠</span>
                     <span class="card-title">Safe Return to Home</span>
                 </div>
                 <div class="input-container">
@@ -60,7 +59,7 @@
             </div>
 
             <div class="emergency-section">
-                <div class="card-title" style="color: #ff3a3a; margin-bottom: 10px;">⚠️ CRITICAL OVERRIDES</div>
+                <div class="card-title" style="color: var(--gcs-red); margin-bottom: 10px;">⚠️ CRITICAL OVERRIDES</div>
                 <div class="emergency-grid">
                     <button class="btn btn-red" @onclick='() => Drone.SetFlightMode("LAND")'>LAND NOW</button>
                     <button class="btn btn-orange" @onclick="HandleEmergencyDisarm">EMERGENCY DISARM</button>
@@ -72,17 +71,29 @@
 </div>
 
 <style>
+    :root {
+        --gcs-bg: #0d1117;
+        --gcs-card: #161b22;
+        --gcs-border: #30363d;
+        --gcs-cyan: #58a6ff;
+        --gcs-amber: #d29922;
+        --gcs-text: #c9d1d9;
+        --gcs-green: #2ea043;
+        --gcs-red: #f85149;
+    }
+
     .actions-view-container {
         display: flex;
         flex-direction: column;
         height: 100%;
         gap: 16px;
         padding: 20px;
-        background: #0b0c10;
+        background: transparent;
         width: 100%;
         max-width: 500px;
         margin: 0 auto;
         overflow: hidden;
+        color: var(--gcs-text);
     }
 
     .hud-wrapper {
@@ -90,7 +101,8 @@
         width: 100%;
         border-radius: 8px;
         overflow: hidden;
-        border: 1px solid #242731;
+        border: 1px solid var(--gcs-border);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
         flex-shrink: 0;
         background: #000;
     }
@@ -101,18 +113,24 @@
         flex-direction: column;
         gap: 12px;
         min-height: 0;
+        background: rgba(18, 20, 28, 0.6);
+        border: 1px solid var(--gcs-border);
+        border-radius: 8px;
+        padding: 16px;
+        backdrop-filter: blur(4px);
     }
 
     .header-strip {
-        background: rgba(18, 20, 28, 0.8);
-        border: 1px solid rgba(0, 242, 255, 0.2);
-        padding: 10px;
-        border-radius: 6px;
-        color: #00f2ff;
-        font-weight: 800;
-        text-align: center;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--gcs-border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 900;
+        font-size: 0.85rem;
         text-transform: uppercase;
-        letter-spacing: 2px;
+        color: white;
+        letter-spacing: 1.5px;
     }
 
     .command-scroll-area {
@@ -125,16 +143,16 @@
     }
 
     .action-card {
-        background: #12141a;
-        border: 1px solid #242731;
+        background: #010409;
+        border: 1px solid var(--gcs-border);
         border-radius: 8px;
         padding: 16px;
         transition: border-color 0.2s;
     }
 
     .action-card:hover {
-        border-color: #2b58ff;
-    }
+            border-color: var(--gcs-cyan);
+        }
 
     .card-header {
         display: flex;
@@ -160,10 +178,11 @@
     }
 
     .input-container label {
-        font-size: 0.6rem;
-        color: #888;
-        font-weight: 800;
-    }
+            font-size: 0.6rem;
+            color: #8b949e;
+            font-weight: 800;
+            text-transform: uppercase;
+        }
 
     .input-group {
         display: flex;
@@ -172,15 +191,21 @@
 
     .cmd-input {
         width: 80px;
-        background: #08090b;
-        border: 1px solid #333;
-        color: #00f2ff;
+        background: #010409;
+        border: 1px solid var(--gcs-border);
+        color: var(--gcs-cyan);
         padding: 8px;
         border-radius: 4px;
-        font-family: 'Consolas', monospace;
+        font-family: monospace;
+        font-weight: bold;
         font-size: 1.1rem;
         text-align: center;
+        outline: none;
     }
+
+    .cmd-input:focus {
+            border-color: var(--gcs-cyan);
+        }
 
     .btn {
         flex: 1;
@@ -191,7 +216,7 @@
         cursor: pointer;
         text-transform: uppercase;
         font-size: 0.75rem;
-        transition: opacity 0.2s;
+        transition: filter 0.2s;
     }
 
     .btn:hover {
@@ -204,24 +229,26 @@
         }
 
     .btn-green {
-        background: #238636;
+        background: var(--gcs-green);
+        border: 1px solid #3fb950;
     }
 
     .btn-blue {
-        background: #2b58ff;
+        background: var(--gcs-cyan);
+        color: #000;
     }
 
     .btn-red {
-        background: #ff3a3a;
+        background: var(--gcs-red);
     }
 
     .btn-orange {
-        background: #ff9800;
+        background: var(--gcs-amber);
     }
 
     .card-hint {
         font-size: 0.65rem;
-        color: #555;
+        color: #8b949e;
         margin-top: 8px;
         font-style: italic;
     }
@@ -229,7 +256,7 @@
     .emergency-section {
         margin-top: 10px;
         padding-top: 15px;
-        border-top: 1px dashed #333;
+        border-top: 1px dashed var(--gcs-border);
     }
 
     .emergency-grid {
@@ -239,8 +266,8 @@
     }
 
     .emergency-grid .btn {
-        height: 45px;
-    }
+            height: 45px;
+        }
 
     /* Custom Scrollbar */
     .command-scroll-area::-webkit-scrollbar {
@@ -248,7 +275,7 @@
     }
 
     .command-scroll-area::-webkit-scrollbar-thumb {
-        background: #333;
+        background: var(--gcs-border);
         border-radius: 10px;
     }
 
@@ -276,14 +303,14 @@
     }
 
     .state-armed {
-        background: linear-gradient(90deg, #3a0d0d 0%, #ff3a3a 100%);
-        box-shadow: 0 4px 15px rgba(255, 58, 58, 0.2);
+        background: linear-gradient(90deg, #3a0d0d 0%, var(--gcs-red) 100%);
+        box-shadow: 0 4px 15px rgba(248, 81, 73, 0.2);
     }
 
     .state-disarmed {
-        background: linear-gradient(90deg, #0d3a1a 0%, #00ff66 100%);
-        box-shadow: 0 4px 15px rgba(0, 255, 102, 0.2);
-        color: #0b0c10; /* Dark text on bright green */
+        background: linear-gradient(90deg, #0d3a1a 0%, var(--gcs-green) 100%);
+        box-shadow: 0 4px 15px rgba(46, 160, 67, 0.2);
+        color: #fff;
     }
 
     .clean-arm-btn:hover {
@@ -315,18 +342,21 @@
     {
         if (!CanTakeoff) return;
 
-        // MAV_CMD_NAV_TAKEOFF
-        // p7 is altitude in meters
+        // 1. Drones usually need to be in GUIDED mode to accept software takeoff commands
+        Drone.SetFlightMode("GUIDED");
+
+        // 2. MAV_CMD_NAV_TAKEOFF (Enum 22). Param 7 is altitude in meters.
         Drone.SendCommand(MAVLink.MAV_CMD.TAKEOFF, 0, 0, 0, 0, 0, 0, TakeoffAlt);
+
         Console.WriteLine($"Command Sent: Takeoff to {TakeoffAlt}m");
     }
 
-
     private void HandleRTL()
     {
-        // For professional ArduPilot/PX4 setups, we set the RTL_ALT parameter first
-        // If your MavlinkService has SendParameter implemented, use it here.
-        // For now, we trigger the mode change.
+        // Set RTL_ALT parameter (ArduPilot reads this in Centimeters, not Meters!)
+        Drone.SendParameter("RTL_ALT", RtlAlt * 100.0f);
+
+        // Trigger RTL Mode
         Drone.SetFlightMode("RTL");
         Console.WriteLine($"Command Sent: RTL with target clearance of {RtlAlt}m");
     }
