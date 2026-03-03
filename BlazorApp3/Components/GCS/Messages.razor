@@ -163,7 +163,8 @@
         Drone.OnMessageReceived += RefreshUi;
     }
 
-    private void RefreshUi() => InvokeAsync(StateHasChanged);
+    // THE FIX: Add 'string msg' here so it matches the new event signature
+    private void RefreshUi(string msg) => InvokeAsync(StateHasChanged);
 
     private void ClearLogs()
     {

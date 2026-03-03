@@ -44,27 +44,38 @@
                 <span>SENSORS & IMU</span>
                 <div style="margin-left: auto; display: flex; gap: 8px;">
                     <button class="btn-gcs-outline" @onclick="HandleAccelClick">
-                        @(isAccelCalibrating ? "NEXT (ACCEL)" : "CAL ACCEL")
+                        @(Drone.LiveAccelProgress > 0 && Drone.LiveAccelProgress < 100 ? "NEXT (ACCEL)" : "CAL ACCEL")
                     </button>
                     <button class="btn-gcs-outline" @onclick="HandleMagClick">
-                        @(isMagCalibrating ? "CANCEL MAG" : "CAL COMPASS")
+                        @(Drone.LiveMagStatus == "CALIBRATING..." || Drone.LiveMagStatus == "STARTING..." ? "CANCEL MAG" : "CAL COMPASS")
                     </button>
                 </div>
             </div>
             <div class="module-content">
                 <div class="dual-status-grid">
-                    <div class="status-box-pro @(isAccelCalibrating ? "active-cal" : "")">
+                    <div class="status-box-pro @(Drone.LiveAccelProgress > 0 && Drone.LiveAccelProgress < 100 ? "active-cal" : "")">
                         <div class="status-label">ACCELEROMETER</div>
-                        <div class="status-value">@lastAccelMsg</div>
-                        @if (isAccelCalibrating)
+                        <div class="status-value">@Drone.LiveAccelStatus</div>
+                        <div class="cal-progress-bg" style="visibility: @(Drone.LiveAccelProgress > 0 ? "visible" : "hidden")">
+                            <div class="cal-progress-fill" style="width: @(Drone.LiveAccelProgress)%"></div>
+                        </div>
+                        @if (Drone.LiveAccelProgress > 0 && Drone.LiveAccelProgress < 100)
                         {
                             <div class="cal-pulse"></div>
                         }
                     </div>
-                    <div class="status-box-pro @(isMagCalibrating ? "active-cal" : "")">
+
+                    <div class="status-box-pro @(Drone.LiveMagStatus == "CALIBRATING..." || Drone.LiveMagStatus == "STARTING..." ? "active-cal" : "")">
                         <div class="status-label">COMPASS (MAG)</div>
-                        <div class="status-value">@lastMagMsg</div>
-                        @if (isMagCalibrating)
+                        <div class="status-value">
+                            @(Drone.LiveMagStatus == "CALIBRATING..." ? $"{Drone.LiveMagProgress}%" : Drone.LiveMagStatus)
+                        </div>
+
+                        <div class="cal-progress-bg" style="visibility: @(Drone.LiveMagStatus == "STARTING..." || Drone.LiveMagStatus == "CALIBRATING..." || Drone.LiveMagProgress > 0 ? "visible" : "hidden")">
+                            <div class="cal-progress-fill" style="width: @(Drone.LiveMagProgress)%"></div>
+                        </div>
+
+                        @if (Drone.LiveMagStatus == "CALIBRATING..." || Drone.LiveMagStatus == "STARTING...")
                         {
                             <div class="cal-pulse"></div>
                         }
@@ -130,47 +141,40 @@
         <div class="setup-module border-amber">
             <div class="module-header warning">
                 <i class="bi bi-propeller"></i>
-                <span>MOTOR TEST</span>
+                <span>MOTOR TEST (@Drone.State.MotorCount MOTORS DETECTED)</span>
             </div>
             <div class="module-content">
-
                 <div class="mp-top-row">
                     <div class="mp-input-group">
-                        <label>Throttle %</label>
+                        <label>THROTTLE %</label>
                         <input type="number" class="mp-input" @bind="motorTestThrottle" min="0" max="100" />
                     </div>
                     <div class="mp-input-group">
-                        <label>Duration (s)</label>
+                        <label>DURATION (S)</label>
                         <input type="number" class="mp-input" @bind="motorTestDuration" min="1" max="15" />
+                    </div>
+                    <div class="mp-info-row" style="margin-left: auto;">
+                        <span>FRAME: @currentType</span>
                     </div>
                 </div>
 
-                <div class="mp-info-row">
-                    <span>Class: @currentType</span>
-                    <span>Type: @currentClass</span>
+                <div class="motor-grid">
+                    @for (int i = 1; i <= Drone.State.MotorCount; i++)
+                    {
+                        int motorId = i;
+                        <button class="btn-motor" @onclick="() => Drone.TestMotor(motorId, motorTestThrottle, motorTestDuration)">
+                            MOTOR @motorId
+                        </button>
+                    }
                 </div>
-
-                <div class="mp-motor-grid">
-                    <button class="btn-mp" @onclick="() => RunMotorTest(1)">Test motor A</button>
-                    <span class="mp-label">Motor Number: 1, CCW</span>
-
-                    <button class="btn-mp" @onclick="() => RunMotorTest(4)">Test motor B</button>
-                    <span class="mp-label">Motor Number: 4, CW</span>
-
-                    <button class="btn-mp" @onclick="() => RunMotorTest(2)">Test motor C</button>
-                    <span class="mp-label">Motor Number: 2, CW</span>
-
-                    <button class="btn-mp" @onclick="() => RunMotorTest(3)">Test motor D</button>
-                    <span class="mp-label">Motor Number: 3, CCW</span>
-                </div>
-
 
                 <div class="mp-action-row">
-                    <button class="btn-mp" @onclick="TestAllMotors">Test All</button>
-                    <button class="btn-mp-stop" @onclick="StopAllMotors">Stop All</button>
-                    <button class="btn-mp" @onclick="TestSequence">Sequence</button>
+                    <button class="btn-mp" @onclick="() => Drone.TestAllMotors((float)motorTestThrottle, (float)motorTestDuration)">TEST ALL MOTORS</button>
+                    <button class="btn-mp" @onclick="() => Drone.TestMotorSequence((float)motorTestThrottle, (float)motorTestDuration)">RUN SEQUENCE</button>
+                    <button class="btn-mp-stop" @onclick="StopAllMotors">ABORT ALL</button>
                 </div>
 
+                <p class="footer-hint">CAUTION: PROPELLERS MUST BE REMOVED BEFORE TESTING</p>
             </div>
         </div>
 
@@ -207,6 +211,40 @@
                 <div class="fs-row">
                     <label class="input-label">LOW BATT ACTION</label>
                     <select class="gcs-select-sm" @bind="lowBattAction"><option value="1">RTL</option><option value="2">LAND</option></select>
+                </div>
+            </div>
+        </div>
+
+        <div class="setup-module">
+            <div class="module-header">
+                <i class="bi bi-battery-half"></i>
+                <span>BATTERY MONITOR</span>
+                <button class="btn-gcs-primary" @onclick="SaveBatterySettings">SAVE PARAMS</button>
+            </div>
+            <div class="module-content">
+                <div class="readout-row">
+                    <div class="readout">
+                        <label>LIVE VOLTAGE</label>
+                        <div class="value">@Drone.State.Voltage.ToString("0.00") V</div>
+                    </div>
+                    <div class="readout">
+                        <label>REMAINING</label>
+                        <div class="value">@Drone.State.BatteryPercent%</div>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label class="input-label">MONITOR TYPE</label>
+                    <select class="gcs-select" @bind="battMonitorType">
+                        <option value="0">0: DISABLED</option>
+                        <option value="3">3: ANALOG VOLTAGE ONLY</option>
+                        <option value="4">4: ANALOG VOLTAGE AND CURRENT</option>
+                        <option value="8">8: UAVCAN DIALOG</option>
+                        <option value="9">9: ESC TELEMETRY</option>
+                    </select>
+
+                    <label class="input-label" style="margin-top: 10px;">BATTERY CAPACITY (mAh)</label>
+                    <input type="number" class="gcs-select" @bind="battCapacity" min="0" step="100" />
                 </div>
             </div>
         </div>
@@ -656,6 +694,23 @@
         font-size: 0.7rem;
     }
 
+    .cal-progress-bg {
+        width: 100%;
+        height: 4px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 2px;
+        margin-top: 8px;
+        overflow: hidden;
+    }
+
+    .cal-progress-fill {
+        height: 100%;
+        background: var(--gcs-cyan);
+        width: 0%;
+        transition: width 0.3s ease-out;
+        box-shadow: 0 0 5px var(--gcs-cyan);
+    }
+
     .axis .val {
         color: var(--gcs-cyan);
         font-weight: 800;
@@ -665,6 +720,110 @@
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 10px;
+    }
+
+    .motor-grid {
+        display: grid;
+        /* Automatically fits as many buttons as possible in a row */
+        grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+        gap: 10px;
+        margin-bottom: 15px;
+    }
+
+    .btn-motor {
+        background: #161b22;
+        border: 1px solid var(--gcs-border);
+        color: var(--gcs-cyan);
+        padding: 10px;
+        border-radius: 4px;
+        font-weight: bold;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .btn-motor:hover {
+            background: var(--gcs-cyan);
+            color: #000;
+            border-color: #fff;
+        }
+
+    .status-box-pro {
+        display: flex;
+        flex-direction: column;
+        align-items: center; /* Horizontal Center */
+        justify-content: center; /* Vertical Center */
+        position: relative; /* Anchor for the pulse dot */
+        min-height: 80px;
+        text-align: center;
+        border: 1px solid var(--gcs-border);
+        border-radius: 8px;
+        background: #010409;
+    }
+
+    .cal-pulse {
+        position: absolute; /* Floats on top, won't push text */
+        top: 8px;
+        right: 8px;
+        width: 8px;
+        height: 8px;
+        background: #ff3a3a;
+        border-radius: 50%;
+        box-shadow: 0 0 8px #ff3a3a;
+    }
+
+    /* Ensures the Action Row (Test All, Sequence, Stop) sits at the bottom */
+    .mp-action-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px;
+        margin-top: 15px;
+        border-top: 1px dashed var(--gcs-border);
+        padding-top: 15px;
+    }
+
+    /* Standardizes the buttons for the action row */
+    .btn-mp, .btn-mp-stop {
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.65rem;
+        font-weight: 800;
+        border-radius: 4px;
+        cursor: pointer;
+        text-transform: uppercase;
+        transition: all 0.2s;
+    }
+
+    .btn-mp {
+        background: #21262d;
+        border: 1px solid var(--gcs-border);
+        color: var(--gcs-cyan);
+    }
+
+    .btn-mp:hover {
+            background: var(--gcs-cyan);
+            color: #000;
+        }
+
+    .btn-mp-stop {
+        background: rgba(255, 58, 58, 0.1);
+        border: 1px solid #ff3a3a;
+        color: #ff3a3a;
+    }
+
+    .btn-mp-stop:hover {
+            background: #ff3a3a;
+            color: white;
+        }
+
+    /* Centers text in the footer hint */
+    .footer-hint {
+        font-size: 0.55rem;
+        text-align: center;
+        color: #8b949e;
+        margin-top: 10px;
+        font-weight: 700;
     }
 </style>
 
@@ -677,96 +836,55 @@
     private string lowBattAction = "1";
     private string escCalStatus = "IDLE";
     private string[] flightModeSettings = { "STABILIZE", "LOITER", "RTL" };
-    private string lastAccelMsg = "SYSTEM STANDBY";
-    private bool isAccelCalibrating = false;
-    private bool isMagCalibrating = false;
-    private string lastMagMsg = "STANDBY";
-
+    // Battery Monitor Settings
+    private string battMonitorType = "4"; // Default to Voltage & Current
+    private int battCapacity = 3300;      // Default to a standard 3300mAh lipo
     // Mission Planner Motor Test Settings
     private int motorTestThrottle = 5;
     private int motorTestDuration = 2;
 
     protected override void OnInitialized()
     {
+        // Only refresh the UI on telemetry updates. No more string parsing needed!
         Drone.OnTelemetryUpdated += RefreshUi;
-        Drone.OnMessageReceived += HandleMavlinkMessage;
     }
 
     private void RefreshUi() => InvokeAsync(StateHasChanged);
 
-    private void HandleMavlinkMessage()
-    {
-        var msg = Drone.StatusMessages.FirstOrDefault();
-        if (string.IsNullOrEmpty(msg)) return;
-
-        string upperMsg = msg.ToUpper();
-
-        // 1. Route Compass (Mag) Messages
-        if (upperMsg.Contains("MAG") || upperMsg.Contains("COMPASS"))
-        {
-            // Truncate long progress messages so they fit in the UI box
-            lastMagMsg = upperMsg.Length > 20 ? upperMsg.Substring(0, 20) + "..." : upperMsg;
-
-            if (upperMsg.Contains("SUCCESS") || upperMsg.Contains("FAIL") || upperMsg.Contains("DONE"))
-                isMagCalibrating = false;
-            else
-                isMagCalibrating = true;
-        }
-        // 2. Route Accel Messages
-        else if (upperMsg.Contains("PLACE VEHICLE") || upperMsg.Contains("ACCEL"))
-        {
-            lastAccelMsg = upperMsg.Contains("LEVEL") ? "PLACE LEVEL" : upperMsg;
-            isAccelCalibrating = true;
-        }
-        else if (isAccelCalibrating && (upperMsg.Contains("SUCCESS") || upperMsg.Contains("FAIL")))
-        {
-            lastAccelMsg = upperMsg.Contains("SUCCESS") ? "SUCCESS" : "FAILED";
-            isAccelCalibrating = false;
-        }
-
-        InvokeAsync(StateHasChanged);
-    }
-
     private void HandleAccelClick()
     {
-        if (isAccelCalibrating)
+        if (Drone.LiveAccelProgress > 0 && Drone.LiveAccelProgress < 100)
         {
             Drone.AckCalibrationStep();
         }
         else
         {
-            isAccelCalibrating = true;
-            lastAccelMsg = "WAITING...";
+            Drone.LiveAccelProgress = 0;
+            Drone.LiveAccelStatus = "WAITING...";
             Drone.StartCalibration("ACCEL");
         }
     }
 
     private void HandleMagClick()
     {
-        if (isMagCalibrating)
+        if (Drone.LiveMagStatus == "CALIBRATING..." || Drone.LiveMagStatus == "STARTING...")
         {
-            isMagCalibrating = false;
-            lastMagMsg = "CANCELLED";
+            Drone.LiveMagStatus = "CANCELLED";
+            Drone.LiveMagProgress = 0;
             Drone.StartCalibration("CANCEL_MAG");
         }
         else
         {
-            isMagCalibrating = true;
-            lastMagMsg = "STARTING...";
+            Drone.LiveMagProgress = 0;
+            Drone.LiveMagStatus = "STARTING...";
             Drone.StartCalibration("MAG");
         }
     }
 
     private void HandleRcClick()
     {
-        if (Drone.IsRcCalibrating)
-        {
-            Drone.SaveRcCalibration();
-        }
-        else
-        {
-            Drone.StartCalibration("RADIO");
-        }
+        if (Drone.IsRcCalibrating) Drone.SaveRcCalibration();
+        else Drone.StartCalibration("RADIO");
     }
 
     private async Task ApplyFrame()
@@ -791,39 +909,12 @@
         escCalStatus = "REBOOT REQUIRED";
     }
 
-    // --- MISSION PLANNER MOTOR TEST LOGIC ---
-    private void RunMotorTest(int motorId) 
-    {
-        Drone.TestMotor(motorId, motorTestThrottle, motorTestDuration);
-    }
-
-    private void TestAllMotors() 
-    {
-        // Cycles through all 4 motors simultaneously 
-        for (int i = 1; i <= 4; i++) 
-        {
-            Drone.TestMotor(i, motorTestThrottle, motorTestDuration);
-        }
-    }
-
-    private void StopAllMotors() 
+    private void StopAllMotors()
     {
         // Sends 0% throttle to abort immediately
-        for (int i = 1; i <= 4; i++) 
+        for (int i = 1; i <= Drone.State.MotorCount; i++)
         {
             Drone.TestMotor(i, 0, 0);
-        }
-    }
-
-    private async Task TestSequence() 
-    {
-        // Tests in standard ArduPilot Quad X Order (A->B->C->D)
-        int[] sequence = { 1, 4, 2, 3 }; 
-        foreach(var motorId in sequence)
-        {
-            RunMotorTest(motorId);
-            // Waits for the current motor to finish its duration + a small 500ms gap before starting the next
-            await Task.Delay((motorTestDuration * 1000) + 500); 
         }
     }
 
@@ -835,9 +926,20 @@
 
     private double CalculatePercent(ushort raw) => Math.Clamp((raw - 1000) / 10.0, 0, 100);
 
+    private void SaveBatterySettings()
+    {
+        // 1. Send the monitor type (enables the physical pins on the flight controller)
+        Drone.SendParameter("BATT_MONITOR", float.Parse(battMonitorType));
+
+        // 2. Send the total capacity (allows the drone to calculate accurate remaining %)
+        Drone.SendParameter("BATT_CAPACITY", battCapacity);
+
+        // Optional: Force a UI refresh to show immediate changes if needed
+        InvokeAsync(StateHasChanged);
+    }
+
     public void Dispose()
     {
         Drone.OnTelemetryUpdated -= RefreshUi;
-        Drone.OnMessageReceived -= HandleMavlinkMessage;
     }
 }

@@ -16,16 +16,19 @@
                 <div class="mode-text" style="color: @GetModeColor(Drone.State.FlightMode);">
                     @(Drone.State.FlightMode == "Unknown" ? "--" : Drone.State.FlightMode)
                 </div>
-                <select class="slim-select" @onchange="ChangeMode">
-                    <option value="" disabled selected>CHANGE ▾</option>
-                    <option value="STABILIZE">STABILIZE</option>
-                    <option value="LOITER">LOITER</option>
-                    <option value="ALT_HOLD">ALT HOLD</option>
-                    <option value="RTL">RTL</option>
-                    <option value="LAND">LAND</option>
-                    <option value="AUTO">AUTO</option>
-                    <option value="GUIDED">GUIDED</option>
-                </select>
+                <div class="mode-action-row">
+                    <select class="slim-select" @bind="targetFlightMode">
+                        <option value="" disabled>CHANGE ▾</option>
+                        <option value="STABILIZE">STABILIZE</option>
+                        <option value="LOITER">LOITER</option>
+                        <option value="ALT_HOLD">ALT HOLD</option>
+                        <option value="RTL">RTL</option>
+                        <option value="LAND">LAND</option>
+                        <option value="AUTO">AUTO</option>
+                        <option value="GUIDED">GUIDED</option>
+                    </select>
+                    <button class="slim-btn" @onclick="ChangeFlightMode">SET</button>
+                </div>
             </div>
         </div>
 
@@ -216,28 +219,6 @@
         text-shadow: 0 0 10px rgba(0,0,0,0.5);
     }
 
-    .slim-select {
-        background: transparent;
-        color: #aaa;
-        border: 1px solid #444;
-        border-radius: 4px;
-        font-size: 0.7rem;
-        padding: 2px 8px;
-        cursor: pointer;
-        width: 90%;
-        text-align: center;
-        outline: none;
-    }
-
-    .slim-select:hover {
-            border-color: #00f2ff;
-            color: white;
-    }
-
-    .slim-select option {
-            background: #0b0c10;
-    }
-
     /* 6. CLEAN ARM BUTTON */
     .arm-action-area {
         width: 100%;
@@ -282,6 +263,60 @@
         width: 20px;
         height: 20px;
     }
+
+    .mode-action-row {
+        display: flex;
+        align-items: stretch; /* Forces the select and button to be identical heights */
+        justify-content: center;
+        gap: 6px; /* The space between the dropdown and button */
+        width: 100%;
+        margin-top: 8px;
+        height: 30px; /* Locks the row to exactly 30 pixels tall */
+    }
+
+    .slim-select {
+        flex: 1;
+        background: rgba(0, 0, 0, 0.5);
+        color: #aaa;
+        border: 1px solid #444;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        padding: 0 8px;
+        cursor: pointer;
+        outline: none;
+        height: 100%; /* Stretches to fill the 30px row */
+        box-sizing: border-box; /* Stops the border from making it taller than the button */
+    }
+
+    .slim-btn {
+        display: flex;
+        align-items: center; /* Centers the word "SET" vertically */
+        justify-content: center;
+        padding: 0 12px;
+        font-size: 0.75rem;
+        border-radius: 4px;
+        border: none;
+        background: #2b58ff;
+        color: white;
+        font-weight: bold;
+        cursor: pointer;
+        height: 100%; /* Stretches to fill the 30px row */
+        box-sizing: border-box;
+        transition: filter 0.2s;
+    }
+
+    .slim-select:hover {
+            border-color: #00f2ff;
+            color: white;
+        }
+
+    .slim-select option {
+            background: #0b0c10;
+        }
+
+    .slim-btn:hover {
+            filter: brightness(1.2);
+        }
 </style>
 
 @code {
@@ -292,4 +327,15 @@
     private void HandleArmClick() => Drone.SendArmRequest(!Drone.State.IsArmed);
     private void ChangeMode(ChangeEventArgs e) { if (e.Value is string s && !string.IsNullOrEmpty(s)) Drone.SetFlightMode(s); }
     private string GetModeColor(string mode) => mode.ToUpper() switch { "RTL" or "LAND" => "#ff3a3a", "LOITER" or "POSHOLD" => "#00ff00", "AUTO" or "GUIDED" => "#d946ef", "STABILIZE" or "ALT_HOLD" => "#ffcc00", "UNKNOWN" => "#666666", _ => "#00f2ff" };
+
+    private string targetFlightMode = "";
+    private void ChangeFlightMode()
+    {
+        if (!string.IsNullOrEmpty(targetFlightMode))
+        {
+            Drone.SetFlightMode(targetFlightMode);
+            Console.WriteLine($"[QUICK TAB] Sending Mode Change: {targetFlightMode}");
+            targetFlightMode = "";
+        }
+    }
 }

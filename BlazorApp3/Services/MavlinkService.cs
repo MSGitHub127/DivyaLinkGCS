@@ -1,10 +1,8 @@
-﻿using BlazorApp3.Components.GCS;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using System.IO.Ports;
-using static MAVLink;
 using System.Management;
+using static MAVLink;
 
 public enum ConnectionType { Serial, UDP, TCP }
 
@@ -24,7 +22,7 @@ public class MavlinkService : BackgroundService
     private int _baudRate = 115200;
 
     private bool _shouldBeConnected = false;
-
+     
     // --- Connection dialog events (USED BY ConnectionDialog.razor) ---
     public event Action<string>? OnConnectionStatus;
     public event Action<bool>? OnConnectionDialog;
@@ -35,10 +33,16 @@ public class MavlinkService : BackgroundService
     // 1. Add a list to store messages
     public List<string> StatusMessages { get; private set; } = new();
     // 2. Add an event to notify UI when a new message arrives
-    public event Action? OnMessageReceived;
+    public event Action<string>? OnMessageReceived;
 
     private void ReportConn(string msg) => OnConnectionStatus?.Invoke(msg);
     private void ShowConnDialog(bool show) => OnConnectionDialog?.Invoke(show);
+
+    // Direct memory trackers for the UI to bind to
+    public int LiveMagProgress { get; set; } = 0;
+    public string LiveMagStatus { get; set; } = "STANDBY";
+    public int LiveAccelProgress { get; set; } = 0;
+    public string LiveAccelStatus { get; set; } = "SYSTEM STANDBY";
 
     // --- CALIBRATION TRACKING ---
     public bool IsRcCalibrating { get; private set; } = false;
@@ -539,27 +543,56 @@ public class MavlinkService : BackgroundService
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.STATUSTEXT)
         {
             var status = (MAVLink.mavlink_statustext_t)packet.data;
+            string text = System.Text.Encoding.ASCII.GetString(status.text).Trim('\0', ' ');
+            string upper = text.ToUpper();
 
-            // 1. Get raw bytes
-            byte[] textBytes = status.text;
-
-            // 2. Convert to string and trim ALL null terminators and whitespace
-            string text = System.Text.Encoding.ASCII.GetString(textBytes).Trim('\0', ' ');
-            Console.WriteLine($"[MAVLINK DEBUG] Received Text: {text}");
-
-            if (!string.IsNullOrEmpty(text))
+            // 1. Instantly Catch Accelerometer Steps
+            if (upper.Contains("PLACE VEHICLE"))
             {
-                string logEntry = $"[{DateTime.Now:HH:mm:ss}] {text}";
-
-                lock (StatusMessages)
-                {
-                    StatusMessages.Insert(0, logEntry);
-                    if (StatusMessages.Count > 100) StatusMessages.RemoveAt(StatusMessages.Count - 1);
-                }
-
-                // 3. CRITICAL: Ensure the UI event is triggered
-                OnMessageReceived?.Invoke();
+                if (upper.Contains("LEVEL")) { LiveAccelStatus = "PLACE LEVEL"; LiveAccelProgress = 16; }
+                else if (upper.Contains("LEFT")) { LiveAccelStatus = "PLACE LEFT"; LiveAccelProgress = 33; }
+                else if (upper.Contains("RIGHT")) { LiveAccelStatus = "PLACE RIGHT"; LiveAccelProgress = 50; }
+                else if (upper.Contains("DOWN")) { LiveAccelStatus = "NOSE DOWN"; LiveAccelProgress = 66; }
+                else if (upper.Contains("UP")) { LiveAccelStatus = "NOSE UP"; LiveAccelProgress = 83; }
+                else if (upper.Contains("BACK")) { LiveAccelStatus = "ON BACK"; LiveAccelProgress = 99; }
+                NotifyUi(force: true);
             }
+            else if (upper.Contains("CALIBRATION SUCCESSFUL")) { LiveAccelStatus = "SUCCESS"; LiveAccelProgress = 100; NotifyUi(force: true); }
+            else if (upper.Contains("CALIBRATION FAILED")) { LiveAccelStatus = "FAILED"; NotifyUi(force: true); }
+
+            // 1.5. Ultimate Compass Fallback (If drone drops MAG_CAL_PROGRESS packets)
+            // 1.5. Indestructible Compass Fallback
+            if ((upper.Contains("MAG") || upper.Contains("COMPASS")) && upper.Contains("%"))
+            {
+                int pctIndex = upper.IndexOf("%");
+                int startIndex = pctIndex - 1;
+
+                // Walk backwards from the '%' to capture only the pure digits
+                while (startIndex >= 0 && char.IsDigit(upper[startIndex]))
+                {
+                    startIndex--;
+                }
+                startIndex++;
+
+                if (startIndex < pctIndex)
+                {
+                    string numStr = upper.Substring(startIndex, pctIndex - startIndex);
+                    if (int.TryParse(numStr, out int val))
+                    {
+                        LiveMagProgress = val;
+                        LiveMagStatus = "CALIBRATING...";
+                        NotifyUi(force: true);
+                    }
+                }
+            }
+            // 2. Log to Messages Tab
+            string logEntry = $"[{DateTime.Now:HH:mm:ss}] {text}";
+            lock (StatusMessages)
+            {
+                StatusMessages.Insert(0, logEntry);
+                if (StatusMessages.Count > 100) StatusMessages.RemoveAt(StatusMessages.Count - 1);
+            }
+            OnMessageReceived?.Invoke(logEntry);
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS_RAW)
         {
@@ -597,17 +630,94 @@ public class MavlinkService : BackgroundService
             var req = (MAVLink.mavlink_mission_request_int_t)packet.data;
             HandleMissionRequest(req);
         }
+
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ACK)
         {
             var ack = (MAVLink.mavlink_mission_ack_t)packet.data;
             string status = ack.type == 0 ? "Mission Upload Success" : $"Mission Error: {ack.type}";
 
+            // 1. Define the logEntry variable here first
+            string logEntry = $"[{DateTime.Now:HH:mm:ss}] {status}";
+
             // Log it so it shows up in your Message Tab
             lock (StatusMessages)
             {
-                StatusMessages.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {status}");
+                // 2. Use the variable inside the list
+                StatusMessages.Insert(0, logEntry);
             }
-            OnMessageReceived?.Invoke();
+
+            // 3. Pass the variable to the UI
+            OnMessageReceived?.Invoke(logEntry);
+        }
+
+        // Catch the invisible Compass Calibration Progress packets
+        // Catch the invisible Compass Calibration Progress packets directly
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MAG_CAL_PROGRESS)
+        {
+            var progress = (MAVLink.mavlink_mag_cal_progress_t)packet.data;
+            LiveMagProgress = progress.completion_pct;
+            LiveMagStatus = "CALIBRATING...";
+            NotifyUi(force: true);
+        }
+
+        // Catch the final Success/Fail Report
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MAG_CAL_REPORT)
+        {
+            var report = (MAVLink.mavlink_mag_cal_report_t)packet.data;
+            LiveMagStatus = report.cal_status == (byte)MAVLink.MAG_CAL_STATUS.MAG_CAL_SUCCESS ? "SUCCESS" : "FAILED";
+
+            if (report.cal_status == (byte)MAVLink.MAG_CAL_STATUS.MAG_CAL_SUCCESS)
+                LiveMagProgress = 100;
+
+            NotifyUi(force: true);
+        }
+
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.PARAM_VALUE)
+        {
+            var param = (MAVLink.mavlink_param_value_t)packet.data;
+            string paramName = System.Text.Encoding.ASCII.GetString(param.param_id).Trim('\0', ' ');
+
+            if (paramName == "FRAME_CLASS")
+            {
+                // ArduPilot Frame Class Mapping: 1=Quad, 2=Hexa, 3=Octa, 5=Y6, etc.
+                State.MotorCount = (int)param.param_value switch
+                {
+                    1 => 4,  // Quad
+                    2 => 6,  // Hexa
+                    3 => 8,  // Octa
+                    5 => 6,  // Y6
+                    7 => 3,  // Tri
+                    _ => 4    // Default
+                };
+
+                _logger.LogInformation($"[FRAME DETECTED] {paramName} is {param.param_value}. Setting motor count to {State.MotorCount}");
+                NotifyUi(force: true);
+            }
+        }
+
+        // Catch Command Acknowledgements (Rejections/Successes)
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.COMMAND_ACK)
+        {
+            var ack = (MAVLink.mavlink_command_ack_t)packet.data;
+            string ackStatus = ack.result switch
+            {
+                0 => "ACCEPTED",
+                1 => "TEMP REJECTED",
+                2 => "DENIED",
+                3 => "UNSUPPORTED",
+                4 => "FAILED",
+                _ => "UNKNOWN"
+            };
+
+            string logEntry = $"CMD ACK ({ack.command}): {ackStatus}";
+
+            lock (StatusMessages)
+            {
+                StatusMessages.Insert(0, logEntry);
+                if (StatusMessages.Count > 100) StatusMessages.RemoveAt(StatusMessages.Count - 1);
+            }
+
+            OnMessageReceived?.Invoke(logEntry);
         }
 
         NotifyUi(force: false);
@@ -1026,8 +1136,39 @@ public class MavlinkService : BackgroundService
 
     public void AckCalibrationStep()
     {
-        // This tells the drone "I have moved the drone to the next position, proceed"
-        SendCommand(MAVLink.MAV_CMD.ACCELCAL_VEHICLE_POS, 0, 0, 0, 0, 0, 0, 0);
+        // 1. The Modern Protocol (ArduPilot 4.0+)
+        float positionId = LiveAccelStatus switch
+        {
+            "PLACE LEVEL" => 1,
+            "PLACE LEFT" => 2,
+            "PLACE RIGHT" => 3,
+            "NOSE DOWN" => 4,
+            "NOSE UP" => 5,
+            "ON BACK" => 6,
+            _ => 1
+        };
+        SendCommand((MAVLink.MAV_CMD)42424, positionId, 0, 0, 0, 0, 0, 0);
+
+        // 2. The Legacy MAVLink Protocol (The Mission Planner Secret)
+        // Older firmwares ignore 42424. They wait for a dummy COMMAND_ACK 
+        // from the GCS to act as a MAVLink "keypress" to advance the state machine.
+        var ack = new MAVLink.mavlink_command_ack_t
+        {
+            command = 241, // MAV_CMD_PREFLIGHT_CALIBRATION
+            result = 1     // MAV_RESULT_ACCEPTED
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_ACK, ack);
+
+        // 3. The Raw Hardware Failsafe
+        if (_serialPort != null && _serialPort.IsOpen)
+        {
+            try
+            {
+                byte[] enterKey = new byte[] { 0x0D, 0x0A };
+                _serialPort.Write(enterKey, 0, enterKey.Length);
+            }
+            catch { /* Silently ignore if port is busy */ }
+        }
     }
 
     public void SaveRcCalibration()
@@ -1101,26 +1242,45 @@ public class MavlinkService : BackgroundService
         switch (type.ToUpper())
         {
             case "ACCEL":
-                // Param 5 = 1 starts the 6-axis Accel Cal
-                SendCommand(MAVLink.MAV_CMD.PREFLIGHT_CALIBRATION, 0, 0, 0, 0, 1, 0, 0);
+                // 241 is PREFLIGHT_CALIBRATION. Param 5 = 1 starts Accel
+                SendCommand((MAVLink.MAV_CMD)241, 0, 0, 0, 0, 1, 0, 0);
                 break;
 
             case "MAG":
-                // MAV_CMD_DO_START_MAG_CAL = 424
-                // Params: (0=All compasses, 1=Retry on fail, 1=Autosave, 0=Delay, 1=Auto-accept)
-                SendCommand((MAVLink.MAV_CMD)424, 0, 1, 1, 0, 1, 0, 0);
+                // Send BOTH commands to support old and new ArduPilot firmware
+                SendCommand((MAVLink.MAV_CMD)424, 0, 1, 1, 0, 1, 0, 0); // DO_START_MAG_CAL
+                SendCommand((MAVLink.MAV_CMD)241, 0, 1, 0, 0, 0, 0, 0); // PREFLIGHT_CALIBRATION
                 break;
 
             case "CANCEL_MAG":
-                // MAV_CMD_DO_CANCEL_MAG_CAL = 425
                 SendCommand((MAVLink.MAV_CMD)425, 0, 0, 0, 0, 0, 0, 0);
                 break;
 
             case "RADIO":
-                // Start internal C# tracking
                 IsRcCalibrating = true;
                 for (int i = 0; i < 8; i++) { RcMin[i] = 2200; RcMax[i] = 800; }
                 break;
         }
+    }
+    public void TestAllMotors(float throttlePercent, float durationSec)
+    {
+        // Loops through the detected number of motors and fires them all
+        for (int i = 1; i <= State.MotorCount; i++)
+        {
+            TestMotor(i, throttlePercent, durationSec);
+        }
+        Console.WriteLine($"[MOTOR TEST] Commanded ALL ({State.MotorCount}) motors at {throttlePercent}%");
+    }
+
+    public async void TestMotorSequence(float throttlePercent, float durationSec)
+    {
+        // Fires motors one by one with a small delay so you can verify the order
+        for (int i = 1; i <= State.MotorCount; i++)
+        {
+            TestMotor(i, throttlePercent, durationSec);
+            // Wait for the duration of the test + a small gap before the next motor
+            await Task.Delay((int)(durationSec * 1000) + 500);
+        }
+        Console.WriteLine("[MOTOR TEST] Sequence Completed.");
     }
 }
