@@ -53,8 +53,7 @@ public class DroneState
     public float ImuTemp { get; set; } = 0.0f;
     public ushort[] RawChannels { get; set; } = new ushort[8];
     public bool IsRcConnected { get; set; } = false;
-
-
+    public int MotorCount { get; set; } = 4; // Default to 4 (Quad)
     public DroneState() { }
 
     // Copy ctor for atomic snapshots
