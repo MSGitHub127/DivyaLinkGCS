@@ -1,6 +1,7 @@
 ﻿public class WaypointModel
 {
     public int Index { get; set; }
+    public string Command { get; set; } = "WAYPOINT";
     public double Lat { get; set; }
     public double Lng { get; set; }
     public int Alt { get; set; }
@@ -53,7 +54,9 @@ public class DroneState
     public float ImuTemp { get; set; } = 0.0f;
     public ushort[] RawChannels { get; set; } = new ushort[8];
     public bool IsRcConnected { get; set; } = false;
-    public int MotorCount { get; set; } = 4; // Default to 4 (Quad)
+    public int MotorCount { get; set; } = 4;  // Derived from FRAME_CLASS param
+    public int FrameClass { get; set; } = 1;  // Raw FRAME_CLASS value (1=Quad,2=Hexa,3=Octa...)
+    public int FrameType { get; set; } = 1;  // Raw FRAME_TYPE value (1=X, 0=Plus, 2=V...)
     public DroneState() { }
 
     // Copy ctor for atomic snapshots
@@ -88,6 +91,9 @@ public class DroneState
         HeadingSource = other.HeadingSource;
         AttitudeYawDeg = other.AttitudeYawDeg;
         HasRelAlt = other.HasRelAlt;
+        MotorCount = other.MotorCount;
+        FrameClass = other.FrameClass;
+        FrameType = other.FrameType;
 
         // Stats
         RxPacketsPerSec = other.RxPacketsPerSec;
@@ -102,5 +108,10 @@ public class DroneState
         SatCount = other.SatCount;
         SatellitesVisible = other.SatellitesVisible;
         GpsFixType = other.GpsFixType;
+
+        if (other.RawChannels != null)
+        {
+            this.RawChannels = (ushort[])other.RawChannels.Clone();
+        }
     }
 }
