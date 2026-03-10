@@ -213,7 +213,7 @@
     private bool _heartbeatReceived = false;
     private bool _userCancelled = false;
     private bool _isLinkLost = false;
-
+    private bool _gotHeartbeatEver = false;
     private string _statusMessage = "Initializing...";
 
     protected override void OnInitialized()
@@ -247,14 +247,23 @@
             {
                 // SUCCESS (Heartbeat Found)
                 _heartbeatReceived = true;
+                _gotHeartbeatEver = true;   
                 // Note: We DO NOT set a hardcoded message here anymore.
                 // We let MainLayout send "Link Established (25s)..."
             }
             else
             {
-                // FAILURE
-                _isError = true;
-                _statusMessage = "Connection Timed Out";
+                // Only show error if we never got a heartbeat at all
+                if (!_gotHeartbeatEver)
+                {
+                    _isError = true;
+                    _statusMessage = "Connection Timed Out";
+                }
+                else
+                {
+                    // Transient blip — just close silently
+                    _isOpen = false;
+                }
             }
             InvokeAsync(StateHasChanged);
         }
