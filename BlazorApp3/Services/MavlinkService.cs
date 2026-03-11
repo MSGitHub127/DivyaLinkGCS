@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging.Abstractions;
+﻿using System.Linq;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using System.IO.Ports;
 using System.Management;
@@ -27,9 +28,14 @@ public class MavlinkService : BackgroundService
     public event Action<bool>? OnConnectionDialog;
     public event Action<string>? OnMessageReceived;
     public event Action? OnTelemetryUpdated;
+    public event Action<string[], string>? OnFlightModeParams;  // modes[6], channel
+    public event Action<FailsafeParams>? OnFailsafeParams;
+    public event Action<BatteryParams>? OnBatteryParams;
 
     private bool _connDialogOpen = false;
     private bool _gotFirstHeartbeatThisSession = false;
+    private int _consecutiveHeartbeatCount = 0;
+    private DateTime _lastHeartbeatForStability = DateTime.MinValue;
 
     // Thread-safe Status Messages
     public List<string> StatusMessages { get; private set; } = new();
@@ -54,11 +60,24 @@ public class MavlinkService : BackgroundService
 
     private Dictionary<byte, MAVLink.MAG_CAL_STATUS> _magReportTracker = new();
     public bool IsRcCalibrating { get; private set; } = false;
+
+    // FLTMODE readback — tracks which FLTMODE params have arrived
+    private readonly float[] _fltModeValues = new float[6];
+    private int _fltModeReceived = 0;
+    private float _fltModeChannel = 5;
     public ushort[] RcMin { get; private set; } = new ushort[8];
     public ushort[] RcMax { get; private set; } = new ushort[8];
 
     public byte target_sysid { get; set; } = 1;
     public byte target_compid { get; set; } = 1;
+
+    // Wireless telemetry (SiK/ESP) has higher latency and heartbeat gaps.
+    // Treat any baud rate <= 57600 as wireless for timeout tolerance purposes.
+    public bool IsWireless => _baudRate <= 57600;
+
+    // Heartbeat timeout: wired=3s, wireless=8s
+    // SiK radios frequency-hop and can gap 2-3s without actually being disconnected.
+    private double HeartbeatTimeoutSeconds => IsWireless ? 8.0 : 3.0;
 
     // Packet rate & Battery tracking
     private int _rxPacketCounter = 0;
@@ -80,6 +99,37 @@ public class MavlinkService : BackgroundService
         public string DisplayName { get; set; } = "";
     }
 
+    // ── Parameter readback structs ───────────────────────────────────────
+    public record FailsafeParams(
+        int ThrEnable,    // FS_THR_ENABLE:  0=disabled 1=RTL 2=continue 3=land
+        int ThrValue,     // FS_THR_VALUE:   PWM threshold (default 975)
+        int BattEnable,   // FS_BATT_ENABLE: 0=disabled 1=land 2=RTL 5=hold
+        int GcsEnable     // FS_GCS_ENABLE:  0=disabled 1=RTL 2=continue
+    );
+    public record BatteryParams(
+        int Monitor,    // BATT_MONITOR
+        int Capacity,   // BATT_CAPACITY (mAh)
+        double LowVolt,    // BATT_LOW_VOLT
+        double CrtVolt,    // BATT_CRT_VOLT
+        double ArmVolt,    // BATT_ARM_VOLT
+        int LowMah      // BATT_LOW_MAH
+    );
+
+    // ── Failsafe & battery param accumulator ─────────────────────────────
+    private int _fsRecv = 0;           // bitmask: bit0=THR_EN,1=THR_VAL,2=BATT_EN,3=GCS_EN
+    private int _fsThrEnable = 1;
+    private int _fsThrValue = 975;
+    private int _fsBattEnable = 2;
+    private int _fsGcsEnable = 0;
+
+    private int _battRecv = 0;      // bitmask: bit0=MONITOR,1=CAPACITY,2=LOW_V,3=CRT_V,4=ARM_V,5=LOW_MAH
+    private int _battMonitor = 4;
+    private int _battCapacity = 3300;
+    private double _battLowVolt = 0;
+    private double _battCrtVolt = 0;
+    private double _battArmVolt = 0;
+    private int _battLowMah = 0;
+
     public MavlinkService(ILogger<MavlinkService> logger)
     {
         _logger = logger;
@@ -92,7 +142,7 @@ public class MavlinkService : BackgroundService
             if (_serialPort?.IsOpen != true) return false;
             var hb = State.LastHeartbeat;
             if (hb == DateTime.MinValue) return false;
-            return (DateTime.UtcNow - hb).TotalSeconds < 3;
+            return (DateTime.UtcNow - hb).TotalSeconds < HeartbeatTimeoutSeconds;
         }
     }
 
@@ -146,6 +196,13 @@ public class MavlinkService : BackgroundService
             _shouldBeConnected = true;
             _gotFirstHeartbeatThisSession = false;
         }
+        _linkHealthFailCount = 0;
+        _wasAlerting = false;
+        _consecutiveHeartbeatCount = 0;
+        _lastHeartbeatForStability = DateTime.MinValue;
+        _fltModeReceived = 0;
+        Array.Clear(_fltModeValues, 0, 6);
+        _fsRecv = 0; _battRecv = 0;
 
         CloseSerialPort();
 
@@ -189,6 +246,23 @@ public class MavlinkService : BackgroundService
     }
 
     // ---------------- BACKGROUND LOOP ----------------
+    //
+    // Architecture: two tasks, separated by responsibility.
+    //
+    //  ExecuteAsync  — health monitor only. Opens port, watches heartbeat timeout,
+    //                  manages reconnect. Runs every 500ms. Never touches the stream.
+    //
+    //  ReadLoopAsync — dedicated reader. Uses BaseStream.ReadAsync so it NEVER blocks
+    //                  the thread. Fills a ring buffer with raw bytes. Parser consumes
+    //                  bytes one at a time. A partial packet just waits in the ring
+    //                  buffer until the next chunk arrives — no blocking, no stalling.
+    //
+    // This is the same architecture used by QGroundControl, Mission Planner, MAVProxy.
+    // The old approach (poll BytesToRead → ReadPacket) blocks mid-packet on wireless
+    // because MavlinkParse.ReadPacket calls BaseStream.Read() and waits for bytes that
+    // haven't arrived yet through the radio, freezing the entire health-check loop.
+
+    private CancellationTokenSource? _readerCts;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -196,10 +270,13 @@ public class MavlinkService : BackgroundService
         {
             bool shouldConnect;
             lock (_sync) { shouldConnect = _shouldBeConnected; }
+
+            // Health check runs every tick regardless of connection state
             CheckLinkHealth();
 
             if (!shouldConnect)
             {
+                StopReadLoop();
                 CloseSerialPort();
                 await Task.Delay(250, stoppingToken);
                 continue;
@@ -207,43 +284,198 @@ public class MavlinkService : BackgroundService
 
             if (_serialPort == null || !_serialPort.IsOpen)
             {
+                StopReadLoop();
+
                 if (!TryOpenSerialPort(_portName, _baudRate))
                 {
-                    ReportConn("Waiting for device..");
+                    ReportConn("Waiting for device...");
                     await Task.Delay(3000, stoppingToken);
                     continue;
                 }
-                TryConfigureMessageIntervals();
-                ReportConn($"Port {_portName} Opened. Listening for Heartbeat...");
+
+                ReportConn($"Port {_portName} opened. Listening for heartbeat...");
+
+                // Start dedicated non-blocking reader on its own task
+                _readerCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                _ = Task.Run(() => ReadLoopAsync(_serialPort!, _readerCts.Token), stoppingToken);
             }
 
-            try
+            // Health check loop runs at 500ms — fast enough to detect link loss
+            // without burning CPU. The reader task handles all actual data.
+            await Task.Delay(500, stoppingToken);
+        }
+
+        StopReadLoop();
+    }
+
+    private void StopReadLoop()
+    {
+        try { _readerCts?.Cancel(); } catch { }
+        _readerCts = null;
+    }
+
+    // Dedicated non-blocking MAVLink reader loop.
+    //
+    // WHY THIS ARCHITECTURE:
+    // MavlinkParse.ReadPacket(BaseStream) is SYNCHRONOUS. It reads the header,
+    // calculates packet length, then calls BaseStream.Read() again to get the
+    // remaining bytes. On wireless, a partial packet in the buffer causes this
+    // second Read() to BLOCK the thread until all bytes arrive through the radio
+    // (can take 50-200ms per gap). While blocked, CheckLinkHealth() never runs,
+    // heartbeats go unprocessed, the timeout fires, dialog opens. This repeats
+    // every few seconds in a loop.
+    //
+    // SOLUTION: Read raw bytes with ReadAsync (non-blocking, async) into a flat
+    // buffer. Then parse them ourselves with a MAVLink state machine that holds
+    // its state between calls — if a packet is incomplete, we just return and
+    // wait for more bytes next ReadAsync. No blocking, no stalling, ever.
+    //
+    // This is the approach used by QGroundControl (C++ async reads) and
+    // the pattern recommended in the Sparx Engineering .NET SerialPort guide.
+    private async Task ReadLoopAsync(SerialPort port, CancellationToken ct)
+    {
+        const int CHUNK = 512;
+        var chunk = new byte[CHUNK];
+        // Flat accumulation buffer — holds bytes being assembled into a packet
+        // Large enough for the largest possible MAVLink2 packet (280 bytes) + margin
+        var accum = new byte[512];
+        int accumLen = 0;
+
+        _logger.LogInformation("[MAVLink] Reader started on {port}", port.PortName);
+
+        try
+        {
+            var stream = port.BaseStream;
+
+            while (!ct.IsCancellationRequested && port.IsOpen)
             {
-                var port = _serialPort;
-                if (port != null && port.IsOpen)
+                // ReadAsync yields the thread — never blocks.
+                // CancelAfter(150ms) so we loop back to check ct even if no data arrives.
+                int read = 0;
+                try
                 {
-                    // Drain ALL queued packets per tick.
-                    // Old code: 1 packet per 15ms tick = RC packet buried under burst of
-                    // heartbeat+attitude+GPS+status and arrives 60-90ms late visually.
-                    int drained = 0;
-                    while (port.BytesToRead > 0 && drained < 64)
-                    {
-                        var packet = _parser.ReadPacket(port.BaseStream);
-                        if (packet != null) HandlePacket(packet);
-                        drained++;
-                    }
+                    using var tcs = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    tcs.CancelAfter(150);
+                    read = await stream.ReadAsync(chunk, 0, CHUNK, tcs.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { continue; }
+                catch (Exception ex) when (ex is System.IO.IOException || ex is InvalidOperationException || ex is UnauthorizedAccessException)
+                {
+                    _logger.LogWarning("[MAVLink] Serial read error: {msg}", ex.Message);
+                    break;
+                }
+
+                if (read == 0) continue;
+
+                // Feed received bytes into our state-machine parser.
+                // ParseMavlinkBytes processes one byte at a time, holding partial
+                // packet state in 'accum'. Returns each complete packet immediately.
+                for (int i = 0; i < read; i++)
+                {
+                    var pkt = ParseMavlinkByte(chunk[i], accum, ref accumLen);
+                    if (pkt != null) HandlePacket(pkt);
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Serial Port Exception. Restarting link...");
-                ReportConn("DATA LINK INTERRUPTED. RECONNECTING...");
-                CloseSerialPort();
-                WipeDataToBlankSlate();
-                NotifyUi(force: true);
-            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[MAVLink] Reader exited unexpectedly");
+        }
 
-            await Task.Delay(5, stoppingToken);
+        _logger.LogInformation("[MAVLink] Reader stopped");
+
+        if (_shouldBeConnected)
+        {
+            CloseSerialPort();
+            WipeDataToBlankSlate();
+            NotifyUi(force: true);
+        }
+    }
+
+    // MAVLink byte-by-byte state machine parser.
+    // Holds partial packet state in 'accum'. Returns a complete MAVLinkMessage
+    // when a full valid packet is assembled, or null to keep accumulating.
+    //
+    // MAVLink2 frame layout:
+    //   [0]  0xFD  start marker
+    //   [1]  len   payload length
+    //   [2]  incompat_flags
+    //   [3]  compat_flags
+    //   [4]  seq
+    //   [5]  sysid
+    //   [6]  compid
+    //   [7..9] msgid (3 bytes, little-endian)
+    //   [10..10+len-1] payload
+    //   [10+len]   crc low
+    //   [10+len+1] crc high
+    //   (+13 bytes if incompat_flags & 0x01 = signature)
+    //
+    // MAVLink1 frame layout:
+    //   [0]  0xFE  start marker
+    //   [1]  len
+    //   [2]  seq
+    //   [3]  sysid
+    //   [4]  compid
+    //   [5]  msgid (1 byte)
+    //   [6..6+len-1] payload
+    //   [6+len]   crc low
+    //   [6+len+1] crc high
+    private MAVLink.MAVLinkMessage? ParseMavlinkByte(byte b, byte[] accum, ref int accumLen)
+    {
+        const byte STX1 = 0xFE; // MAVLink 1
+        const byte STX2 = 0xFD; // MAVLink 2
+
+        // If buffer is empty, only accept a start byte
+        if (accumLen == 0)
+        {
+            if (b == STX1 || b == STX2) { accum[accumLen++] = b; }
+            return null;
+        }
+
+        // Reject runaway accumulation (corrupt stream) — reset and wait for next STX
+        if (accumLen >= accum.Length) { accumLen = 0; return null; }
+
+        accum[accumLen++] = b;
+
+        bool isMav2 = accum[0] == STX2;
+
+        // Minimum bytes needed to know total packet length:
+        // MAVLink2: need at least 3 bytes (STX + len + incompat_flags)
+        // MAVLink1: need at least 2 bytes (STX + len)
+        int headerMin = isMav2 ? 3 : 2;
+        if (accumLen < headerMin) return null;
+
+        int payloadLen = accum[1];
+        int totalLen;
+        if (isMav2)
+        {
+            bool signed = (accum[2] & 0x01) != 0;
+            totalLen = 10 + payloadLen + 2 + (signed ? 13 : 0);
+        }
+        else
+        {
+            totalLen = 6 + payloadLen + 2;
+        }
+
+        // Haven't received full packet yet
+        if (accumLen < totalLen) return null;
+
+        // Full packet in buffer — hand it to MavlinkParse via a MemoryStream.
+        // This is safe because the packet is COMPLETE — no blocking read will occur.
+        try
+        {
+            var ms = new System.IO.MemoryStream(accum, 0, totalLen);
+            var pkt = _parser.ReadPacket(ms);
+            return pkt;
+        }
+        catch
+        {
+            // Bad CRC or malformed packet — discard and reset
+            return null;
+        }
+        finally
+        {
+            accumLen = 0; // Ready for next packet
         }
     }
 
@@ -256,8 +488,12 @@ public class MavlinkService : BackgroundService
             {
                 ReadTimeout = 500,
                 WriteTimeout = 500,
-                DtrEnable = true,
-                RtsEnable = true
+                // DTR/RTS must be FALSE for wireless SiK/ESP telemetry radios.
+                // CP2102 and FTDI chips toggle DTR on port open, which the radio
+                // interprets as a hardware reset — dropping the link 1-2s after connect.
+                // Wired Pixhawk USB (115200) is fine with DTR enabled.
+                DtrEnable = !IsWireless,
+                RtsEnable = !IsWireless
             };
             _serialPort.Open();
 
@@ -344,10 +580,22 @@ public class MavlinkService : BackgroundService
                 s.IsArmed = (((MAVLink.MAV_MODE_FLAG)hb.base_mode) & MAVLink.MAV_MODE_FLAG.SAFETY_ARMED) != 0;
             });
 
-            if (!_gotFirstHeartbeatThisSession)
+            // Count consecutive heartbeats to confirm link stability before closing dialog.
+            // Wired: 1 heartbeat is enough (USB is reliable).
+            // Wireless: require 2 heartbeats (≥1s apart) to confirm radio link is stable.
+            var hbNow = DateTime.UtcNow;
+            if ((hbNow - _lastHeartbeatForStability).TotalSeconds < 3.0)
+                _consecutiveHeartbeatCount++;
+            else
+                _consecutiveHeartbeatCount = 1; // gap too long, restart count
+            _lastHeartbeatForStability = hbNow;
+
+            int requiredHeartbeats = IsWireless ? 2 : 1;
+
+            if (!_gotFirstHeartbeatThisSession && _consecutiveHeartbeatCount >= requiredHeartbeats)
             {
                 _gotFirstHeartbeatThisSession = true;
-                ReportConn($"Heartbeat received (Sys:{packet.sysid} Comp:{packet.compid}) ✅ Connected");
+                ReportConn($"Heartbeat confirmed (Sys:{packet.sysid} Comp:{packet.compid}) ✅ Link Stable");
 
                 if (_connDialogOpen)
                 {
@@ -357,6 +605,28 @@ public class MavlinkService : BackgroundService
 
                 // Auto-disable Pixhawk LEDs on bench arrival
                 SendParameter("NTF_LED_BRIGHT", 0.0f);
+
+                // Request all params on connect — spaced to avoid radio FIFO overflow
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(800);
+                    for (int fi = 1; fi <= 6; fi++) { RequestParamRead($"FLTMODE{fi}"); await Task.Delay(IsWireless ? 80 : 20); }
+                    RequestParamRead("FLTMODE_CH");
+
+                    await Task.Delay(IsWireless ? 200 : 50);
+                    // Failsafe params
+                    RequestParamRead("FS_THR_ENABLE"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("FS_THR_VALUE"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("FS_BATT_ENABLE"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("FS_GCS_ENABLE"); await Task.Delay(IsWireless ? 80 : 20);
+                    // Battery params
+                    RequestParamRead("BATT_MONITOR"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_CAPACITY"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_LOW_VOLT"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_CRT_VOLT"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_ARM_VOLT"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_LOW_MAH");
+                });
             }
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.ATTITUDE)
@@ -423,6 +693,7 @@ public class MavlinkService : BackgroundService
             UpdateState(s =>
             {
                 if (sys.voltage_battery > 0) s.Voltage = sys.voltage_battery / 1000.0;
+                if (sys.current_battery >= 0) s.CurrentDraw = sys.current_battery / 100.0;  // cA → A
                 int pct = sys.battery_remaining;
 
                 if (pct == 255 || pct < 0 || pct > 100) return;
@@ -659,6 +930,35 @@ public class MavlinkService : BackgroundService
                 State.MotorCount = (int)param.param_value switch { 1 => 4, 2 => 6, 3 => 8, 5 => 6, 7 => 3, _ => 4 };
                 NotifyUi(force: true);
             }
+            else if (paramName.StartsWith("FLTMODE") && paramName.Length == 8 && char.IsDigit(paramName[7]))
+            {
+                // FLTMODE1–6: index 0–5
+                int modeIdx = paramName[7] - '1';
+                if (modeIdx >= 0 && modeIdx < 6)
+                {
+                    _fltModeValues[modeIdx] = param.param_value;
+                    _fltModeReceived |= (1 << modeIdx);
+                    if (_fltModeReceived == 0b111111) // all 6 received
+                        FireFlightModeParams();
+                }
+            }
+            else if (paramName == "FLTMODE_CH")
+            {
+                _fltModeChannel = param.param_value;
+                if (_fltModeReceived == 0b111111) FireFlightModeParams();
+            }
+            // ── Failsafe params ──────────────────────────────────────────
+            else if (paramName == "FS_THR_ENABLE") { _fsThrEnable = (int)param.param_value; _fsRecv |= 1; CheckFireFailsafe(); }
+            else if (paramName == "FS_THR_VALUE") { _fsThrValue = (int)param.param_value; _fsRecv |= 2; CheckFireFailsafe(); }
+            else if (paramName == "FS_BATT_ENABLE") { _fsBattEnable = (int)param.param_value; _fsRecv |= 4; CheckFireFailsafe(); }
+            else if (paramName == "FS_GCS_ENABLE") { _fsGcsEnable = (int)param.param_value; _fsRecv |= 8; CheckFireFailsafe(); }
+            // ── Battery monitor params ───────────────────────────────────
+            else if (paramName == "BATT_MONITOR") { _battMonitor = (int)param.param_value; _battRecv |= 1; CheckFireBattery(); }
+            else if (paramName == "BATT_CAPACITY") { _battCapacity = (int)param.param_value; _battRecv |= 2; CheckFireBattery(); }
+            else if (paramName == "BATT_LOW_VOLT") { _battLowVolt = param.param_value; _battRecv |= 4; CheckFireBattery(); }
+            else if (paramName == "BATT_CRT_VOLT") { _battCrtVolt = param.param_value; _battRecv |= 8; CheckFireBattery(); }
+            else if (paramName == "BATT_ARM_VOLT") { _battArmVolt = param.param_value; _battRecv |= 16; CheckFireBattery(); }
+            else if (paramName == "BATT_LOW_MAH") { _battLowMah = (int)param.param_value; _battRecv |= 32; CheckFireBattery(); }
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.COMMAND_ACK)
         {
@@ -798,33 +1098,82 @@ public class MavlinkService : BackgroundService
 
     private void TryConfigureMessageIntervals()
     {
+        // ── Bandwidth budget ──────────────────────────────────────────────────
+        // Wireless (57600 baud) ≈ 5760 B/s usable after radio overhead (~20%).
+        // Wired  (115200 baud) ≈ 11520 B/s — can afford high-rate RC streaming.
+        //
+        // Wireless profile keeps total stream ≈ 2200 B/s (38% of link) leaving
+        // 62% headroom for commands, ACKs, calibration data, and radio overhead.
+        // ─────────────────────────────────────────────────────────────────────
+        _ = SendMessageIntervalsAsync();
+    }
+
+    // Sends rate config commands with spacing to avoid UART overflow on wireless.
+    // At 57600 baud, 10 COMMAND_LONGs back-to-back = ~65ms TX time which saturates
+    // the radio FIFO and causes garbled packets / FC restarts MAVLink negotiation.
+    private async Task SendMessageIntervalsAsync()
+    {
         try
         {
-            // 1. Modern MAVLink 2.0 Commands
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.HEARTBEAT, 1);
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.ATTITUDE, 20);
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.GLOBAL_POSITION_INT, 10);
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.GPS_RAW_INT, 1);
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS, 1);
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.VFR_HUD, 5);
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.STATUSTEXT, 10);
-            // RC at 50Hz — 20ms between packets makes calibration bars smooth
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS, 50);
-            SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS_RAW, 50);
+            // Each command is ~37 bytes. Wireless FIFO is typically 64-128 bytes.
+            // Send one at a time with 40ms gap on wireless, 0ms on wired.
+            int gapMs = IsWireless ? 40 : 0;
 
-            // 2. LEGACY FALLBACK: covers older ArduPilot that ignores SET_MESSAGE_INTERVAL
+            if (IsWireless)
+            {
+                // ── WIRELESS profile — total ≈ 2100 B/s ──────────────────────
+                // HEARTBEAT 1Hz  = 9B×1   =   9 B/s
+                // ATTITUDE  4Hz  = 28B×4  = 112 B/s  (smooth HUD without flooding)
+                // GLOBAL_POS 2Hz = 52B×2  = 104 B/s
+                // GPS_RAW   1Hz  = 52B×1  =  52 B/s
+                // SYS_STATUS 1Hz = 31B×1  =  31 B/s
+                // VFR_HUD   2Hz  = 32B×2  =  64 B/s
+                // STATUSTEXT 2Hz = 54B×2  = 108 B/s
+                // RC_CHANNELS 10Hz= 34B×10= 340 B/s  (usable for RC cal, not flooding)
+                // ─────────────────────────────────────────────────────────────
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.HEARTBEAT, 1); await Task.Delay(gapMs);
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.ATTITUDE, 4); await Task.Delay(gapMs);
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.GLOBAL_POSITION_INT, 2); await Task.Delay(gapMs);
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.GPS_RAW_INT, 1); await Task.Delay(gapMs);
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS, 1); await Task.Delay(gapMs);
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.VFR_HUD, 2); await Task.Delay(gapMs);
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.STATUSTEXT, 2); await Task.Delay(gapMs);
+                await SetIntervalAsync((uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS, 10); await Task.Delay(gapMs);
+            }
+            else
+            {
+                // ── WIRED profile — full rate, all at once (no gap needed) ───
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.HEARTBEAT, 1);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.ATTITUDE, 20);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.GLOBAL_POSITION_INT, 10);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.GPS_RAW_INT, 1);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS, 1);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.VFR_HUD, 5);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.STATUSTEXT, 10);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS, 50);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS_RAW, 50);
+            }
+
+            // Legacy fallback — REQUEST_DATA_STREAM for older ArduPilot firmware
             TryGetTarget(out var sysId, out var compId);
+            int rcRate = IsWireless ? 10 : 50;
             var reqRc = new MAVLink.mavlink_request_data_stream_t
             {
                 target_system = sysId,
                 target_component = compId,
-                req_stream_id = 3,   // MAV_DATA_STREAM_RC_CHANNELS
-                req_message_rate = 50,
+                req_stream_id = 3,
+                req_message_rate = (ushort)rcRate,
                 start_stop = 1
             };
             SendPacket(MAVLink.MAVLINK_MSG_ID.REQUEST_DATA_STREAM, reqRc);
         }
         catch (Exception ex) { _logger.LogWarning(ex, "Failed to configure message intervals"); }
+    }
+
+    private Task SetIntervalAsync(uint msgId, double hz)
+    {
+        SetMessageInterval(msgId, hz);
+        return Task.CompletedTask;
     }
 
     private void SetMessageInterval(uint msgId, double hz)
@@ -884,6 +1233,19 @@ public class MavlinkService : BackgroundService
         };
         SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_ACK, ack);
         Console.WriteLine($"ACK Sent: cmd={command} result={result}");
+    }
+
+    public void RequestParamRead(string paramId)
+    {
+        TryGetTarget(out var sysId, out var compId);
+        var req = new MAVLink.mavlink_param_request_read_t
+        {
+            target_system = sysId,
+            target_component = compId,
+            param_id = System.Text.Encoding.ASCII.GetBytes(paramId.PadRight(16, '\0')),
+            param_index = -1  // -1 = look up by name
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.PARAM_REQUEST_READ, req);
     }
 
     public void SendParameter(string paramId, float value)
@@ -1059,11 +1421,59 @@ public class MavlinkService : BackgroundService
 
     public void SaveFlightMode(int position, string modeName)
     {
-        float modeValue = modeName.ToUpper() switch { "STABILIZE" => 0, "ALT_HOLD" => 2, "LOITER" => 5, "RTL" => 6, "AUTO" => 10, _ => 0 };
+        // ArduCopter FLTMODE numeric values (matches custom_mode in HEARTBEAT)
+        float modeValue = modeName.ToUpper() switch
+        {
+            "STABILIZE" => 0,
+            "ACRO" => 1,
+            "ALT_HOLD" => 2,
+            "AUTO" => 3,
+            "GUIDED" => 4,
+            "LOITER" => 5,
+            "RTL" => 6,
+            "CIRCLE" => 7,
+            "LAND" => 9,
+            "DRIFT" => 11,
+            "SPORT" => 13,
+            "FLIP" => 14,
+            "AUTOTUNE" => 15,
+            "POSHOLD" => 16,
+            "BRAKE" => 17,
+            "THROW" => 18,
+            "SMART_RTL" => 21,
+            "FLOWHOLD" => 22,
+            "FOLLOW" => 23,
+            "ZIGZAG" => 24,
+            "SYSTEMID" => 25,
+            "AUTOROTATE" => 26,
+            "AUTO_RTL" => 27,
+            "TURTLE" => 29,
+            _ => 0
+        };
         SendParameter($"FLTMODE{position}", modeValue);
     }
 
     public void SetEscCalibrationMode() => SendParameter("ESC_CALIBRATION", 3);
+
+    private void CheckFireFailsafe()
+    {
+        if ((_fsRecv & 0b1111) == 0b1111)
+            OnFailsafeParams?.Invoke(new FailsafeParams(_fsThrEnable, _fsThrValue, _fsBattEnable, _fsGcsEnable));
+    }
+
+    private void CheckFireBattery()
+    {
+        if ((_battRecv & 0b111111) == 0b111111)
+            OnBatteryParams?.Invoke(new BatteryParams(_battMonitor, _battCapacity, _battLowVolt, _battCrtVolt, _battArmVolt, _battLowMah));
+    }
+
+    private void FireFlightModeParams()
+    {
+        // Convert float mode IDs back to string names for the UI
+        string[] names = _fltModeValues.Select(v => GetFlightModeString((uint)v)).ToArray();
+        string ch = ((int)_fltModeChannel).ToString();
+        OnFlightModeParams?.Invoke(names, ch);
+    }
     public void SetFrameConfig(int frameType, int frameClass) { SendParameter("FRAME_TYPE", frameType); SendParameter("FRAME_CLASS", frameClass); }
     public void RequestDataStreams() => TryConfigureMessageIntervals();
 
@@ -1135,22 +1545,73 @@ public class MavlinkService : BackgroundService
 
     // ---------------- CLEANUP ----------------
 
+    private int _linkHealthFailCount = 0;
+
     private void CheckLinkHealth()
     {
         if (_shouldBeConnected && _gotFirstHeartbeatThisSession)
         {
-            if ((DateTime.UtcNow - State.LastHeartbeat).TotalSeconds > 3.0)
+            if ((DateTime.UtcNow - State.LastHeartbeat).TotalSeconds > HeartbeatTimeoutSeconds)
             {
-                if (!_wasAlerting) { _wasAlerting = true; ReportConn("CRITICAL: LINK LOST"); ShowConnDialog(true); }
+                // Hysteresis: require 3 consecutive failed checks before alerting.
+                // The main loop runs every 5ms, so 3 checks = still near-instant for
+                // genuine loss, but a single delayed wireless heartbeat won't flash the dialog.
+                _linkHealthFailCount++;
+                if (!_wasAlerting && _linkHealthFailCount >= 3)
+                {
+                    _wasAlerting = true;
+                    _connDialogOpen = true;
+                    ReportConn("LINK LOST — CHECK TELEMETRY RADIO");
+                    ShowConnDialog(true);
+                }
             }
             else
             {
-                if (_wasAlerting) { _wasAlerting = false; ShowConnDialog(false); }
+                // Link is healthy — reset counter and clear alert if showing
+                _linkHealthFailCount = 0;
+                if (_wasAlerting)
+                {
+                    _wasAlerting = false;
+                    if (_connDialogOpen)
+                    {
+                        _connDialogOpen = false;
+                        ShowConnDialog(false);
+                    }
+                }
             }
         }
     }
 
-    private static string GetFlightModeString(uint customMode) => customMode switch { 0 => "STABILIZE", 2 => "ALT_HOLD", 3 => "AUTO", 4 => "GUIDED", 5 => "LOITER", 6 => "RTL", 9 => "LAND", _ => "Unknown" };
+    private static string GetFlightModeString(uint customMode) => customMode switch
+    {
+        0 => "STABILIZE",
+        1 => "ACRO",
+        2 => "ALT_HOLD",
+        3 => "AUTO",
+        4 => "GUIDED",
+        5 => "LOITER",
+        6 => "RTL",
+        7 => "CIRCLE",
+        9 => "LAND",
+        11 => "DRIFT",
+        13 => "SPORT",
+        14 => "FLIP",
+        15 => "AUTOTUNE",
+        16 => "POSHOLD",
+        17 => "BRAKE",
+        18 => "THROW",
+        19 => "AVOID_ADSB",
+        20 => "GUIDED_NOGPS",
+        21 => "SMART_RTL",
+        22 => "FLOWHOLD",
+        23 => "FOLLOW",
+        24 => "ZIGZAG",
+        25 => "SYSTEMID",
+        26 => "AUTOROTATE",
+        27 => "AUTO_RTL",
+        29 => "TURTLE",
+        _ => "UNKNOWN"
+    };
 
     private void CloseSerialPort()
     {

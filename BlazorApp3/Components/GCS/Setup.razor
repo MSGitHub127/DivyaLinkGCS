@@ -327,25 +327,74 @@
 
         <div class="setup-module">
             <div class="module-header">
-                <i class="bi bi-shield-shaded"></i>
-                <span>FLIGHT MODE ASSIGNMENT</span>
-                <button class="btn-gcs-primary" @onclick="SyncFlightModes">SAVE MODES</button>
+                <i class="bi bi-toggles"></i>
+                <span>FLIGHT MODES</span>
+                <div class="fm-active-badge">
+                    <span class="fm-active-label">ACTIVE</span>
+                    <span class="fm-active-mode">@Drone.State.FlightMode</span>
+                </div>
+                <button class="btn-gcs-primary" style="margin-left:auto;" @onclick="SyncFlightModes">WRITE TO FC</button>
             </div>
             <div class="module-content">
-                @for (int i = 0; i < 3; i++)
-                {
-                    var index = i;
-                    <div class="mode-row">
-                        <label class="input-label">SWITCH POSITION @(index + 1)</label>
-                        <select class="gcs-select" @bind="flightModeSettings[index]">
-                            <option value="STABILIZE">STABILIZE</option>
-                            <option value="ALT_HOLD">ALT_HOLD</option>
-                            <option value="LOITER">LOITER</option>
-                            <option value="RTL">RTL</option>
-                            <option value="AUTO">AUTO</option>
-                        </select>
-                    </div>
-                }
+                <div class="fm-channel-row">
+                    <span class="fm-ch-label">MODE CHANNEL</span>
+                    <select class="gcs-select-sm" @bind="flightModeChannel">
+                        <option value="5">CH 5</option>
+                        <option value="6">CH 6</option>
+                        <option value="7">CH 7</option>
+                        <option value="8">CH 8</option>
+                    </select>
+                    <span class="fm-ch-hint">RC channel that controls mode switching</span>
+                </div>
+
+                <div class="fm-grid">
+                    @for (int i = 0; i < 6; i++)
+                    {
+                        var idx = i;
+                        bool isActive = (flightModeSettings[idx] == Drone.State.FlightMode);
+                        <div class="fm-slot @(isActive ? "fm-slot-active" : "")">
+                            <div class="fm-slot-header">
+                                <span class="fm-slot-num">MODE @(idx + 1)</span>
+                                @if (isActive)
+                                {
+                                    <span class="fm-active-pip">● ACTIVE</span>
+                                }
+                            </div>
+                            <select class="gcs-select fm-select" @bind="flightModeSettings[idx]">
+                                <option value="STABILIZE">STABILIZE</option>
+                                <option value="ACRO">ACRO</option>
+                                <option value="ALT_HOLD">ALT HOLD</option>
+                                <option value="AUTO">AUTO</option>
+                                <option value="GUIDED">GUIDED</option>
+                                <option value="LOITER">LOITER</option>
+                                <option value="RTL">RTL</option>
+                                <option value="CIRCLE">CIRCLE</option>
+                                <option value="LAND">LAND</option>
+                                <option value="DRIFT">DRIFT</option>
+                                <option value="SPORT">SPORT</option>
+                                <option value="FLIP">FLIP</option>
+                                <option value="AUTOTUNE">AUTOTUNE</option>
+                                <option value="POSHOLD">POS HOLD</option>
+                                <option value="BRAKE">BRAKE</option>
+                                <option value="THROW">THROW</option>
+                                <option value="SMART_RTL">SMART RTL</option>
+                                <option value="FLOWHOLD">FLOW HOLD</option>
+                                <option value="FOLLOW">FOLLOW</option>
+                                <option value="ZIGZAG">ZIGZAG</option>
+                                <option value="SYSTEMID">SYSTEM ID</option>
+                                <option value="AUTOROTATE">AUTOROTATE</option>
+                                <option value="AUTO_RTL">AUTO RTL</option>
+                                <option value="TURTLE">TURTLE</option>
+                            </select>
+                            <div class="fm-slot-desc">@GetFlightModeDesc(flightModeSettings[idx])</div>
+                        </div>
+                    }
+                </div>
+
+                <div class="fm-footer-note">
+                    <i class="bi bi-info-circle"></i>
+                    Modes 1–6 map to RC switch positions. Mode 1 = lowest PWM, Mode 6 = highest.
+                </div>
             </div>
         </div>
 
@@ -392,19 +441,165 @@
         <div class="setup-module border-amber">
             <div class="module-header warning">
                 <i class="bi bi-lightning-charge"></i>
-                <span>ESC THROTTLE CALIBRATION</span>
-                <button class="btn-gcs-amber" @onclick="ToggleEscCalMode">ENABLE CAL MODE</button>
+                <span>ESC CALIBRATION</span>
+                @if (escCalStep == 0)
+                {
+                    <button class="btn-gcs-amber" style="margin-left:auto;" @onclick="EscCalStart">BEGIN</button>
+                }
+                else if (escCalStep < 5)
+                {
+                    <button class="btn-gcs-danger" style="margin-left:auto;" @onclick="EscCalAbort">ABORT</button>
+                }
             </div>
             <div class="module-content">
-                <div class="esc-info-box">
-                    <p>1. Enable Cal Mode (Sets parameter to 3).</p>
-                    <p>2. Disconnect USB and Battery.</p>
-                    <p>3. Reconnect battery to start beep sequence.</p>
-                </div>
-                <div class="status-box-pro">
-                    <div class="status-label">CALIBRATION STATE</div>
-                    <div class="status-value">@escCalStatus</div>
-                </div>
+
+                @* ── IDLE STATE ── *@
+                @if (escCalStep == 0)
+                {
+                    <div class="esc-method-select">
+                        <div class="esc-method-label">CALIBRATION METHOD</div>
+                        <div class="esc-method-cards">
+                            <div class="esc-method-card @(escCalMethod == 0 ? "selected" : "")" @onclick="() => escCalMethod = 0">
+                                <div class="esc-method-title">
+                                    <i class="bi bi-magic"></i> AUTO (RECOMMENDED)
+                                </div>
+                                <div class="esc-method-desc">FC sends full-throttle signal on next boot. Connect battery to start ESC calibration sequence automatically. Works with most ESCs.</div>
+                            </div>
+                            <div class="esc-method-card @(escCalMethod == 1 ? "selected" : "")" @onclick="() => escCalMethod = 1">
+                                <div class="esc-method-title">
+                                    <i class="bi bi-sliders"></i> MANUAL (PASSTHROUGH)
+                                </div>
+                                <div class="esc-method-desc">FC passes RC throttle directly to ESCs. Move your TX throttle stick from max to min during calibration. Use if Auto method fails.</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="esc-prereq">
+                        <div class="esc-prereq-title"><i class="bi bi-exclamation-triangle-fill text-amber"></i> BEFORE YOU BEGIN</div>
+                        <ul class="esc-prereq-list">
+                            <li>Remove all propellers</li>
+                            <li>Vehicle must be DISARMED</li>
+                            <li>Connect USB but NOT battery</li>
+                            @if (escCalMethod == 1)
+                            {
+                                <li>TX throttle stick at maximum position</li>
+                                <li>Verify RC calibration is complete</li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                @* ── STEP WIZARD ── *@
+                @if (escCalStep > 0)
+                {
+                    <div class="esc-wizard">
+                        <div class="esc-wizard-progress">
+                            @{
+                                int totalSteps = escCalMethod == 0 ? 4 : 5;
+                            }
+                            @for (int st = 1; st <= totalSteps; st++)
+                            {
+                                var stepNum = st;
+                                <div class="esc-step-dot @(escCalStep == stepNum ? "dot-active" : escCalStep > stepNum ? "dot-done" : "dot-pending")">
+                                    @if (escCalStep > stepNum)
+                                    {
+                                        <i class="bi bi-check-lg"></i>
+                                    }
+                                    else
+                                    {
+
+                                        @stepNum
+                                    }
+                                </div>
+                                @if (stepNum < totalSteps)
+                                {
+                                    <div class="esc-step-line @(escCalStep > stepNum ? "line-done" : "")"></div>
+                                }
+                            }
+                        </div>
+
+                        <div class="esc-step-card">
+                            @if (escCalMethod == 0)
+                            {
+                                @* AUTO METHOD STEPS *@
+                                @switch (escCalStep)
+                                {
+                                    case 1:
+                                        <div class="esc-step-icon text-amber"><i class="bi bi-lightning-charge-fill"></i></div>
+                                        <div class="esc-step-title">WRITE CALIBRATION FLAG</div>
+                                        <div class="esc-step-body">Sending <code>ESC_CALIBRATION = 3</code> to flight controller. On next boot, the FC will output full-throttle PWM to all ESCs.</div>
+                                        <button class="btn-gcs-amber" @onclick="EscCalAutoStep1">WRITE PARAMETER →</button>
+                                        break;
+                                    case 2:
+                                        <div class="esc-step-icon text-amber"><i class="bi bi-plug-fill"></i></div>
+                                        <div class="esc-step-title">DISCONNECT POWER</div>
+                                        <div class="esc-step-body">Parameter written. Now <strong>disconnect USB cable</strong> and <strong>disconnect the battery</strong> completely. Wait 5 seconds for capacitors to discharge.</div>
+                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 3">I'VE DISCONNECTED →</button>
+                                        break;
+                                    case 3:
+                                        <div class="esc-step-icon text-cyan"><i class="bi bi-battery-charging"></i></div>
+                                        <div class="esc-step-title">CONNECT BATTERY</div>
+                                        <div class="esc-step-body">Connect the <strong>battery only</strong> (not USB yet). ESCs will beep to confirm they received the full-throttle signal. Wait for beeps to complete.</div>
+                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 4">ESCs BEEPED →</button>
+                                        break;
+                                    case 4:
+                                        <div class="esc-step-icon text-green"><i class="bi bi-check-circle-fill"></i></div>
+                                        <div class="esc-step-title">CALIBRATION COMPLETE</div>
+                                        <div class="esc-step-body">ESC endpoints have been set. Reconnect USB. The <code>ESC_CALIBRATION</code> parameter automatically resets to 0 after a successful calibration.</div>
+                                        <button class="btn-gcs-primary" @onclick="EscCalDone">FINISH</button>
+                                        break;
+                                }
+                            }
+                            else
+                            {
+                                @* MANUAL PASSTHROUGH STEPS *@
+                                @switch (escCalStep)
+                                {
+                                    case 1:
+                                        <div class="esc-step-icon text-amber"><i class="bi bi-arrow-up-circle-fill"></i></div>
+                                        <div class="esc-step-title">THROTTLE TO MAXIMUM</div>
+                                        <div class="esc-step-body">Move your transmitter <strong>throttle stick to full maximum</strong>. Keep it there until instructed.</div>
+                                        <button class="btn-gcs-amber" @onclick="EscCalManualStep1">THROTTLE IS MAX →</button>
+                                        break;
+                                    case 2:
+                                        <div class="esc-step-icon text-amber"><i class="bi bi-plug-fill"></i></div>
+                                        <div class="esc-step-title">ENABLE PASSTHROUGH</div>
+                                        <div class="esc-step-body">Passthrough mode active — FC is now relaying RC throttle directly to all ESCs. <strong>Connect the battery now.</strong> ESCs will beep acknowledging full throttle.</div>
+                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 3">ESCs BEEPED →</button>
+                                        break;
+                                    case 3:
+                                        <div class="esc-step-icon text-cyan"><i class="bi bi-arrow-down-circle-fill"></i></div>
+                                        <div class="esc-step-title">THROTTLE TO MINIMUM</div>
+                                        <div class="esc-step-body">Move your transmitter <strong>throttle stick to full minimum (zero)</strong>. ESCs will beep again to confirm the low endpoint is set.</div>
+                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 4">ESCs BEEPED →</button>
+                                        break;
+                                    case 4:
+                                        <div class="esc-step-icon text-amber"><i class="bi bi-power"></i></div>
+                                        <div class="esc-step-title">DISABLE PASSTHROUGH</div>
+                                        <div class="esc-step-body">Disabling passthrough mode. Disconnect battery and wait 5 seconds before reconnecting.</div>
+                                        <button class="btn-gcs-amber" @onclick="EscCalManualStep4">DISABLE PASSTHROUGH →</button>
+                                        break;
+                                    case 5:
+                                        <div class="esc-step-icon text-green"><i class="bi bi-check-circle-fill"></i></div>
+                                        <div class="esc-step-title">CALIBRATION COMPLETE</div>
+                                        <div class="esc-step-body">All ESC endpoints have been set. Your ESCs are now calibrated to your transmitter's throttle range.</div>
+                                        <button class="btn-gcs-primary" @onclick="EscCalDone">FINISH</button>
+                                        break;
+                                }
+                            }
+                        </div>
+                    </div>
+                }
+
+                @* ── DONE BANNER ── *@
+                @if (escCalStep == 99)
+                {
+                    <div class="esc-done-banner">
+                        <i class="bi bi-check-circle-fill"></i>
+                        ESC CALIBRATION COMPLETE — All endpoints saved
+                        <button class="btn-link" @onclick="() => escCalStep = 0">Recalibrate</button>
+                    </div>
+                }
+
             </div>
         </div>
 
@@ -1559,6 +1754,377 @@
         margin-top: 10px;
         font-weight: 700;
     }
+
+    /* ═══════════════════════════════════════════
+           FLIGHT MODE MODULE
+        ═══════════════════════════════════════════ */
+    .fm-active-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(0, 212, 255, 0.08);
+        border: 1px solid rgba(0, 212, 255, 0.3);
+        border-radius: 4px;
+        padding: 3px 10px;
+    }
+
+    .fm-active-label {
+        font-size: 0.55rem;
+        color: var(--gcs-text-muted, #8b949e);
+        letter-spacing: 1px;
+    }
+
+    .fm-active-mode {
+        font-size: 0.7rem;
+        font-weight: 800;
+        color: var(--gcs-cyan, #00d4ff);
+        letter-spacing: 1px;
+    }
+
+    .fm-channel-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+        padding: 8px 12px;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid var(--gcs-border);
+        border-radius: 6px;
+    }
+
+    .fm-ch-label {
+        font-size: 0.6rem;
+        font-weight: 700;
+        color: var(--gcs-text-muted, #8b949e);
+        letter-spacing: 1px;
+        white-space: nowrap;
+    }
+
+    .fm-ch-hint {
+        font-size: 0.58rem;
+        color: var(--gcs-text-muted, #8b949e);
+        margin-left: auto;
+    }
+
+    .fm-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+
+    .fm-slot {
+        background: #010409;
+        border: 1px solid var(--gcs-border);
+        border-radius: 6px;
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        transition: border-color 0.2s;
+    }
+
+        .fm-slot:hover {
+            border-color: #555;
+        }
+
+    .fm-slot-active {
+        border-color: var(--gcs-cyan, #00d4ff) !important;
+        background: rgba(0, 212, 255, 0.04);
+    }
+
+    .fm-slot-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .fm-slot-num {
+        font-size: 0.58rem;
+        font-weight: 700;
+        color: var(--gcs-text-muted, #8b949e);
+        letter-spacing: 1.5px;
+    }
+
+    .fm-active-pip {
+        font-size: 0.52rem;
+        font-weight: 800;
+        color: var(--gcs-cyan, #00d4ff);
+        letter-spacing: 1px;
+        animation: pip-pulse 1.5s ease-in-out infinite;
+    }
+
+    @@keyframes pip-pulse {
+        0%, 100% {
+            opacity: 1;
+        }
+
+        50% {
+            opacity: 0.4;
+        }
+    }
+
+    .fm-select {
+        font-size: 0.68rem !important;
+        padding: 5px 8px !important;
+    }
+
+    .fm-slot-desc {
+        font-size: 0.56rem;
+        color: var(--gcs-text-muted, #8b949e);
+        line-height: 1.3;
+        min-height: 24px;
+    }
+
+    .fm-footer-note {
+        margin-top: 10px;
+        padding: 8px 12px;
+        background: rgba(255,255,255,0.02);
+        border: 1px solid var(--gcs-border);
+        border-radius: 5px;
+        font-size: 0.58rem;
+        color: var(--gcs-text-muted, #8b949e);
+        display: flex;
+        align-items: center;
+        gap: 7px;
+    }
+
+    /* ═══════════════════════════════════════════
+           ESC CALIBRATION WIZARD
+        ═══════════════════════════════════════════ */
+    .esc-method-select {
+        margin-bottom: 14px;
+    }
+
+    .esc-method-label {
+        font-size: 0.6rem;
+        font-weight: 700;
+        color: var(--gcs-text-muted, #8b949e);
+        letter-spacing: 1.5px;
+        margin-bottom: 8px;
+    }
+
+    .esc-method-cards {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .esc-method-card {
+        background: #010409;
+        border: 1px solid var(--gcs-border);
+        border-radius: 6px;
+        padding: 10px 14px;
+        cursor: pointer;
+        transition: border-color 0.2s, background 0.2s;
+    }
+
+        .esc-method-card:hover {
+            border-color: #555;
+        }
+
+        .esc-method-card.selected {
+            border-color: var(--gcs-amber, #e6a817) !important;
+            background: rgba(230, 168, 23, 0.06);
+        }
+
+    .esc-method-title {
+        font-size: 0.68rem;
+        font-weight: 800;
+        color: var(--gcs-text, #c9d1d9);
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .esc-method-desc {
+        font-size: 0.6rem;
+        color: var(--gcs-text-muted, #8b949e);
+        line-height: 1.4;
+    }
+
+    .esc-prereq {
+        background: rgba(255, 165, 0, 0.05);
+        border: 1px solid rgba(230, 168, 23, 0.3);
+        border-radius: 6px;
+        padding: 10px 14px;
+        margin-top: 10px;
+    }
+
+    .esc-prereq-title {
+        font-size: 0.62rem;
+        font-weight: 700;
+        color: var(--gcs-amber, #e6a817);
+        letter-spacing: 1px;
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .esc-prereq-list {
+        margin: 0;
+        padding-left: 16px;
+        font-size: 0.6rem;
+        color: var(--gcs-text, #c9d1d9);
+        line-height: 1.8;
+    }
+
+    /* Step wizard */
+    .esc-wizard {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .esc-wizard-progress {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0;
+        padding: 4px 0;
+    }
+
+    .esc-step-dot {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.62rem;
+        font-weight: 800;
+        border: 2px solid var(--gcs-border);
+        background: var(--gcs-card);
+        color: var(--gcs-text-muted, #8b949e);
+        flex-shrink: 0;
+        transition: all 0.3s;
+        z-index: 1;
+    }
+
+    .dot-active {
+        border-color: var(--gcs-amber, #e6a817) !important;
+        background: rgba(230, 168, 23, 0.15) !important;
+        color: var(--gcs-amber, #e6a817) !important;
+        box-shadow: 0 0 10px rgba(230,168,23,0.3);
+    }
+
+    .dot-done {
+        border-color: var(--gcs-cyan, #00d4ff) !important;
+        background: rgba(0,212,255,0.15) !important;
+        color: var(--gcs-cyan, #00d4ff) !important;
+    }
+
+    .dot-pending {
+        opacity: 0.4;
+    }
+
+    .esc-step-line {
+        flex: 1;
+        height: 2px;
+        background: var(--gcs-border);
+        transition: background 0.3s;
+    }
+
+    .line-done {
+        background: var(--gcs-cyan, #00d4ff) !important;
+    }
+
+    .esc-step-card {
+        background: #010409;
+        border: 1px solid var(--gcs-border);
+        border-radius: 8px;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        text-align: center;
+    }
+
+    .esc-step-icon {
+        font-size: 2rem;
+        line-height: 1;
+    }
+
+    .esc-step-title {
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 1.5px;
+        color: var(--gcs-text, #c9d1d9);
+    }
+
+    .esc-step-body {
+        font-size: 0.65rem;
+        color: var(--gcs-text-muted, #8b949e);
+        line-height: 1.5;
+        max-width: 340px;
+    }
+
+        .esc-step-body code {
+            background: rgba(255,255,255,0.07);
+            border-radius: 3px;
+            padding: 1px 5px;
+            font-size: 0.62rem;
+            color: var(--gcs-cyan, #00d4ff);
+        }
+
+    .text-green {
+        color: #3fb950 !important;
+    }
+
+    .text-cyan {
+        color: var(--gcs-cyan, #00d4ff) !important;
+    }
+
+    .text-amber {
+        color: var(--gcs-amber, #e6a817) !important;
+    }
+
+    .esc-done-banner {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 14px;
+        background: rgba(63, 185, 80, 0.08);
+        border: 1px solid rgba(63, 185, 80, 0.4);
+        border-radius: 6px;
+        font-size: 0.65rem;
+        font-weight: 700;
+        color: #3fb950;
+        letter-spacing: 0.5px;
+    }
+
+    .btn-link {
+        background: none;
+        border: none;
+        color: var(--gcs-cyan, #00d4ff);
+        font-size: 0.62rem;
+        cursor: pointer;
+        text-decoration: underline;
+        padding: 0;
+        font-family: inherit;
+    }
+
+    .btn-gcs-danger {
+        background: rgba(255, 58, 58, 0.1);
+        border: 1px solid #ff3a3a;
+        color: #ff3a3a;
+        padding: 5px 14px;
+        font-size: 0.65rem;
+        font-weight: 700;
+        border-radius: 4px;
+        cursor: pointer;
+        letter-spacing: 1px;
+        transition: all 0.15s;
+    }
+
+        .btn-gcs-danger:hover {
+            background: #ff3a3a;
+            color: #fff;
+        }
 </style>
 
 @code {
@@ -1568,14 +2134,18 @@
     private string currentClass = "X-FRAME";
     private string rcLossAction = "1";
     private string lowBattAction = "1";
-    private string escCalStatus = "IDLE";
+    // ESC calibration wizard state
+    private int escCalStep = 0;   // 0=idle, 1-5=steps, 99=done
+    private int escCalMethod = 0;   // 0=auto, 1=manual passthrough
     private bool isLedEnabled = true;
     private bool IsGyroCalibrating => Drone.LiveGyroStatus == "STARTING..." || Drone.LiveGyroStatus == "CALIBRATING...";
     private bool IsMagCalibrating =>
         Drone.LiveMagStatus == "STARTING..." ||
         Drone.LiveMagStatus == "CALIBRATING..." ||
         (Drone.LiveMagProgress > 0 && Drone.LiveMagProgress < 100);
-    private string[] flightModeSettings = { "STABILIZE", "LOITER", "RTL" };
+    // Flight modes — 6 positions (FLTMODE1-6), matches ArduCopter FLTMODE params
+    private string[] flightModeSettings = { "STABILIZE", "ALT_HOLD", "LOITER", "RTL", "LOITER", "RTL" };
+    private string flightModeChannel = "5";   // FLTMODE_CH parameter
     // Battery Monitor Settings
     private string battMonitorType = "4"; // Default to Voltage & Current
     private int battCapacity = 3300;      // Default to a standard 3300mAh lipo
@@ -1587,9 +2157,9 @@
 
     protected override void OnInitialized()
     {
-        // Only refresh the UI on telemetry updates. No more string parsing needed!
         Drone.OnTelemetryUpdated += RefreshUi;
         Drone.OnRcChannelsUpdated += HandleRcUpdate;
+        Drone.OnFlightModeParams += OnFlightModeParamsReceived;
     }
 
     private void HandleRcUpdate(ushort[] channels)
@@ -1645,16 +2215,38 @@
 
     private void SyncFlightModes()
     {
-        for (int i = 0; i < flightModeSettings.Length; i++)
-        {
+        // Write all 6 FLTMODE params to the flight controller
+        for (int i = 0; i < 6; i++)
             Drone.SaveFlightMode(i + 1, flightModeSettings[i]);
-        }
+
+        // Write the channel mapping — FLTMODE_CH param (5=CH5 default)
+        Drone.SendParameter("FLTMODE_CH", float.Parse(flightModeChannel));
     }
 
-    private void ToggleEscCalMode()
+    // ESC calibration wizard
+    private void EscCalStart() => escCalStep = 1;
+    private void EscCalAbort() { escCalStep = 0; Drone.SendParameter("ESC_CALIBRATION", 0); }
+    private void EscCalDone() => escCalStep = 99;
+
+    private void EscCalAutoStep1()
     {
-        Drone.SetEscCalibrationMode();
-        escCalStatus = "REBOOT REQUIRED";
+        // Write ESC_CALIBRATION=3 — FC will output full-throttle PWM on next boot
+        Drone.SendParameter("ESC_CALIBRATION", 3);
+        escCalStep = 2;
+    }
+
+    private void EscCalManualStep1()
+    {
+        // Enable passthrough: ESC_CALIBRATION=1 makes FC relay throttle to ESCs directly
+        Drone.SendParameter("ESC_CALIBRATION", 1);
+        escCalStep = 2;
+    }
+
+    private void EscCalManualStep4()
+    {
+        // Disable passthrough and clear the cal parameter
+        Drone.SendParameter("ESC_CALIBRATION", 0);
+        escCalStep = 5;
     }
 
     private void StopAllMotors()
@@ -1707,6 +2299,35 @@
         Drone.LiveAccelStatus == "RECORDING..." ||
         Drone.LiveAccelStatus == "COMPUTING...";
 
+    private static string GetFlightModeDesc(string mode) => mode switch
+    {
+        "STABILIZE" => "Manual throttle, self-levels roll/pitch",
+        "ACRO" => "Full manual, no self-levelling",
+        "ALT_HOLD" => "Auto altitude hold, manual roll/pitch",
+        "AUTO" => "Follows autonomous waypoint mission",
+        "GUIDED" => "Accepts target positions from GCS",
+        "LOITER" => "Holds GPS position and altitude",
+        "RTL" => "Returns to launch point",
+        "CIRCLE" => "Orbits a fixed point",
+        "LAND" => "Descends and lands autonomously",
+        "DRIFT" => "Plane-like roll with auto-yaw",
+        "SPORT" => "Rate control, forward-pitch levelling",
+        "FLIP" => "Executes a single flip",
+        "AUTOTUNE" => "Automatically tunes PID gains",
+        "POSHOLD" => "Hybrid loiter/stabilize",
+        "BRAKE" => "Stops and holds current position",
+        "THROW" => "Activates after being thrown",
+        "SMART_RTL" => "RTL via safe path home",
+        "FLOWHOLD" => "Position hold using optical flow",
+        "FOLLOW" => "Follows a target vehicle",
+        "ZIGZAG" => "Automated back-and-forth survey",
+        "SYSTEMID" => "System identification mode",
+        "AUTOROTATE" => "Autorotation for helicopters",
+        "AUTO_RTL" => "Mission RTL with waypoint",
+        "TURTLE" => "Inverted recovery flip",
+        _ => ""
+    };
+
     // Dynamic CSS classes to physically rotate the SVG drone
     private string GetDroneOrientationClass(string status) => status switch
     {
@@ -1750,5 +2371,14 @@
     {
         Drone.OnTelemetryUpdated -= RefreshUi;
         Drone.OnRcChannelsUpdated -= HandleRcUpdate;
+        Drone.OnFlightModeParams -= OnFlightModeParamsReceived;
+    }
+
+    // Called when MavlinkService has read all FLTMODE params from the FC
+    private void OnFlightModeParamsReceived(string[] modes, string channel)
+    {
+        flightModeSettings = modes;
+        flightModeChannel = channel;
+        InvokeAsync(StateHasChanged);
     }
 }
