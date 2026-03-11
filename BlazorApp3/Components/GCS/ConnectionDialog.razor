@@ -6,11 +6,6 @@
     <div class="conn-overlay">
         <div class="conn-box @(_isError ? "error-box" : "")">
 
-            @if (_isLinkLost)
-            {
-                <div class="icon-area error-anim">📡❌</div>
-                <div class="conn-title text-red">LINK DISCONNECTED</div>
-            }
             @if (_isError)
             {
                 <div class="icon-area error-anim">⚠️</div>
@@ -74,10 +69,10 @@
     }
 
         /* ERROR STATE */
-    .conn-box.error-box {
-        border-color: #ff3a3a;
-        box-shadow: 0 0 50px rgba(255, 58, 58, 0.2);
-    }
+        .conn-box.error-box {
+            border-color: #ff3a3a;
+            box-shadow: 0 0 50px rgba(255, 58, 58, 0.2);
+        }
 
     /* 3. ANIMATIONS & ICONS */
     .spinner {
@@ -140,10 +135,10 @@
         color: #ccc;
     }
 
-    .cancel-btn:hover {
-        border-color: white;
-        color: white;
-    }
+        .cancel-btn:hover {
+            border-color: white;
+            color: white;
+        }
 
     .close-btn {
         background: #3a0d0d;
@@ -151,15 +146,15 @@
         color: #ff3a3a;
     }
 
-    .close-btn:hover {
-        background: #ff3a3a;
-        color: white;
-    }
+        .close-btn:hover {
+            background: #ff3a3a;
+            color: white;
+        }
 
     .hud-container.link-dead {
         border: 3px solid #ff3a3a;
         animation: flash-red 1s infinite;
-    } 
+    }
 
     /* Fix for Line 164 (and others) in ConnectionDialog.razor */
     @@keyframes spin {
@@ -208,34 +203,35 @@
 </style>
 
 @code {
+    // State
     private bool _isOpen = false;
     private bool _isError = false;
     private bool _heartbeatReceived = false;
     private bool _userCancelled = false;
-    private bool _isLinkLost = false;
-    private bool _gotHeartbeatEver = false;
+    private DateTime _heartbeatConfirmedAt = DateTime.MinValue;
     private string _statusMessage = "Initializing...";
 
     protected override void OnInitialized()
     {
-        // 1. Listen for "Show/Hide" signals from Service
         Drone.OnConnectionDialog += HandleDialogSignal;
-        // 2. Listen for status text updates ("Opening Port COM3...")
-        Drone.OnConnectionStatus += UpdateMessage;
-        // 3. Listen for REAL data to know when to finally close
+        Drone.OnConnectionStatus += UpdateStatusMessage;
         Drone.OnTelemetryUpdated += CheckForValidData;
     }
 
-    private void HandleDialogSignal(bool shouldOpen)
+    // Called by service: true = open dialog, false = close/update
+    private void HandleDialogSignal(bool show)
     {
-        if (shouldOpen)
+        if (show)
         {
+            // Fresh open — reset everything
             _isOpen = true;
             _isError = false;
             _heartbeatReceived = false;
             _userCancelled = false;
-            _statusMessage = "Initializing...";
-            InvokeAsync(StateHasChanged);
+            _heartbeatConfirmedAt = DateTime.MinValue;
+            _statusMessage = Drone.IsWireless
+                                    ? "Searching for telemetry radio..."
+                                    : "Initializing...";
         }
         else
         {
@@ -245,59 +241,61 @@
             }
             else if (Drone.IsConnected)
             {
-                // SUCCESS (Heartbeat Found)
+                // Service confirmed link is stable — mark heartbeat received,
+                // CheckForValidData will close the dialog once telemetry flows.
                 _heartbeatReceived = true;
-                _gotHeartbeatEver = true;   
-                // Note: We DO NOT set a hardcoded message here anymore.
-                // We let MainLayout send "Link Established (25s)..."
+            }
+            else if (!_heartbeatReceived)
+            {
+                // Timed out before getting any heartbeat
+                _isError = true;
+                _statusMessage = Drone.IsWireless
+                                   ? "No response from telemetry radio"
+                                   : "Connection timed out";
             }
             else
             {
-                // Only show error if we never got a heartbeat at all
-                if (!_gotHeartbeatEver)
-                {
-                    _isError = true;
-                    _statusMessage = "Connection Timed Out";
-                }
-                else
-                {
-                    // Transient blip — just close silently
-                    _isOpen = false;
-                }
+                _isOpen = false;
             }
-            InvokeAsync(StateHasChanged);
         }
+        InvokeAsync(StateHasChanged);
     }
 
-    private void UpdateMessage(string msg)
+    // Status text from service ("Opening COM7 @ 57600...")
+    private void UpdateStatusMessage(string msg)
     {
-        // Only block updates if we are in a hard ERROR state
         if (_isError) return;
-
-        // REMOVED: The check that blocked messages after heartbeat.
-        // Now "Link Established (24s)" can overwrite the previous text.
         _statusMessage = msg;
         InvokeAsync(StateHasChanged);
     }
 
+    // Fired every time telemetry arrives — decides when to actually close
     private void CheckForValidData()
     {
-        // Only run this check if:
-        // 1. Dialog is open
-        // 2. We have a heartbeat (Connection is technicaly alive)
-        // 3. We are NOT showing an error
-        if (!_isOpen || !_heartbeatReceived || _isError) return;
+        if (!_isOpen || _isError || !_heartbeatReceived) return;
 
-        // Check for ANY valid non-zero data
-        bool hasRoll = Drone.State.Roll != 0;
-        bool hasAlt = Drone.State.Altitude != 0;
-        bool hasSats = Drone.State.SatCount > 0;
-        bool hasVoltage = Drone.State.Voltage > 0;
-
-        if (hasRoll || hasAlt || hasSats || hasVoltage)
+        // Stamp when heartbeat was first confirmed this connect attempt
+        if (_heartbeatConfirmedAt == DateTime.MinValue)
         {
-            // DATA IS FLOWING!
-            // Close the dialog smoothly.
+            _heartbeatConfirmedAt = DateTime.UtcNow;
+            _statusMessage = Drone.IsWireless
+                ? "Radio link confirmed ✅ — loading telemetry..."
+                : "Connected ✅";
+            InvokeAsync(StateHasChanged);
+        }
+
+        // Close as soon as any real telemetry arrives
+        bool hasTelemetry = Drone.State.Roll != 0
+                         || Drone.State.Altitude != 0
+                         || Drone.State.SatCount > 0
+                         || Drone.State.Voltage > 0;
+
+        // Fallback: close after grace period even if bench drone shows all-zero
+        double grace = Drone.IsWireless ? 5.0 : 2.0;
+        bool graceUp = (DateTime.UtcNow - _heartbeatConfirmedAt).TotalSeconds > grace;
+
+        if (hasTelemetry || graceUp)
+        {
             _isOpen = false;
             InvokeAsync(StateHasChanged);
         }
@@ -306,19 +304,21 @@
     private void UserCancel()
     {
         _userCancelled = true;
-        Drone.StopConnection(); // Kill the backend process
-        _isOpen = false;        // Close UI immediately
+        Drone.StopConnection();
+        _isOpen = false;
+        InvokeAsync(StateHasChanged);
     }
 
     private void ForceClose()
     {
-        _isOpen = false; // Close UI after viewing error
+        _isOpen = false;
+        InvokeAsync(StateHasChanged);
     }
 
     public void Dispose()
     {
         Drone.OnConnectionDialog -= HandleDialogSignal;
-        Drone.OnConnectionStatus -= UpdateMessage;
+        Drone.OnConnectionStatus -= UpdateStatusMessage;
         Drone.OnTelemetryUpdated -= CheckForValidData;
     }
 }

@@ -41,6 +41,7 @@ public class DroneState
 
     // Battery
     public double Voltage { get; set; }
+    public double CurrentDraw { get; set; }  // amps from SYS_STATUS.current_battery (cA→A)
     public float BatteryPercent { get; set; }
 
     // State
@@ -83,6 +84,7 @@ public class DroneState
 
         // Battery (IMPORTANT)
         Voltage = other.Voltage;
+        CurrentDraw = other.CurrentDraw;
         BatteryPercent = other.BatteryPercent;
 
         // Any fields you added later
@@ -91,9 +93,6 @@ public class DroneState
         HeadingSource = other.HeadingSource;
         AttitudeYawDeg = other.AttitudeYawDeg;
         HasRelAlt = other.HasRelAlt;
-        MotorCount = other.MotorCount;
-        FrameClass = other.FrameClass;
-        FrameType = other.FrameType;
 
         // Stats
         RxPacketsPerSec = other.RxPacketsPerSec;
@@ -108,6 +107,10 @@ public class DroneState
         SatCount = other.SatCount;
         SatellitesVisible = other.SatellitesVisible;
         GpsFixType = other.GpsFixType;
+
+        MotorCount = other.MotorCount;
+        FrameClass = other.FrameClass;
+        FrameType = other.FrameType;
 
         if (other.RawChannels != null)
         {
