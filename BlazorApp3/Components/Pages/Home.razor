@@ -3,8 +3,42 @@
 @inject MavlinkService Drone
 @implements IDisposable
 
-<div class="map-wrapper">
+<div class="map-wrapper @(_mapExpanded ? "map-expanded" : "")">
     <div id="map-element"></div>
+
+    <button class="map-expand-btn @(_mapExpanded ? "expanded" : "")"
+            title="@(_mapExpanded ? "Exit fullscreen" : "Fullscreen map")"
+            @onclick="ToggleExpand">
+        <i class="bi @(_mapExpanded ? "bi-fullscreen-exit" : "bi-fullscreen")"></i>
+    </button>
+
+    <button class="map-recentre-btn" title="Re-centre map on drone" @onclick="RecentreMap">
+        <i class="bi bi-crosshair2"></i>
+    </button>
+
+    <button class="map-trail-btn @(_trailEnabled ? "trail-on" : "")" title="Toggle flight trail" @onclick="ToggleTrail">
+        <i class="bi bi-activity"></i>
+    </button>
+
+    <div id="map-coord-log">LAT: —<br>LNG: —</div>
+
+    @* GPS Fix quality badge *@
+    <div class="map-gps-badge @(Drone.State.SatCount >= 6 ? "gps-fix" : Drone.State.SatCount >= 1 ? "gps-weak" : "gps-none")">
+        <i class="bi bi-reception-4"></i>
+        <span>@Drone.State.SatCount SAT</span>
+        @if (Drone.State.SatCount >= 6)
+        {
+            <span class="gps-fix-label">3D FIX</span>
+        }
+        else if (Drone.State.SatCount > 0)
+        {
+            <span class="gps-fix-label">ACQUIRING</span>
+        }
+        else
+        {
+            <span class="gps-fix-label">NO FIX</span>
+        }
+    </div>
 
     @* Right Side Telemetry Overlay *@
     <div class="side-telemetry">
@@ -12,7 +46,7 @@
             <div class="icon">@(Drone.State.BatteryPercent > 50 ? "🔋" : "🪫")</div>
             <div class="data">
                 <div class="label">Battery</div>
-                <div class="val">@Drone.State.BatteryPercent%</div>
+                <div class="val">@Drone.State.BatteryPercent% <small>@Drone.State.Voltage.ToString("0.0")V</small></div>
             </div>
         </div>
 
@@ -27,7 +61,7 @@
         <div class="stat-box">
             <div class="icon">🏔️</div>
             <div class="data">
-                <div class="label">Altitude</div>
+                <div class="label">Altitude (AGL)</div>
                 <div class="val">@Drone.State.Altitude.ToString("0") <small>m</small></div>
             </div>
         </div>
@@ -41,54 +75,229 @@
         position: relative;
     }
 
-    .map-wrapper #map-element {
-        width: 100%;
-        height: calc(100vh - 150px);
-        min-height: 400px;
-        background-color: #0a0b0d;
-    }
+        .map-wrapper #map-element {
+            width: 100%;
+            height: calc(100vh - 120px); /* header 60px + footer 60px */
+            min-height: 400px;
+            background-color: #0a0b0d;
+            transition: height .3s;
+        }
 
-    .side-telemetry {
+        .map-wrapper.map-expanded #map-element {
+            height: 100vh;
+        }
+
+    /* ── TOP-LEFT: fullscreen toggle ───────────────────────── */
+    .map-expand-btn {
         position: absolute;
-        top: 120px;
-        right: 20px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        z-index: 5;
-    }
-
-    .stat-box {
-        background: rgba(13, 14, 16, 0.9);
-        border: 1px solid #242731;
-        border-radius: 8px;
-        padding: 10px 15px;
+        top: 12px;
+        left: 12px;
+        z-index: 1000;
+        width: 34px;
+        height: 34px;
+        background: rgba(10,11,13,.92);
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        color: #58a6ff;
+        font-size: 0.95rem;
+        cursor: pointer;
         display: flex;
         align-items: center;
-        gap: 12px;
-        min-width: 140px;
+        justify-content: center;
+        transition: all .15s;
     }
 
-    .stat-box .icon {
-            font-size: 1.2rem;
+        .map-expand-btn:hover {
+            background: #161b22;
+            color: #00f2ff;
+            border-color: #58a6ff;
+        }
+
+        .map-expand-btn.expanded {
+            border-color: #f0b429;
+            color: #f0b429;
+        }
+
+    /* ── RIGHT-CENTER: telemetry column ───────────────────── */
+    /* Sits below the Leaflet layer-switcher (top-right, ~30px tall collapsed).
+               transform: translateY(-50%) centres it vertically in the map area.        */
+    .side-telemetry {
+        position: absolute;
+        top: 50%;
+        right: 12px;
+        transform: translateY(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        z-index: 1000;
+        pointer-events: none;
     }
 
-    .stat-box .label {
-            font-size: 0.6rem;
-            color: #888;
+        .side-telemetry .stat-box {
+            pointer-events: all;
+        }
+
+    .stat-box {
+        background: rgba(10,11,14,0.88);
+        border: 1px solid #2a2d35;
+        border-radius: 8px;
+        padding: 7px 11px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        width: 158px; /* fixed width — no reflow as values change */
+        backdrop-filter: blur(6px);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        transition: border-color 0.2s;
+    }
+
+        .stat-box:hover {
+            border-color: #444;
+        }
+
+        .stat-box .icon {
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+
+        .stat-box .data {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            min-width: 0;
+        }
+
+        .stat-box .label {
+            font-size: 0.5rem;
+            color: #555;
             text-transform: uppercase;
+            letter-spacing: 0.6px;
+            white-space: nowrap;
+        }
+
+        .stat-box .val {
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #00f2ff;
+            white-space: nowrap;
+        }
+
+            .stat-box .val small {
+                font-size: 0.62rem;
+                color: #555;
+                font-weight: normal;
+                margin-left: 2px;
+            }
+
+    .low-bat {
+        border-color: #ff3a3a !important;
     }
 
-    .stat-box .val {
-            font-size: 0.9rem;
-            font-weight: bold;
-            color: var(--cyan);
+    /* ── BOTTOM-RIGHT stack (trail → recentre → scale-bar) ── */
+    /* scale-bar is a Leaflet control that lands at bottom:0 right:0 by default.
+               We nudge our buttons up so they clear it.                                  */
+    .map-recentre-btn {
+        position: absolute;
+        bottom: 54px; /* scale-bar ~26px + 6px gap + 22px = 54px from bottom  */
+        right: 12px;
+        z-index: 1000;
+        width: 34px;
+        height: 34px;
+        background: rgba(10,11,14,0.92);
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        color: #58a6ff;
+        font-size: 1rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.15s, color 0.15s;
     }
+
+        .map-recentre-btn:hover {
+            background: #1a1f2e;
+            color: #00f2ff;
+        }
+
+    .map-trail-btn {
+        position: absolute;
+        bottom: 95px; /* recentre 54px + 34px height + 7px gap               */
+        right: 12px;
+        z-index: 1000;
+        width: 34px;
+        height: 34px;
+        background: rgba(10,11,14,0.92);
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        color: #8b949e;
+        font-size: 0.95rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.15s;
+    }
+
+    .map-trail-btn:hover {
+            background: #1a1f2e;
+            color: #00f2ff;
+        }
+
+        .map-trail-btn.trail-on {
+            border-color: #00f2ff;
+            color: #00f2ff;
+        }
+
+    /* ── BOTTOM-LEFT stack (coord-log → gps-badge → zoom-label) ─ */
+    /* zoom-label is a Leaflet bottomleft control, lands at ~0px from bottom.
+               gps-badge sits just above it, coord-log above that.                       */
+    .map-gps-badge {
+        position: absolute;
+        bottom: 30px; /* zoom-label ~22px + 8px gap                           */
+        left: 12px;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 9px;
+        border-radius: 5px;
+        font-size: 0.58rem;
+        font-weight: 800;
+        letter-spacing: 0.8px;
+        border: 1px solid transparent;
+    }
+
+    .gps-fix {
+        background: rgba(10,11,14,0.92);
+        border-color: #2ea043;
+        color: #3fb950;
+    }
+
+    .gps-weak {
+        background: rgba(10,11,14,0.92);
+        border-color: #d29922;
+        color: #d29922;
+    }
+
+    .gps-none {
+        background: rgba(10,11,14,0.92);
+        border-color: #484f58;
+        color: #8b949e;
+    }
+
+    .gps-fix-label {
+        margin-left: 3px;
+        opacity: 0.75;
+    }
+
 </style>
 
 @code {
-    private bool _mapInitialized = false;   // we called initMap at least once
-    private bool _jumpedToDrone = false;    // we jumped once when GPS became valid
+    private bool _mapInitialized = false;
+    private bool _jumpedToDrone = false;
+    private bool _mapExpanded = false;
+    private bool _trailEnabled = true;
 
     private DateTime _lastJsUpdateUtc = DateTime.MinValue;
     private readonly TimeSpan _jsMinPeriod = TimeSpan.FromMilliseconds(200); // 5 Hz max JS calls
@@ -141,33 +350,53 @@
         var lon = Drone.State.Longitude;
         var heading = Drone.State.Yaw;
 
-        if (!HasValidGps(lat, lon))
-            return;
+        if (!HasValidGps(lat, lon)) return;
 
-        // throttle JS calls
         var now = DateTime.UtcNow;
-        if (now - _lastJsUpdateUtc < _jsMinPeriod)
-            return;
-
+        if (now - _lastJsUpdateUtc < _jsMinPeriod) return;
         _lastJsUpdateUtc = now;
+
+        // Extra telemetry passed to JS so the drone tooltip stays current
+        var extra = new
+        {
+            alt = (double)Drone.State.Altitude,
+            spd = (double)Drone.State.GroundSpeed,
+            bat = (int)Drone.State.BatteryPercent,
+            hdop = Drone.State.SatCount > 0 ? Math.Max(0.5, 5.0 - Drone.State.SatCount * 0.3) : 5.0
+        };
 
         try
         {
-            // ✅ First valid GPS -> jump instantly + create marker
             if (!_jumpedToDrone)
             {
-                await JS.InvokeVoidAsync("jumpToDrone", lat, lon, heading);
+                await JS.InvokeVoidAsync("jumpToDrone", lat, lon, heading, extra);
                 _jumpedToDrone = true;
                 return;
             }
-
-            // ✅ After jump -> update marker position (marker must already exist)
-            await JS.InvokeVoidAsync("updateMapPos", lat, lon, heading);
+            await JS.InvokeVoidAsync("updateMapPos", lat, lon, heading, extra);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Map Error: {ex.Message}");
         }
+    }
+
+    private async Task ToggleExpand()
+    {
+        _mapExpanded = !_mapExpanded;
+        try { await JS.InvokeVoidAsync(_mapExpanded ? "expandMap" : "collapseMap"); }
+        catch { }
+    }
+    private async Task RecentreMap()
+    {
+        try { await JS.InvokeVoidAsync("recentreToDrone"); }
+        catch { }
+    }
+    private async Task ToggleTrail()
+    {
+        _trailEnabled = !_trailEnabled;
+        try { await JS.InvokeVoidAsync("setTrailEnabled", _trailEnabled); }
+        catch { }
     }
 
     public void Dispose()

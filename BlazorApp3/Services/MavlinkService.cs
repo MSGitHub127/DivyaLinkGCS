@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using System.IO.Ports;
@@ -34,6 +34,29 @@ public class MavlinkService : BackgroundService
 
     private bool _connDialogOpen = false;
     private bool _gotFirstHeartbeatThisSession = false;
+    private bool _pendingArmToast = false;
+    private bool _pendingDisarmToast = false;
+
+    // ── RC connection tracking ────────────────────────────────────────────
+    private DateTime _lastRcPacketUtc = DateTime.MinValue;  // last packet timestamp
+    private bool _rcWasConnected = false;
+
+    // RC_CHANNELS arrives at 10 Hz (wireless) or 50 Hz (wired).
+    // If no valid packet arrives within this window → RC lost.
+    // 2.5s gives 2× the wireless interval as tolerance for jitter.
+    private static readonly TimeSpan RcTimeoutSpan = TimeSpan.FromSeconds(2.5);
+
+    // Jitter / stale-data detection for rssi==255 receivers (FrSky, SBUS, PWM).
+    // ArduPilot keeps sending frozen last-known PWM values after the transmitter
+    // is turned off. We detect staleness by checking whether ANY channel has
+    // changed across the last N packets. A live transmitter always drifts slightly.
+    private ushort[] _prevRcChannels = new ushort[8];      // channels from prior packet
+    private int _rcFrozenCount = 0;                       // consecutive frozen packets (disconnect evidence)
+    private int _rcLiveCount = 0;                       // consecutive live/moving packets (connect evidence)
+    private const int RcFrozenThreshold = 15;              // ~1.5s at 10Hz to confirm stale → disconnect
+    private const int RcLiveThreshold = 3;               // 3 consecutive moving packets → confirm connect
+                                                         // Fast enough to feel instant, slow enough to
+                                                         // reject the single stale burst on drone connect
     private int _consecutiveHeartbeatCount = 0;
     private DateTime _lastHeartbeatForStability = DateTime.MinValue;
 
@@ -54,6 +77,13 @@ public class MavlinkService : BackgroundService
     public string ActiveCalType { get; set; } = "NONE";
 
     public event Action<ushort[]>? OnRcChannelsUpdated;
+
+    // ── Toast notification system ─────────────────────────────────────────
+    public enum ToastLevel { Info, Success, Warning, Error }
+    public record ToastMessage(string Text, ToastLevel Level, string? Icon = null);
+    public event Action<ToastMessage>? OnToast;
+    public void Toast(string text, ToastLevel level = ToastLevel.Info, string? icon = null)
+        => OnToast?.Invoke(new ToastMessage(text, level, icon));
 
     private Dictionary<byte, int> _magProgressTracker = new();
     private DateTime _accelCalStartedUtc = DateTime.MinValue;
@@ -107,12 +137,16 @@ public class MavlinkService : BackgroundService
         int GcsEnable     // FS_GCS_ENABLE:  0=disabled 1=RTL 2=continue
     );
     public record BatteryParams(
-        int Monitor,    // BATT_MONITOR
-        int Capacity,   // BATT_CAPACITY (mAh)
-        double LowVolt,    // BATT_LOW_VOLT
-        double CrtVolt,    // BATT_CRT_VOLT
-        double ArmVolt,    // BATT_ARM_VOLT
-        int LowMah      // BATT_LOW_MAH
+        int Monitor,        // BATT_MONITOR
+        int Capacity,       // BATT_CAPACITY (mAh)
+        double LowVolt,     // BATT_LOW_VOLT (V)
+        double CrtVolt,     // BATT_CRT_VOLT (V)
+        double ArmVolt,     // BATT_ARM_VOLT (V)
+        int LowMah,         // BATT_LOW_MAH
+        double VoltMult,    // BATT_VOLT_MULT
+        double AmpPerVlt,   // BATT_AMP_PERVLT
+        double AmpOffset,   // BATT_AMP_OFFSET
+        int NumCells        // BATT_NUM_CELLS
     );
 
     // ── Failsafe & battery param accumulator ─────────────────────────────
@@ -122,13 +156,17 @@ public class MavlinkService : BackgroundService
     private int _fsBattEnable = 2;
     private int _fsGcsEnable = 0;
 
-    private int _battRecv = 0;      // bitmask: bit0=MONITOR,1=CAPACITY,2=LOW_V,3=CRT_V,4=ARM_V,5=LOW_MAH
+    private int _battRecv = 0;
     private int _battMonitor = 4;
     private int _battCapacity = 3300;
     private double _battLowVolt = 0;
     private double _battCrtVolt = 0;
     private double _battArmVolt = 0;
     private int _battLowMah = 0;
+    private double _battVoltMult = 10.1;
+    private double _battAmpPerVlt = 17.0;
+    private double _battAmpOffset = 0.0;
+    private int _battNumCells = 3;
 
     public MavlinkService(ILogger<MavlinkService> logger)
     {
@@ -145,6 +183,12 @@ public class MavlinkService : BackgroundService
             return (DateTime.UtcNow - hb).TotalSeconds < HeartbeatTimeoutSeconds;
         }
     }
+
+    // Stable cached link-health flag. Unlike IsConnected (which re-evaluates
+    // DateTime.UtcNow on every call), this only flips false after 3 consecutive
+    // CheckLinkHealth misses (1.5s). UI reads this — no flickering during normal
+    // SiK heartbeat gaps which can be 1-2s between packets.
+    public bool IsLinkHealthy { get; private set; } = false;
 
     public List<PortProfile> GetAvailablePorts()
     {
@@ -203,6 +247,7 @@ public class MavlinkService : BackgroundService
         _fltModeReceived = 0;
         Array.Clear(_fltModeValues, 0, 6);
         _fsRecv = 0; _battRecv = 0;
+        _battVoltMult = 10.1; _battAmpPerVlt = 17.0; _battAmpOffset = 0.0; _battNumCells = 3;
 
         CloseSerialPort();
 
@@ -514,6 +559,25 @@ public class MavlinkService : BackgroundService
 
     private void WipeDataToBlankSlate()
     {
+        // Reset RC + sensor tracking state
+        _rcWasConnected = false;
+        _lastRcPacketUtc = DateTime.MinValue;
+        Array.Clear(_prevRcChannels, 0, 8);
+        _rcFrozenCount = 0;
+        _rcLiveCount = 0;
+        IsLinkHealthy = false;
+        _lastGpsFix = -1;
+        _lastBattPct = -1;
+        _sentLowBattToast = false;
+        _sentCritBattToast = false;
+        _lastFlightMode = "";
+        _sensorAlerted.Clear();
+
+        // Immediately clear RC connected flag in DroneState so the HUD
+        // icon turns grey the moment the drone disconnects — not after the
+        // 5-second RC timeout fires (which is guarded by _shouldBeConnected).
+        UpdateState(s => s.IsRcConnected = false);
+
         // 1. Reset all Calibration UI variables back to default
         LiveMagProgress = 0;
         LiveMagStatus = "SYSTEM STANDBY";
@@ -577,8 +641,14 @@ public class MavlinkService : BackgroundService
                     s.FlightMode = GetFlightModeString(hb.custom_mode);
                 }
 
-                s.IsArmed = (((MAVLink.MAV_MODE_FLAG)hb.base_mode) & MAVLink.MAV_MODE_FLAG.SAFETY_ARMED) != 0;
+                bool newArmed = (((MAVLink.MAV_MODE_FLAG)hb.base_mode) & MAVLink.MAV_MODE_FLAG.SAFETY_ARMED) != 0;
+                bool wasArmed = s.IsArmed;
+                s.IsArmed = newArmed;
+                if (newArmed && !wasArmed) _pendingArmToast = true;
+                if (!newArmed && wasArmed) _pendingDisarmToast = true;
             });
+            if (_pendingArmToast) { _pendingArmToast = false; Toast("System ARMED — motors active", ToastLevel.Warning, "🔴"); }
+            if (_pendingDisarmToast) { _pendingDisarmToast = false; Toast("System disarmed", ToastLevel.Info, "🟢"); }
 
             // Count consecutive heartbeats to confirm link stability before closing dialog.
             // Wired: 1 heartbeat is enough (USB is reliable).
@@ -595,7 +665,9 @@ public class MavlinkService : BackgroundService
             if (!_gotFirstHeartbeatThisSession && _consecutiveHeartbeatCount >= requiredHeartbeats)
             {
                 _gotFirstHeartbeatThisSession = true;
+                IsLinkHealthy = true;
                 ReportConn($"Heartbeat confirmed (Sys:{packet.sysid} Comp:{packet.compid}) ✅ Link Stable");
+                Toast($"Drone connected — Sys:{packet.sysid} · {(IsWireless ? "Radio link" : "USB link")}", ToastLevel.Success, "📡");
 
                 if (_connDialogOpen)
                 {
@@ -625,7 +697,27 @@ public class MavlinkService : BackgroundService
                     RequestParamRead("BATT_LOW_VOLT"); await Task.Delay(IsWireless ? 80 : 20);
                     RequestParamRead("BATT_CRT_VOLT"); await Task.Delay(IsWireless ? 80 : 20);
                     RequestParamRead("BATT_ARM_VOLT"); await Task.Delay(IsWireless ? 80 : 20);
-                    RequestParamRead("BATT_LOW_MAH");
+                    RequestParamRead("BATT_LOW_MAH"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_VOLT_MULT"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_AMP_PERVLT"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_AMP_OFFSET"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("BATT_NUM_CELLS"); await Task.Delay(IsWireless ? 80 : 20);
+                    // Frame geometry
+                    RequestParamRead("FRAME_CLASS"); await Task.Delay(IsWireless ? 80 : 20);
+                    RequestParamRead("FRAME_TYPE");
+
+                    // Retry any missed params (SiK drops ~5% of packets)
+                    await Task.Delay(IsWireless ? 4000 : 1500);
+                    if ((_fsRecv & 0b0001) == 0) { RequestParamRead("FS_THR_ENABLE"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_fsRecv & 0b0010) == 0) { RequestParamRead("FS_THR_VALUE"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_fsRecv & 0b0100) == 0) { RequestParamRead("FS_BATT_ENABLE"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_fsRecv & 0b1000) == 0) { RequestParamRead("FS_GCS_ENABLE"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_battRecv & 0x01) == 0) { RequestParamRead("BATT_MONITOR"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_battRecv & 0x02) == 0) { RequestParamRead("BATT_CAPACITY"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_battRecv & 0x04) == 0) { RequestParamRead("BATT_LOW_VOLT"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_battRecv & 0x08) == 0) { RequestParamRead("BATT_CRT_VOLT"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_battRecv & 0x10) == 0) { RequestParamRead("BATT_ARM_VOLT"); await Task.Delay(IsWireless ? 80 : 20); }
+                    if ((_battRecv & 0x20) == 0) { RequestParamRead("BATT_LOW_MAH"); await Task.Delay(IsWireless ? 80 : 20); }
                 });
             }
         }
@@ -690,6 +782,48 @@ public class MavlinkService : BackgroundService
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS)
         {
             var sys = (MAVLink.mavlink_sys_status_t)packet.data;
+
+            // ── Sensor health check (only after first heartbeat, at most every 5s) ──
+            if (_gotFirstHeartbeatThisSession && (DateTime.UtcNow - _lastSensorHealthCheck).TotalSeconds >= 5)
+            {
+                _lastSensorHealthCheck = DateTime.UtcNow;
+                uint present = sys.onboard_control_sensors_present;
+                uint health = sys.onboard_control_sensors_health;
+                uint unhealthy = present & ~health;  // present but not healthy
+
+                // MAVLink sensor bit flags (MAV_SYS_STATUS_SENSOR)
+                const uint COMPASS = 0x04;   // MAV_SYS_STATUS_SENSOR_3D_MAG
+                const uint GYRO = 0x02;   // MAV_SYS_STATUS_SENSOR_3D_GYRO
+                const uint ACCEL = 0x01;   // MAV_SYS_STATUS_SENSOR_3D_ACCEL
+                const uint GPS_SENS = 0x20;   // MAV_SYS_STATUS_SENSOR_GPS
+                const uint BARO = 0x08;   // MAV_SYS_STATUS_SENSOR_ABSOLUTE_PRESSURE
+
+                if ((unhealthy & COMPASS) != 0 && !_sensorAlerted.Contains("COMPASS"))
+                { _sensorAlerted.Add("COMPASS"); Toast("Compass sensor unhealthy — calibration required", ToastLevel.Error, "🧭"); }
+                else if ((health & COMPASS) != 0)
+                    _sensorAlerted.Remove("COMPASS");
+
+                if ((unhealthy & GYRO) != 0 && !_sensorAlerted.Contains("GYRO"))
+                { _sensorAlerted.Add("GYRO"); Toast("Gyroscope sensor unhealthy — recalibrate", ToastLevel.Error, "⚙️"); }
+                else if ((health & GYRO) != 0)
+                    _sensorAlerted.Remove("GYRO");
+
+                if ((unhealthy & ACCEL) != 0 && !_sensorAlerted.Contains("ACCEL"))
+                { _sensorAlerted.Add("ACCEL"); Toast("Accelerometer unhealthy — recalibrate", ToastLevel.Error, "⚙️"); }
+                else if ((health & ACCEL) != 0)
+                    _sensorAlerted.Remove("ACCEL");
+
+                if ((unhealthy & BARO) != 0 && !_sensorAlerted.Contains("BARO"))
+                { _sensorAlerted.Add("BARO"); Toast("Barometer sensor unhealthy", ToastLevel.Warning, "📊"); }
+                else if ((health & BARO) != 0)
+                    _sensorAlerted.Remove("BARO");
+
+                if ((present & GPS_SENS) != 0 && (unhealthy & GPS_SENS) != 0 && !_sensorAlerted.Contains("GPS"))
+                { _sensorAlerted.Add("GPS"); Toast("GPS sensor unhealthy — check wiring", ToastLevel.Warning, "🛰️"); }
+                else if ((health & GPS_SENS) != 0)
+                    _sensorAlerted.Remove("GPS");
+            }
+
             UpdateState(s =>
             {
                 if (sys.voltage_battery > 0) s.Voltage = sys.voltage_battery / 1000.0;
@@ -759,22 +893,28 @@ public class MavlinkService : BackgroundService
                 // Guard: ArduPilot sends a STATUSTEXT "Calibration failed" a few ms AFTER
                 // the MAG_CAL_REPORT packet. If MAG_CAL_REPORT already resolved the outcome
                 // (ActiveCalType="NONE"), never let a late STATUSTEXT overwrite the result.
-                if (!upper.Contains("PREARM"))
+                if (upper.Contains("PREARM"))
+                {
+                    // PreArm check failures shown as warning toasts
+                    Toast(text, ToastLevel.Warning, "⚠️");
+                }
+                else
                 {
                     if (ActiveCalType == "ACCEL" && (upper.Contains("ACCEL") || upper.Contains("CANCELLED")))
                     {
                         LiveAccelStatus = "FAILED"; LiveAccelProgress = 0; ActiveCalType = "NONE";
+                        Toast("Accel calibration failed", ToastLevel.Error, "❌");
                     }
                     else if (ActiveCalType == "GYRO" && (upper.Contains("GYRO") || upper.Contains("CANCELLED")))
                     {
                         LiveGyroStatus = "FAILED"; LiveGyroProgress = 0; ActiveCalType = "NONE";
+                        Toast("Gyro calibration failed", ToastLevel.Error, "❌");
                     }
                     else if (ActiveCalType == "MAG" && upper.Contains("CANCELLED"))
                     {
-                        // Only explicit cancel — report handler owns all other outcomes
                         LiveMagStatus = "CANCELLED"; LiveMagProgress = 0; ActiveCalType = "NONE";
+                        Toast("Magnetometer calibration cancelled", ToastLevel.Warning, "🧲");
                     }
-                    // ActiveCalType="NONE" means MAG_CAL_REPORT already handled it — do NOT touch LiveMagStatus
                 }
                 NotifyUi(force: true);
             }
@@ -784,14 +924,15 @@ public class MavlinkService : BackgroundService
                 if (ActiveCalType == "GYRO" || upper.Contains("GYRO"))
                 {
                     LiveGyroStatus = "SUCCESS"; LiveGyroProgress = 100; ActiveCalType = "NONE";
+                    Toast("Gyroscope calibration complete ✓", ToastLevel.Success, "✅");
                     NotifyUi(force: true);
                 }
                 else if (ActiveCalType == "ACCEL")
                 {
-                    // Guard: 5s gate + progress >= 83 blocks stale boot STATUSTEXTs from faking success
                     if ((DateTime.UtcNow - _accelCalStartedUtc).TotalSeconds > 5.0 && LiveAccelProgress >= 83)
                     {
                         LiveAccelStatus = "SUCCESS"; LiveAccelProgress = 100; ActiveCalType = "NONE";
+                        Toast("Accelerometer calibration complete ✓", ToastLevel.Success, "✅");
                         NotifyUi(force: true);
                     }
                 }
@@ -830,10 +971,7 @@ public class MavlinkService : BackgroundService
             }
             OnMessageReceived?.Invoke(logEntry);
         }
-        // Catch BOTH older RAW (35) and modern RC_CHANNELS (65) packets
-        // Catch BOTH older RAW (35) and modern RC_CHANNELS (65) packets
-        // YOUR FIX: Listen ONLY for the modern RC_CHANNELS packet (ID 65)
-        // Around line 562 — move OnRcChannelsUpdated OUTSIDE the IsRcCalibrating check:
+        // RC_CHANNELS (msg 65) — primary RC presence signal
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS)
         {
             var rc = (MAVLink.mavlink_rc_channels_t)packet.data;
@@ -854,7 +992,180 @@ public class MavlinkService : BackgroundService
                 }
             }
 
-            // Always fire — throttling is handled in the component
+            // ── RC presence detection — four-layer approach ───────────────────
+            //
+            // 1. chan_count == 0  → no RC hardware detected                    → NOT connected
+            // 2. rssi == 0        → signal explicitly lost                     → NOT connected
+            // 3. rssi 1–254       → positive RSSI (CRSF, ELRS, some FrSky)    → CONNECTED
+            // 4. rssi == 255      → RSSI unsupported (PPM, SBUS, budget rcvr)
+            //                       ArduPilot keeps sending frozen PWM values
+            //                       after transmitter off — need jitter check:
+            //
+            //    JITTER CHECK: A live transmitter always produces ±1–3µs ADC
+            //    noise even at rest. Count consecutive packets where all 8
+            //    channels are byte-identical. Beyond RcFrozenThreshold → stale.
+            //
+            //    PACKET-GAP TIMER: CheckLinkHealth() declares RC lost if
+            //    _lastRcPacketUtc is not refreshed within RcTimeoutSpan.
+            //    This is the backstop when frozen values slip past the jitter check.
+
+            // ── RC presence detection ─────────────────────────────────────────
+            //
+            // PROBLEM THIS SOLVES:
+            // ArduPilot sends RC_CHANNELS continuously even when no RC transmitter
+            // is present, filling channels with the last-known frozen PWM values.
+            // These look like valid data (900-2100 PWM range) so simple PWM checks
+            // incorrectly declare RC connected on drone connect.
+            //
+            // FOUR-LAYER SOLUTION:
+            //
+            // Layer 1 — chancount == 0
+            //   No RC hardware at all. Immediate NOT-connected.
+            //
+            // Layer 2 — rssi == 0
+            //   Signal explicitly lost. Immediate NOT-connected.
+            //
+            // Layer 3 — rssi 1–254
+            //   Positive RSSI (CRSF, ELRS, some FrSky). Immediate CONNECTED.
+            //
+            // Layer 4 — rssi == 255 (RSSI not supported — most PPM/SBUS receivers)
+            //   A) NOT YET CONNECTED: require RcLiveThreshold consecutive packets
+            //      where at least one channel has CHANGED vs the previous packet.
+            //      Stale replayed values never change → counter never reaches threshold.
+            //      A live transmitter has ADC noise → channels drift → counter rises fast.
+            //
+            //   B) ALREADY CONNECTED: require RcFrozenThreshold consecutive packets
+            //      where ALL channels are byte-identical before declaring lost.
+            //      Prevents false disconnects from brief identical bursts.
+            //
+            // Layer 5 — Packet-gap backstop (CheckLinkHealth)
+            //   _lastRcPacketUtc is only refreshed when rcValid=true.
+            //   If no valid stamp for RcTimeoutSpan → force disconnect.
+            //   Catches any edge case the above layers miss.
+
+            bool rcValid;
+
+            if (rc.chancount == 0)
+            {
+                // Layer 1: no RC hardware
+                rcValid = false;
+                _rcFrozenCount = 0;
+                _rcLiveCount = 0;
+            }
+            else if (rc.rssi == 0)
+            {
+                // Layer 2: signal explicitly lost
+                rcValid = false;
+                _rcFrozenCount = 0;
+                _rcLiveCount = 0;
+            }
+            else if (rc.rssi > 0 && rc.rssi < 255)
+            {
+                // Layer 3: positive RSSI — definitive connected
+                rcValid = true;
+                _rcFrozenCount = 0;
+                _rcLiveCount = 0;
+            }
+            else
+            {
+                // Layer 4: rssi == 255, RSSI unsupported
+
+                // Guard: at least 1 channel in valid PWM range
+                bool anyValidPwm = latestChannels.Any(c => c >= 900 && c <= 2100);
+
+                if (!anyValidPwm)
+                {
+                    rcValid = false;
+                    _rcFrozenCount = 0;
+                    _rcLiveCount = 0;
+                }
+                else if (!_rcWasConnected)
+                {
+                    // ── Layer 4A: NOT YET CONNECTED — confirm connection ──────
+                    // Count packets where at least one channel differs from previous.
+                    // Stale replayed data: all channels frozen → counter stays 0 → never connects.
+                    // Live transmitter: ADC noise causes drift → counter hits threshold → connects.
+                    bool anyChanged = false;
+                    for (int i = 0; i < 8; i++)
+                    {
+                        if (latestChannels[i] != _prevRcChannels[i])
+                        {
+                            anyChanged = true;
+                            break;
+                        }
+                    }
+
+                    if (anyChanged)
+                        _rcLiveCount++;
+                    else
+                        _rcLiveCount = 0;  // frozen packet resets — stale data can't accumulate
+
+                    _rcFrozenCount = 0;
+                    rcValid = false;  // not valid yet — waiting for threshold
+                                      // rcValid=true fires below once _rcWasConnected flips
+                }
+                else
+                {
+                    // ── Layer 4B: ALREADY CONNECTED — detect disconnection ────
+                    // Count consecutive packets where ALL channels are identical.
+                    // Short identical bursts are normal (stick held still).
+                    // Sustained freeze → transmitter off → ArduPilot replaying stale data.
+                    bool allFrozen = true;
+                    for (int i = 0; i < 8; i++)
+                    {
+                        if (latestChannels[i] != _prevRcChannels[i])
+                        {
+                            allFrozen = false;
+                            break;
+                        }
+                    }
+
+                    _rcFrozenCount = allFrozen ? _rcFrozenCount + 1 : 0;
+                    _rcLiveCount = 0;
+                    rcValid = _rcFrozenCount < RcFrozenThreshold;
+                }
+            }
+
+            // Always update snapshot for next comparison
+            Array.Copy(latestChannels, _prevRcChannels, 8);
+
+            // ── Apply state transitions ───────────────────────────────────────
+
+            // Check if live-counter just hit threshold (Layer 4A connect confirmation)
+            if (!_rcWasConnected && _rcLiveCount >= RcLiveThreshold)
+            {
+                _rcWasConnected = true;
+                _rcLiveCount = 0;
+                _rcFrozenCount = 0;
+                _lastRcPacketUtc = DateTime.UtcNow;
+                UpdateState(s => s.IsRcConnected = true);
+                Toast("RC transmitter connected", ToastLevel.Success, "🎮");
+            }
+            else if (rcValid && _rcWasConnected)
+            {
+                // Already connected and still valid — just refresh timer
+                _lastRcPacketUtc = DateTime.UtcNow;
+            }
+            else if (rcValid && rc.rssi > 0 && rc.rssi < 255 && !_rcWasConnected)
+            {
+                // Layer 3 immediate connect (positive RSSI)
+                _rcWasConnected = true;
+                _lastRcPacketUtc = DateTime.UtcNow;
+                UpdateState(s => s.IsRcConnected = true);
+                Toast("RC transmitter connected", ToastLevel.Success, "🎮");
+            }
+            else if (!rcValid && _rcWasConnected)
+            {
+                // Disconnection confirmed
+                _rcWasConnected = false;
+                _rcFrozenCount = 0;
+                _rcLiveCount = 0;
+                Array.Clear(_prevRcChannels, 0, 8);
+                UpdateState(s => s.IsRcConnected = false);
+                Toast("RC signal lost", ToastLevel.Error, "🎮");
+            }
+
+            // Fire AFTER state is updated so subscribers see correct IsRcConnected
             OnRcChannelsUpdated?.Invoke(latestChannels);
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST || packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT)
@@ -901,21 +1212,26 @@ public class MavlinkService : BackgroundService
                     ActiveCalType = "NONE";
                     SetMessageInterval(191, 0);
                     SetMessageInterval(192, 0);
-                    // 42425 = MAV_CMD_DO_ACCEPT_MAG_CAL — persist offsets to EEPROM
                     SendCommand((MAVLink.MAV_CMD)42425, 0, 0, 0, 0, 0, 0, 0);
+                    Toast("Magnetometer calibration complete — offsets saved ✓", ToastLevel.Success, "🧲");
                     break;
                 case (byte)MAVLink.MAG_CAL_STATUS.MAG_CAL_FAILED:
                     if (LiveMagStatus != "SUCCESS")
-                    { LiveMagStatus = "FAILED — MOVE DRONE MORE"; LiveMagProgress = 0; ActiveCalType = "NONE"; }
+                    {
+                        LiveMagStatus = "FAILED — MOVE DRONE MORE"; LiveMagProgress = 0; ActiveCalType = "NONE";
+                        Toast("Magnetometer calibration failed — rotate drone more", ToastLevel.Error, "🧲");
+                    }
                     SetMessageInterval(191, 0); SetMessageInterval(192, 0);
                     break;
-                case 6: // MAG_CAL_BAD_ORIENTATION — reached 100% but mount orientation wrong
+                case 6:
                     LiveMagStatus = "FAILED — BAD ORIENTATION"; LiveMagProgress = 0; ActiveCalType = "NONE";
                     SetMessageInterval(191, 0); SetMessageInterval(192, 0);
+                    Toast("Mag cal failed — bad compass orientation (check mount)", ToastLevel.Error, "🧲");
                     break;
-                case 7: // MAG_CAL_BAD_RADIUS — reached 100% but magnetic interference
+                case 7:
                     LiveMagStatus = "FAILED — MAGNETIC INTERFERENCE"; LiveMagProgress = 0; ActiveCalType = "NONE";
                     SetMessageInterval(191, 0); SetMessageInterval(192, 0);
+                    Toast("Mag cal failed — magnetic interference nearby", ToastLevel.Error, "🧲");
                     break;
             }
             NotifyUi(force: true);
@@ -927,7 +1243,15 @@ public class MavlinkService : BackgroundService
 
             if (paramName == "FRAME_CLASS")
             {
-                State.MotorCount = (int)param.param_value switch { 1 => 4, 2 => 6, 3 => 8, 5 => 6, 7 => 3, _ => 4 };
+                int fc = (int)param.param_value;
+                int mc = fc switch { 1 => 4, 2 => 6, 3 => 8, 5 => 6, 7 => 3, _ => 4 };
+                UpdateState(s => { s.FrameClass = fc; s.MotorCount = mc; });
+                NotifyUi(force: true);
+            }
+            else if (paramName == "FRAME_TYPE")
+            {
+                int ft = (int)param.param_value;
+                UpdateState(s => s.FrameType = ft);
                 NotifyUi(force: true);
             }
             else if (paramName.StartsWith("FLTMODE") && paramName.Length == 8 && char.IsDigit(paramName[7]))
@@ -959,6 +1283,10 @@ public class MavlinkService : BackgroundService
             else if (paramName == "BATT_CRT_VOLT") { _battCrtVolt = param.param_value; _battRecv |= 8; CheckFireBattery(); }
             else if (paramName == "BATT_ARM_VOLT") { _battArmVolt = param.param_value; _battRecv |= 16; CheckFireBattery(); }
             else if (paramName == "BATT_LOW_MAH") { _battLowMah = (int)param.param_value; _battRecv |= 32; CheckFireBattery(); }
+            else if (paramName == "BATT_VOLT_MULT") { _battVoltMult = param.param_value; _battRecv |= 64; CheckFireBattery(); }
+            else if (paramName == "BATT_AMP_PERVLT") { _battAmpPerVlt = param.param_value; _battRecv |= 128; CheckFireBattery(); }
+            else if (paramName == "BATT_AMP_OFFSET") { _battAmpOffset = param.param_value; _battRecv |= 256; CheckFireBattery(); }
+            else if (paramName == "BATT_NUM_CELLS") { _battNumCells = (int)param.param_value; _battRecv |= 512; CheckFireBattery(); }
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.COMMAND_ACK)
         {
@@ -1457,14 +1785,45 @@ public class MavlinkService : BackgroundService
 
     private void CheckFireFailsafe()
     {
-        if ((_fsRecv & 0b1111) == 0b1111)
+        // Fire on core 3 (THR_EN + THR_VAL + BATT_EN). GCS_EN absent on older firmware.
+        if ((_fsRecv & 0b0111) == 0b0111)
             OnFailsafeParams?.Invoke(new FailsafeParams(_fsThrEnable, _fsThrValue, _fsBattEnable, _fsGcsEnable));
     }
 
     private void CheckFireBattery()
     {
-        if ((_battRecv & 0b111111) == 0b111111)
-            OnBatteryParams?.Invoke(new BatteryParams(_battMonitor, _battCapacity, _battLowVolt, _battCrtVolt, _battArmVolt, _battLowMah));
+        // Fire on core 6 params (bits 0-5). Calibration params may not exist on older firmware.
+        if ((_battRecv & 0x3F) == 0x3F)
+            OnBatteryParams?.Invoke(new BatteryParams(
+                _battMonitor, _battCapacity, _battLowVolt, _battCrtVolt,
+                _battArmVolt, _battLowMah, _battVoltMult, _battAmpPerVlt,
+                _battAmpOffset, _battNumCells));
+    }
+
+    public void SaveBatteryParams(int monitor, int capacity,
+        double lowVolt, double crtVolt, double armVolt, int lowMah,
+        double voltMult, double ampPerVlt, double ampOffset, int numCells)
+    {
+        SendParameter("BATT_MONITOR", monitor);
+        SendParameter("BATT_CAPACITY", capacity);
+        SendParameter("BATT_LOW_VOLT", (float)lowVolt);
+        SendParameter("BATT_CRT_VOLT", (float)crtVolt);
+        SendParameter("BATT_ARM_VOLT", (float)armVolt);
+        SendParameter("BATT_LOW_MAH", lowMah);
+        SendParameter("BATT_VOLT_MULT", (float)voltMult);
+        SendParameter("BATT_AMP_PERVLT", (float)ampPerVlt);
+        SendParameter("BATT_AMP_OFFSET", (float)ampOffset);
+        SendParameter("BATT_NUM_CELLS", numCells);
+        Toast("Battery parameters saved", ToastLevel.Success, "🔋");
+    }
+
+    public void SaveFailsafeParams(int thrEnable, int thrValue, int battEnable, int gcsEnable)
+    {
+        SendParameter("FS_THR_ENABLE", thrEnable);
+        SendParameter("FS_THR_VALUE", thrValue);
+        SendParameter("FS_BATT_ENABLE", battEnable);
+        SendParameter("FS_GCS_ENABLE", gcsEnable);
+        Toast("Failsafe parameters saved", ToastLevel.Success, "🛡️");
     }
 
     private void FireFlightModeParams()
@@ -1474,7 +1833,15 @@ public class MavlinkService : BackgroundService
         string ch = ((int)_fltModeChannel).ToString();
         OnFlightModeParams?.Invoke(names, ch);
     }
-    public void SetFrameConfig(int frameType, int frameClass) { SendParameter("FRAME_TYPE", frameType); SendParameter("FRAME_CLASS", frameClass); }
+    public void SetFrameConfig(int frameClass, int frameType)
+    {
+        SendParameter("FRAME_CLASS", frameClass);
+        SendParameter("FRAME_TYPE", frameType);
+        int mc = frameClass switch { 1 => 4, 2 => 6, 3 => 8, 5 => 6, 7 => 3, _ => 4 };
+        UpdateState(s => { s.FrameClass = frameClass; s.FrameType = frameType; s.MotorCount = mc; });
+        NotifyUi(force: true);
+        Toast("Frame configuration applied — reboot required", ToastLevel.Warning, "🔧");
+    }
     public void RequestDataStreams() => TryConfigureMessageIntervals();
 
     public void TestMotor(int motorIndex, float throttlePercent, float durationSec)
@@ -1504,12 +1871,12 @@ public class MavlinkService : BackgroundService
 
     // ---------------- MISSIONS ----------------
 
-    public async Task<bool> UploadMissionAsync(dynamic items)
+    public async Task<bool> UploadMissionAsync(IList<WaypointModel> items)
     {
         try
         {
-            _uploadQueue = items;
-            var count = new MAVLink.mavlink_mission_count_t { target_system = target_sysid, target_component = target_compid, count = (ushort)items.Count, mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION };
+            _uploadQueue = items.ToList();
+            var count = new MAVLink.mavlink_mission_count_t { target_system = target_sysid, target_component = target_compid, count = (ushort)_uploadQueue.Count, mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION };
             SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_COUNT, count);
             return true;
         }
@@ -1546,39 +1913,116 @@ public class MavlinkService : BackgroundService
     // ---------------- CLEANUP ----------------
 
     private int _linkHealthFailCount = 0;
+    private DateTime _lastSensorHealthCheck = DateTime.MinValue;
+    private readonly System.Collections.Generic.HashSet<string> _sensorAlerted = new();
+    private int _lastGpsFix = -1;   // -1=unknown, track transitions
+    private float _lastBattPct = -1;   // track low-battery threshold crossing
+    private bool _sentLowBattToast = false;
+    private bool _sentCritBattToast = false;
+    private string _lastFlightMode = "";   // track mode changes
 
     private void CheckLinkHealth()
     {
+        var now = DateTime.UtcNow;
+
+        // ── RC transmitter timeout ──────────────────────────────────────────
+        // Runs unconditionally — independent of drone connection state.
+        // If drone disconnects while RC was connected, this still fires and
+        // correctly flips IsRcConnected to false without waiting for the
+        // _shouldBeConnected / _gotFirstHeartbeatThisSession guard below.
+        if (_rcWasConnected && _lastRcPacketUtc != DateTime.MinValue &&
+            (now - _lastRcPacketUtc) > RcTimeoutSpan)
+        {
+            _rcWasConnected = false;
+            UpdateState(s => s.IsRcConnected = false);
+            NotifyUi(force: true);
+            Toast("RC signal lost", ToastLevel.Error, "🎮");
+        }
+
         if (_shouldBeConnected && _gotFirstHeartbeatThisSession)
         {
-            if ((DateTime.UtcNow - State.LastHeartbeat).TotalSeconds > HeartbeatTimeoutSeconds)
+            // ── Heartbeat / telemetry link ─────────────────────────────────
+            if ((now - State.LastHeartbeat).TotalSeconds > HeartbeatTimeoutSeconds)
             {
-                // Hysteresis: require 3 consecutive failed checks before alerting.
-                // The main loop runs every 5ms, so 3 checks = still near-instant for
-                // genuine loss, but a single delayed wireless heartbeat won't flash the dialog.
                 _linkHealthFailCount++;
-                if (!_wasAlerting && _linkHealthFailCount >= 3)
+                if (_linkHealthFailCount >= 3)
                 {
-                    _wasAlerting = true;
-                    _connDialogOpen = true;
-                    ReportConn("LINK LOST — CHECK TELEMETRY RADIO");
-                    ShowConnDialog(true);
+                    // Confirmed loss — flip the stable cached flag
+                    if (IsLinkHealthy)
+                    {
+                        IsLinkHealthy = false;
+                        NotifyUi(force: true);
+                    }
+                    if (!_wasAlerting)
+                    {
+                        _wasAlerting = true;
+                        _connDialogOpen = true;
+                        ReportConn("LINK LOST — CHECK TELEMETRY RADIO");
+                        ShowConnDialog(true);
+                        Toast("Telemetry link lost — check radio", ToastLevel.Error, "📡");
+                    }
                 }
             }
             else
             {
-                // Link is healthy — reset counter and clear alert if showing
                 _linkHealthFailCount = 0;
+                // Heartbeat arrived — mark link as healthy
+                if (!IsLinkHealthy)
+                {
+                    IsLinkHealthy = true;
+                    NotifyUi(force: true);
+                }
                 if (_wasAlerting)
                 {
                     _wasAlerting = false;
-                    if (_connDialogOpen)
-                    {
-                        _connDialogOpen = false;
-                        ShowConnDialog(false);
-                    }
+                    Toast("Telemetry link recovered", ToastLevel.Success, "📡");
+                    if (_connDialogOpen) { _connDialogOpen = false; ShowConnDialog(false); }
                 }
             }
+
+            // ── GPS fix quality ─────────────────────────────────────────────
+            int fixNow = State.GpsFixType;
+            if (_lastGpsFix != -1 && fixNow != _lastGpsFix)
+            {
+                if (fixNow >= 3 && _lastGpsFix < 3)
+                    Toast($"GPS 3D fix acquired ({State.SatCount} sats)", ToastLevel.Success, "🛰️");
+                else if (fixNow < 3 && _lastGpsFix >= 3)
+                    Toast($"GPS fix lost (fix type {fixNow})", ToastLevel.Warning, "🛰️");
+                else if (fixNow == 0 && _lastGpsFix > 0)
+                    Toast("GPS signal lost entirely", ToastLevel.Error, "🛰️");
+            }
+            _lastGpsFix = fixNow;
+
+            // ── Battery thresholds ──────────────────────────────────────────
+            float batt = State.BatteryPercent;
+            if (batt > 0 && _lastBattPct > 0)
+            {
+                if (!_sentLowBattToast && batt <= 25 && batt > 10)
+                {
+                    _sentLowBattToast = true;
+                    Toast($"Low battery — {batt:0}% remaining", ToastLevel.Warning, "🪫");
+                }
+                if (!_sentCritBattToast && batt <= 10)
+                {
+                    _sentCritBattToast = true;
+                    Toast($"CRITICAL battery — {batt:0}% — land immediately!", ToastLevel.Error, "🔋");
+                }
+                // Reset flags if battery is recharged (bench use)
+                if (batt > 30) { _sentLowBattToast = false; _sentCritBattToast = false; }
+            }
+            if (batt > 0) _lastBattPct = batt;
+
+            // ── Flight mode change notification ────────────────────────────
+            string modeNow = State.FlightMode;
+            if (!string.IsNullOrEmpty(_lastFlightMode) && modeNow != _lastFlightMode
+                && modeNow != "Unknown")
+            {
+                ToastLevel lvl = modeNow is "RTL" or "LAND" ? ToastLevel.Warning :
+                                 modeNow is "AUTO" or "GUIDED" ? ToastLevel.Info :
+                                 ToastLevel.Info;
+                Toast($"Flight mode → {modeNow}", lvl, "✈️");
+            }
+            if (modeNow != "Unknown") _lastFlightMode = modeNow;
         }
     }
 

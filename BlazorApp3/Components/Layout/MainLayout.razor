@@ -1,4 +1,4 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 @inject MavlinkService Drone
 @implements IDisposable
 @using System.IO.Ports
@@ -11,9 +11,42 @@
                 <span class="logo-text">DIVYALINK</span>
                 <div class="tagline">by Vayunotics</div>
             </div>
-            <div class="sat-status">
-                <span class="sat-icon">📡</span>
-                <span>Sat-Count: @Drone.State.SatCount</span>
+            <div class="header-status-bar">
+                @* Telemetry link indicator *@
+                <div class="hdr-status-pill pill-telem @(IsDroneActuallyTalking ? "pill-online" : "pill-offline")">
+                    <i class="bi bi-router-fill"></i>
+                    <span>@(IsDroneActuallyTalking ? "TELEM" : "NO LINK")</span>
+                </div>
+
+                @* GPS fix status *@
+                <div class="hdr-status-pill @(Drone.State.GpsFixType >= 3 ? "pill-gps-fix" : Drone.State.GpsFixType >= 2 ? "pill-gps-weak" : "pill-gps-none")">
+                    <i class="bi bi-reception-4"></i>
+                    <span>@(Drone.State.SatCount > 0 ? $"{Drone.State.SatCount} SAT" : "NO GPS")</span>
+                </div>
+
+                @* RC controller status *@
+                <div class="hdr-status-pill @(Drone.State.IsRcConnected ? "pill-rc-on" : "pill-rc-off")">
+                    <i class="bi bi-controller"></i>
+                    <span>@(Drone.State.IsRcConnected ? "RC" : "NO RC")</span>
+                </div>
+
+                @* Flight mode badge (only when connected) *@
+                @if (IsDroneActuallyTalking && Drone.State.FlightMode != "Unknown")
+                {
+                    <div class="hdr-status-pill pill-mode">
+                        <i class="bi bi-airplane-fill"></i>
+                        <span>@Drone.State.FlightMode</span>
+                    </div>
+                }
+
+                @* Arm state *@
+                @if (IsDroneActuallyTalking)
+                {
+                    <div class="hdr-status-pill @(Drone.State.IsArmed ? "pill-armed" : "pill-disarmed")">
+                        <i class="bi @(Drone.State.IsArmed ? "bi-shield-fill-exclamation" : "bi-shield-fill-check")"></i>
+                        <span>@(Drone.State.IsArmed ? "ARMED" : "DISARMED")</span>
+                    </div>
+                }
             </div>
         </div>
 
@@ -125,6 +158,7 @@
         </div>
     </footer>
     <ConnectionDialog />
+    <ToastContainer />
 </div>
 
 <style>
@@ -169,7 +203,7 @@
         overflow-x: hidden;
     }
 
-    .gcs-drawer.open {
+        .gcs-drawer.open {
             left: 0; /* Slide in */
         }
 
@@ -191,7 +225,7 @@
     }
 
         /* Title Styling */
-    .drawer-header span {
+        .drawer-header span {
             font-size: 1.1rem;
             font-weight: bold;
             color: white;
@@ -215,7 +249,7 @@
     }
 
         /* Hover Effect */
-    .close-overlay:hover {
+        .close-overlay:hover {
             color: #ff3a3a; /* Bright red on hover */
             transform: scale(1.2);
         }
@@ -295,18 +329,90 @@
         margin-top: 4px;
     }
 
-    .sat-status {
+    .header-status-bar {
         display: flex;
         align-items: center;
-        gap: 8px;
-        font-size: 0.8rem;
-        color: #ddd;
-        padding-bottom: 5px; /* Adjusts vertical "feeling" to match logo baseline */
+        gap: 6px;
+        flex-wrap: nowrap;
     }
 
-    .sat-icon {
-        font-size: 1rem;
-        color: #ffffff;
+    .hdr-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 0.58rem;
+        font-weight: 800;
+        letter-spacing: 0.8px;
+        border: 1px solid transparent;
+        white-space: nowrap;
+        transition: background 0.3s, border-color 0.3s, color 0.3s;
+    }
+
+    /* Telemetry */
+    .pill-online {
+        background: rgba(0,200,80,0.12);
+        border-color: #2ea043;
+        color: #3fb950;
+    }
+
+    .pill-offline {
+        background: rgba(80,80,80,0.10);
+        border-color: #484f58;
+        color: #8b949e;
+    }
+
+    /* GPS */
+    .pill-gps-fix {
+        background: rgba(0,200,80,0.10);
+        border-color: #2ea043;
+        color: #3fb950;
+    }
+
+    .pill-gps-weak {
+        background: rgba(210,153,34,0.12);
+        border-color: #d29922;
+        color: #e3a820;
+    }
+
+    .pill-gps-none {
+        background: rgba(80,80,80,0.10);
+        border-color: #484f58;
+        color: #8b949e;
+    }
+
+    /* RC — green when bound, red when not (red = danger, not just absent) */
+    .pill-rc-on {
+        background: rgba(0,220,80,0.20);
+        border-color: #00cc55;
+        color: #00ee66;
+    }
+
+    .pill-rc-off {
+        background: rgba(220,60,60,0.18);
+        border-color: #cc3333;
+        color: #ff6666;
+    }
+
+    /* Flight mode */
+    .pill-mode {
+        background: rgba(88,166,255,0.10);
+        border-color: #58a6ff;
+        color: #58a6ff;
+    }
+
+    /* Arm state */
+    .pill-armed {
+        background: rgba(248,81,73,0.15);
+        border-color: #f85149;
+        color: #ff8080;
+    }
+
+    .pill-disarmed {
+        background: rgba(46,160,67,0.10);
+        border-color: #2ea043;
+        color: #3fb950;
     }
 
     .connection-controls {
@@ -364,6 +470,47 @@
         overflow: hidden;
     }
 
+    /* MAP FULLSCREEN MODE ─────────────────────────────────────────────────
+           When .map-fullscreen is on .gcs-wrapper, header and footer slide away
+           and the viewport fills the entire screen. The map then reflows via JS. */
+    .gcs-wrapper.map-fullscreen .header {
+        transform: translateY(-100%);
+        opacity: 0;
+        pointer-events: none;
+        transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+
+    .gcs-wrapper.map-fullscreen .footer {
+        transform: translateY(100%);
+        opacity: 0;
+        pointer-events: none;
+        transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+
+    .gcs-wrapper.map-fullscreen .viewport {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 900;
+    }
+
+    /* Drawer stays on top in fullscreen */
+    .map-fullscreen-drawer {
+        top: 0 !important;
+        height: 100vh !important;
+    }
+
+    /* Header and footer get transitions always so collapse is smooth too */
+    .header {
+        transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+
+    .footer {
+        transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+
     /* FOOTER STYLING */
     .footer {
         background: var(--panel-bg); /* Was var(--bg-dark) in some versions, using panel for contrast */
@@ -396,22 +543,22 @@
         transition: 0.2s;
     }
 
-    .nav-btn i.cyan {
+        .nav-btn i.cyan {
             color: var(--cyan);
             font-style: normal;
             margin-bottom: 5px;
         }
 
-    .nav-btn span {
+        .nav-btn span {
             font-size: 0.75rem;
         }
 
-    .nav-btn.active {
+        .nav-btn.active {
             background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
             border: none;
         }
 
-    .nav-btn.active i {
+            .nav-btn.active i {
                 color: white;
             }
 </style>
@@ -434,14 +581,22 @@
     // Helpers
     private bool IsConnected => Drone.State.ConnectionStatus.Contains("Receiving");
 
-    // Robust check for connection health
-    private bool IsDroneActuallyTalking =>
-        Drone.IsConnected && (DateTime.UtcNow - Drone.State.LastHeartbeat).TotalSeconds < 3;
+    // Use the stable cached IsLinkHealthy flag from MavlinkService.
+    // This only flips after 3 confirmed consecutive heartbeat misses (1.5s).
+    // Drone.IsConnected re-evaluates DateTime.UtcNow on every call which causes
+    // the TELEM pill to flicker every render tick during normal SiK heartbeat gaps.
+    private bool IsDroneActuallyTalking => Drone.IsLinkHealthy;
 
     protected override void OnInitialized()
     {
-        // Start the timer to scan for ports every 1s
         _autoDetectTimer = new System.Threading.Timer(AutoDetectPorts, null, 0, 1000);
+        Drone.OnTelemetryUpdated += RefreshUi;
+        // RC state changes come via OnRcChannelsUpdated, NOT OnTelemetryUpdated.
+        // Without this subscription the RC pill never turns green even when RC is connected.
+        Drone.OnRcChannelsUpdated += OnRcUpdated;
+        // DO NOT add: Drone.OnToast += _ => InvokeAsync(StateHasChanged);
+        // Anonymous lambdas cannot be unsubscribed. Every Blazor reconnect stacks
+        // another copy on the singleton service -> crash loop. ToastContainer owns OnToast.
     }
 
     // Runs on a background thread, so we must use InvokeAsync for UI updates
@@ -600,7 +755,34 @@
         _ => "❓"
     };
 
-    public void Dispose() => _autoDetectTimer?.Dispose();
+    private DateTime _lastHeaderRender = DateTime.MinValue;
+    private void RefreshUi()
+    {
+        // Throttled to 2Hz — header only shows sat count / arm state, no need for 10Hz
+        var now = DateTime.UtcNow;
+        if ((now - _lastHeaderRender).TotalMilliseconds < 500) return;
+        _lastHeaderRender = now;
+        InvokeAsync(StateHasChanged);
+    }
+
+    // RC state change handler. MavlinkService writes IsRcConnected BEFORE firing
+    // this event, so Drone.State.IsRcConnected is already correct when we read it.
+    // Only re-renders on actual transitions (connected <-> disconnected).
+    private bool _lastRcState = false;
+    private void OnRcUpdated(ushort[] _)
+    {
+        bool current = Drone.State.IsRcConnected;
+        if (current == _lastRcState) return;
+        _lastRcState = current;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        _autoDetectTimer?.Dispose();
+        Drone.OnTelemetryUpdated -= RefreshUi;
+        Drone.OnRcChannelsUpdated -= OnRcUpdated;
+    }
 
     private void HandleTabClick(string tab)
     {

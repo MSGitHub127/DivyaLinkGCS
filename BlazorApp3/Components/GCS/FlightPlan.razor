@@ -1,9 +1,9 @@
-﻿@page "/flightplan"
+@page "/flightplan"
 @using BlazorApp3
 @using System.Text.Json
 @inject MavlinkService Drone
 @inject IJSRuntime JS
-@implements IDisposable
+@implements IAsyncDisposable
 
 <InputFile id="importFile" OnChange="HandleImport" style="display:none" accept=".json" />
 
@@ -13,30 +13,28 @@
         <Hud />
     </div>
 
-    <div class="main-interface">
-
-        <div class="map-viewport">
-            <div id="map-element"></div>
-            <div class="map-controls">
-                <button class="map-btn" @onclick="SetHomeToDrone" title="Sync Home to Drone Location">
-                    <i class="bi bi-house-door-fill"></i> SYNC HOME
-                </button>
-                <button class="map-btn" @onclick="CenterMapOnDrone" title="Center Map on Drone">
-                    <i class="bi bi-crosshair"></i> CENTER DRONE
-                </button>
-            </div>
+    <div class="flightplan-content">
+        <div class="header-strip">
+            <span class="icon">??</span> FLIGHT PLAN EDITOR
         </div>
 
-        <div class="editor-sidebar">
-            <div class="sidebar-header">
-                <i class="bi bi-geo-alt-fill text-primary"></i> FLIGHT PLAN EDITOR
+        <div class="flightplan-body">
+
+            @* 1. MAP VIEWPORT (Fixed) *@
+            <div class="map-viewport">
+                <div id="map-element"></div>
+                <div class="map-controls">
+                    <button class="map-btn" @onclick="SetHomeToDrone" title="Sync Home to Drone Location">
+                        <i class="bi bi-house-door-fill"></i> SYNC HOME
+                    </button>
+                    <button class="map-btn" @onclick="CenterMapOnDrone" title="Center Map on Drone">
+                        <i class="bi bi-crosshair"></i> CENTER DRONE
+                    </button>
+                </div>
             </div>
 
+            @* 2. TELEMETRY GRID (Fixed) *@
             <div class="param-grid">
-                <div class="param-tile">
-                    <label><i class="bi bi-arrows-vertical"></i> DEFAULT ALT (m)</label>
-                    <input type="number" @bind="globalAlt" class="editor-input" @bind:after="ApplyGlobalAlt" />
-                </div>
                 <div class="param-tile">
                     <label><i class="bi bi-speedometer2"></i> SPEED</label>
                     <div class="readout">@Drone.State.GroundSpeed.ToString("0.0") <span class="unit">m/s</span></div>
@@ -49,24 +47,33 @@
                     <label><i class="bi bi-stopwatch"></i> EST. TIME</label>
                     <div class="readout">~@((CalculateTotalDistance() / 5 / 60).ToString("0")) <span class="unit">min</span></div>
                 </div>
+                <div class="param-tile">
+                    <label><i class="bi bi-arrows-vertical"></i> DEF. ALT</label>
+                    <div class="alt-input-wrapper">
+                        <input type="number" @bind="globalAlt" class="editor-input" @bind:after="ApplyGlobalAlt" />
+                        <span class="unit">m</span>
+                    </div>
+                </div>
             </div>
 
+            @* 3. WAYPOINT EDITOR (Flex-Grow, Internally Scrolls) *@
             <div class="wp-section">
                 <div class="wp-header">
                     <span>WAYPOINTS (@(MissionItems.Count > 0 ? MissionItems.Count - 1 : 0))</span>
-                    @if (MissionItems.Count > 1)
-                    {
-                        <button class="clear-btn" @onclick="ClearAllWaypoints"><i class="bi bi-trash3"></i> Clear All</button>
-                    }
-                </div>
-
-                <div class="wp-actions">
-                    <button class="wp-btn import" @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")'>
-                        <i class="bi bi-folder2-open"></i> IMPORT
-                    </button>
-                    <button class="wp-btn export" @onclick="ExportWaypoints">
-                        <i class="bi bi-download"></i> EXPORT
-                    </button>
+                    <div class="wp-header-actions">
+                        <button class="icon-btn text-success" @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")' title="Import Mission">
+                            <i class="bi bi-folder2-open"></i>
+                        </button>
+                        <button class="icon-btn text-cyan" @onclick="ExportWaypoints" title="Export Mission">
+                            <i class="bi bi-download"></i>
+                        </button>
+                        @if (MissionItems.Count > 1)
+                        {
+                            <button class="icon-btn text-danger" @onclick="ClearAllWaypoints" title="Clear All">
+                                <i class="bi bi-trash3"></i>
+                            </button>
+                        }
+                    </div>
                 </div>
 
                 <div class="wp-scroll-area">
@@ -82,7 +89,7 @@
                         @foreach (var wp in MissionItems.Where(x => !x.IsHome))
                         {
                             <div class="wp-card @(activeWpIndex == wp.Index ? "active" : "")" @onclick="() => activeWpIndex = wp.Index">
-                                <div class="wp-idx">@wp.Index</div>
+                                <div class="wp-idx">@(wp.Index == 0 ? "H" : wp.Index.ToString())</div>
                                 <div class="wp-data">
                                     <span class="wp-coord">@wp.Lat.ToString("F5"), @wp.Lng.ToString("F5")</span>
                                     <div class="wp-edit-row">
@@ -99,21 +106,29 @@
                 </div>
             </div>
 
+            @* 4. FOOTER ACTIONS (Fixed) *@
             <div class="sidebar-footer">
                 <button class="action-btn upload" @onclick="UploadMission">
-                    <i class="bi bi-cloud-arrow-up-fill"></i> UPLOAD TO DRONE
+                    <i class="bi bi-cloud-arrow-up-fill"></i> UPLOAD
                 </button>
-                <button class="action-btn start @(isUploaded ? "ready" : "disabled")"
-                        @onclick="StartMission" disabled="@(!isUploaded)">
-                    <i class="bi bi-rocket-takeoff-fill"></i> START MISSION
+                <button class="action-btn start @(isUploaded ? "ready" : "disabled")" @onclick="StartMission" disabled="@(!isUploaded)">
+                    <i class="bi bi-rocket-takeoff-fill"></i> START
                 </button>
             </div>
+
         </div>
     </div>
 </div>
 
 <style>
-    /* MASTER LAYOUT ALIGNED WITH OTHER TABS */
+    :root {
+        --gcs-border: #30363d;
+        --gcs-cyan: #00f2ff;
+        --gcs-green: #3fb950;
+        --gcs-red: #f85149;
+    }
+
+    /* MASTER LAYOUT */
     .flightplan-view-container {
         display: flex;
         flex-direction: column;
@@ -124,10 +139,10 @@
         width: 100%;
         max-width: 500px;
         margin: 0 auto;
-        overflow: hidden;
+        overflow: hidden; /* STRICT LOCK: No outer scrollbars */
     }
 
-    /* STANDARDIZED HUD WRAPPER */
+    /* HUD */
     .hud-wrapper {
         height: 300px;
         width: 100%;
@@ -139,32 +154,50 @@
         background: #000;
     }
 
-    .main-interface {
+    /* MAIN CONTENT WRAPPER */
+    .flightplan-content {
+        flex: 1;
         display: flex;
         flex-direction: column;
-        gap: 16px;
-        flex: 1;
-        min-height: 0;
-        overflow-y: auto;
-        padding-right: 5px; /* Scrollbar padding */
+        gap: 8px;
+        min-height: 0; /* Critical for flex scrolling */
+        background: rgba(18, 20, 28, 0.6);
+        border: 1px solid var(--gcs-border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        backdrop-filter: blur(4px);
     }
 
-        /* Custom Scrollbar for Main Interface */
-    .main-interface::-webkit-scrollbar {
-            width: 4px;
-        }
+    .header-strip {
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--gcs-border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 900;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        color: white;
+        letter-spacing: 1.5px;
+        flex-shrink: 0;
+    }
 
-    .main-interface::-webkit-scrollbar-thumb {
-            background: #333;
-            border-radius: 10px;
-        }
+    .flightplan-body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow: hidden; /* Keep all elements contained */
+        min-height: 0;
+        padding-top: 4px;
+    }
 
     /* MAP VIEWPORT */
     .map-viewport {
-        height: 60px;
+        height: 80px;
         width: 100%;
         position: relative;
-        border-radius: 8px;
+        border-radius: 6px;
         overflow: hidden;
         border: 1px solid #242731;
         flex-shrink: 0;
@@ -172,101 +205,68 @@
 
     .map-viewport #map-element {
             position: absolute;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
+            inset: 0;
             width: 100%;
             height: 100%;
         }
 
     .map-controls {
         position: absolute;
-        top: 10px;
-        left: 10px;
-        right: 10px;
+        top: 8px;
+        left: 8px;
+        right: 8px;
         display: flex;
         justify-content: space-between;
         z-index: 10;
-        pointer-events: none; 
+        pointer-events: none;
     }
 
     .map-btn {
-        pointer-events: auto; /* Re-enables clicking on the actual buttons */
-        height: 38px;
-        width: auto; /* Removed the hardcoded 38px width */
-        padding: 0 15px; /* Adds breathing room around the text */
-        border-radius: 6px;
+        pointer-events: auto;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: 4px;
         background: rgba(18, 20, 28, 0.85);
         border: 1px solid #242731;
-        color: #00f2ff;
+        color: var(--gcs-cyan);
         cursor: pointer;
         transition: all 0.2s ease;
         backdrop-filter: blur(4px);
-        font-size: 0.75rem; /* Sized for text readability */
+        font-size: 0.65rem;
         font-weight: 800;
         letter-spacing: 1px;
         display: flex;
         align-items: center;
-        justify-content: center;
-        gap: 8px; /* Space between the icon and the text */
+        gap: 6px;
     }
 
     .map-btn:hover {
-            background: #00f2ff;
+            background: var(--gcs-cyan);
             color: #0b0c10;
-            transform: scale(1.02);
         }
-
-    /* MODERN SIDEBAR (Now acts as a bottom card) */
-    .editor-sidebar {
-        width: 100%;
-        background: rgba(18, 20, 28, 0.6);
-        padding: 16px;
-        display: flex;
-        flex-direction: column;
-        gap: 15px;
-        border: 1px solid #242731;
-        border-radius: 8px;
-        backdrop-filter: blur(4px);
-    }
-
-    .sidebar-header {
-        font-weight: 900;
-        color: #fff;
-        font-size: 0.85rem;
-        letter-spacing: 1.5px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        border-bottom: 1px solid #242731;
-        padding-bottom: 10px;
-    }
-
-    .text-primary {
-        color: #00f2ff;
-    }
 
     /* COMPACT PARAMS */
     .param-grid {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 8px;
+        flex-shrink: 0;
     }
 
     .param-tile {
-        background: #0b0c10;
+        background: #010409;
         border: 1px solid #242731;
         border-radius: 6px;
-        padding: 10px;
+        padding: 8px 4px;
         display: flex;
         flex-direction: column;
+        align-items: center;
+        justify-content: center;
         gap: 4px;
-        transition: 0.2s;
     }
 
     .param-tile label {
-            font-size: 0.6rem;
+            font-size: 0.55rem;
             color: #888;
             font-weight: 800;
             text-transform: uppercase;
@@ -277,128 +277,111 @@
         }
 
     .readout {
-        font-size: 1rem;
+        font-size: 0.85rem;
         font-weight: 800;
-        color: #00f2ff;
+        color: var(--gcs-cyan);
         display: flex;
         align-items: baseline;
-        gap: 4px;
+        gap: 2px;
     }
 
     .unit {
-        font-size: 0.65rem;
+        font-size: 0.6rem;
         color: #888;
         font-weight: 600;
     }
 
+    .alt-input-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
     .editor-input {
-        width: 100%;
+        width: 40px;
         background: #08090b;
         border: 1px solid #333;
         color: #00ff66;
-        padding: 4px 8px;
+        padding: 2px;
         border-radius: 4px;
         font-weight: bold;
-        font-size: 0.85rem;
+        font-size: 0.8rem;
+        text-align: center;
         outline: none;
         transition: 0.2s;
         font-family: 'Consolas', monospace;
     }
 
     .editor-input:focus {
-            border-color: #00f2ff;
-            box-shadow: 0 0 0 1px #00f2ff;
+            border-color: var(--gcs-cyan);
         }
 
-    /* WAYPOINTS SECTION */
+    /* WAYPOINTS SECTION (Flexed to fill remaining space) */
     .wp-section {
+        flex: 1; /* This takes all remaining vertical space */
         display: flex;
         flex-direction: column;
-        gap: 10px;
+        gap: 8px;
+        min-height: 0; /* Critical for internal scrolling */
+        background: #010409;
+        border: 1px solid #242731;
+        border-radius: 6px;
+        padding: 8px;
     }
 
     .wp-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 0 2px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid #242731;
+        flex-shrink: 0;
     }
 
     .wp-header span {
-            font-size: 0.75rem;
+            font-size: 0.7rem;
             font-weight: 800;
             color: #888;
         }
 
-    .clear-btn {
+    .wp-header-actions {
+        display: flex;
+        gap: 12px;
+    }
+
+    .icon-btn {
         background: transparent;
         border: none;
-        color: #ff3a3a;
-        font-size: 0.7rem;
-        font-weight: bold;
         cursor: pointer;
+        font-size: 1rem;
         padding: 0;
-        transition: 0.2s;
-        display: flex;
-        align-items: center;
-        gap: 4px;
+        transition: filter 0.2s;
     }
 
-    .clear-btn:hover {
-            filter: brightness(1.2);
-            text-decoration: underline;
+    .icon-btn:hover {
+            filter: brightness(1.3);
         }
 
-    .wp-actions {
-        display: flex;
-        gap: 8px;
+    .text-success {
+        color: var(--gcs-green);
     }
 
-    .wp-btn {
-        flex: 1;
-        padding: 10px;
-        font-size: 0.75rem;
-        font-weight: 800;
-        border-radius: 6px;
-        border: none;
-        cursor: pointer;
-        color: white;
-        transition: 0.2s;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        gap: 6px;
+    .text-cyan {
+        color: var(--gcs-cyan);
     }
 
-    .wp-btn.import {
-            background: #238636;
-        }
+    .text-danger {
+        color: var(--gcs-red);
+    }
 
-    .wp-btn.import:hover {
-                background: #2ea043;
-            }
-
-    .wp-btn.export {
-            background: #0b0c10;
-            border: 1px solid #333;
-            color: #ccc;
-        }
-
-    .wp-btn.export:hover {
-                border-color: #fff;
-                color: #fff;
-            }
-
+    /* The only scrolling element on the page */
     .wp-scroll-area {
-        max-height: 250px;
+        flex: 1;
         overflow-y: auto;
-        background: #0b0c10;
-        border: 1px solid #242731;
-        border-radius: 6px;
-        padding: 8px;
         display: flex;
         flex-direction: column;
         gap: 8px;
+        padding-right: 4px;
     }
 
     .wp-scroll-area::-webkit-scrollbar {
@@ -411,10 +394,10 @@
         }
 
     .empty-notif {
-        padding: 30px 10px;
+        padding: 20px 10px;
         text-align: center;
         color: #666;
-        font-size: 0.8rem;
+        font-size: 0.75rem;
         font-weight: 600;
     }
 
@@ -423,44 +406,44 @@
         background: rgba(18, 20, 28, 0.8);
         border: 1px solid #333;
         border-radius: 6px;
-        padding: 10px;
+        padding: 8px 10px;
         display: flex;
         align-items: center;
         gap: 12px;
         cursor: pointer;
         transition: all 0.2s ease;
+        flex-shrink: 0;
     }
 
     .wp-card:hover {
-            transform: translateX(2px);
             border-color: #555;
         }
 
     .wp-card.active {
-            border-color: #00f2ff;
+            border-color: var(--gcs-cyan);
             background: rgba(0, 242, 255, 0.05);
-            box-shadow: inset 3px 0 0 #00f2ff;
+            box-shadow: inset 3px 0 0 var(--gcs-cyan);
         }
 
     .wp-idx {
-        width: 28px;
-        height: 28px;
+        width: 24px;
+        height: 24px;
         background: #0b0c10;
         color: #888;
         border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 0.75rem;
+        font-size: 0.7rem;
         font-weight: 800;
         border: 1px solid #333;
         transition: 0.2s;
     }
 
     .wp-card.active .wp-idx {
-        background: #00f2ff;
+        background: var(--gcs-cyan);
         color: #0b0c10;
-        border-color: #00f2ff;
+        border-color: var(--gcs-cyan);
     }
 
     .wp-data {
@@ -470,7 +453,7 @@
     }
 
     .wp-coord {
-        font-size: 0.7rem;
+        font-size: 0.65rem;
         font-family: 'Consolas', monospace;
         color: #ccc;
         font-weight: 600;
@@ -480,24 +463,24 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        margin-top: 6px;
+        margin-top: 4px;
     }
 
     .wp-edit-row label {
-            font-size: 0.6rem;
+            font-size: 0.55rem;
             color: #888;
             font-weight: 800;
             margin: 0;
         }
 
     .mini-input {
-        width: 65px;
+        width: 60px;
         background: #08090b;
         border: 1px solid #333;
         color: #00ff66;
-        padding: 2px 6px;
+        padding: 2px 4px;
         border-radius: 4px;
-        font-size: 0.75rem;
+        font-size: 0.7rem;
         font-weight: bold;
         outline: none;
         transition: 0.2s;
@@ -512,36 +495,32 @@
         background: transparent;
         border: none;
         color: #666;
-        font-size: 1.1rem;
+        font-size: 1rem;
         cursor: pointer;
-        padding: 6px;
+        padding: 4px;
         transition: 0.2s;
         border-radius: 6px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
     }
 
     .wp-del:hover {
-            color: #ff3a3a;
+            color: var(--gcs-red);
             background: rgba(255, 58, 58, 0.1);
         }
 
     /* FOOTER ACTIONS */
     .sidebar-footer {
         display: flex;
-        flex-direction: column;
         gap: 10px;
-        padding-top: 15px;
-        border-top: 1px solid #242731;
+        flex-shrink: 0;
     }
 
     .action-btn {
-        width: 100%;
-        padding: 14px;
+        flex: 1;
+        padding: 12px;
         border-radius: 6px;
         border: none;
         font-weight: 800;
+        font-size: 0.75rem;
         letter-spacing: 1px;
         cursor: pointer;
         transition: all 0.2s ease;
@@ -640,6 +619,7 @@
         else
         {
             MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Index = MissionItems.Count, Alt = 50 });
+            for (int i = 0; i < MissionItems.Count; i++) MissionItems[i].Index = i;
         }
         OnMissionChanged?.Invoke();
     }
@@ -761,7 +741,17 @@
             isUploading = true;
             StateHasChanged();
 
-            bool success = await Drone.UploadMissionAsync(MissionItems);
+            var waypoints = MissionItems.Select(mi => new WaypointModel
+            {
+                Index = mi.Index,
+                Command = mi.Command,
+                Lat = mi.Lat,
+                Lng = mi.Lng,
+                Alt = (int)mi.Alt,
+                IsHome = mi.IsHome
+            }).ToList();
+
+            bool success = await Drone.UploadMissionAsync(waypoints);
             if (success)
             {
                 isUploaded = true;
@@ -792,11 +782,5 @@
     private void StartMission()
     {
         if (isUploaded) Drone.SetFlightMode("AUTO");
-    }
-
-    public void Dispose()
-    {
-        OnMissionChanged -= TriggerMapRedraw;
-        Drone.OnTelemetryUpdated -= RefreshUi;
     }
 }

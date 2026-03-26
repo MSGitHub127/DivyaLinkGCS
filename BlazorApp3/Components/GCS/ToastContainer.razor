@@ -1,0 +1,223 @@
+﻿@inject MavlinkService Drone
+@implements IDisposable
+@using System.Collections.Concurrent
+
+@if (_toasts.Count > 0)
+{
+    <div class="toast-stack">
+        @foreach (var t in _toasts.Values.OrderBy(x => x.CreatedAt))
+        {
+            <div class="toast-item toast-@t.Level.ToString().ToLower() @(t.Exiting ? "toast-exit" : "toast-enter")">
+                <span class="toast-icon">@t.Icon</span>
+                <span class="toast-text">@t.Text</span>
+                <button class="toast-close" @onclick="() => Remove(t.Id)">×</button>
+            </div>
+        }
+    </div>
+}
+
+<style>
+    .toast-stack {
+        position: fixed;
+        bottom: 70px; /* above footer nav */
+        right: 16px;
+        left: auto;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        pointer-events: none;
+        max-width: 360px;
+    }
+
+    .toast-item {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        padding: 10px 13px;
+        border-radius: 7px;
+        border-left: 3px solid transparent;
+        backdrop-filter: blur(8px);
+        font-size: 0.68rem;
+        font-weight: 600;
+        line-height: 1.4;
+        pointer-events: all;
+        box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+        animation-duration: 0.25s;
+        animation-fill-mode: both;
+        animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+        min-width: 260px;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .toast-enter {
+        animation-name: toastIn;
+    }
+
+    .toast-exit {
+        animation-name: toastOut;
+        animation-timing-function: ease-in;
+        animation-duration: 0.18s;
+    }
+
+    @@keyframes toastIn {
+        from {
+            opacity: 0;
+            transform: translateX(24px) scale(0.96);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(0) scale(1);
+        }
+    }
+
+    @@keyframes toastOut {
+        from {
+            opacity: 1;
+            transform: translateX(0) scale(1);
+            max-height: 80px;
+            margin-bottom: 0;
+        }
+
+        to {
+            opacity: 0;
+            transform: translateX(20px) scale(0.95);
+            max-height: 0;
+            margin-bottom: -8px;
+        }
+    }
+
+    .toast-info {
+        background: rgba(18,22,30,0.95);
+        border-color: #58a6ff;
+        color: #c9d1d9;
+    }
+
+    .toast-success {
+        background: rgba(14,24,16,0.95);
+        border-color: #3fb950;
+        color: #aff7bc;
+    }
+
+    .toast-warning {
+        background: rgba(26,22,10,0.95);
+        border-color: #d29922;
+        color: #f0c060;
+    }
+
+    .toast-error {
+        background: rgba(26,10,10,0.95);
+        border-color: #f85149;
+        color: #ffa8a4;
+    }
+
+    .toast-icon {
+        font-size: 0.95rem;
+        flex-shrink: 0;
+        margin-top: 1px;
+    }
+
+    .toast-text {
+        flex: 1;
+    }
+
+    .toast-close {
+        background: none;
+        border: none;
+        color: inherit;
+        opacity: 0.45;
+        font-size: 1rem;
+        line-height: 1;
+        cursor: pointer;
+        padding: 0 0 0 4px;
+        flex-shrink: 0;
+        transition: opacity 0.15s;
+    }
+
+    .toast-close:hover {
+            opacity: 1;
+        }
+</style>
+
+@code {
+    private class ToastEntry
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public string Text { get; set; } = "";
+        public MavlinkService.ToastLevel Level { get; set; }
+        public string Icon { get; set; } = "ℹ️";
+        public DateTime CreatedAt { get; } = DateTime.UtcNow;
+        public bool Exiting { get; set; }
+        public System.Threading.Timer? Timer { get; set; }
+    }
+
+    private readonly ConcurrentDictionary<Guid, ToastEntry> _toasts = new();
+    private bool _disposed = false;
+
+    protected override void OnInitialized()
+    {
+        Drone.OnToast += HandleToast;
+    }
+
+    private void HandleToast(MavlinkService.ToastMessage msg)
+    {
+        if (_disposed) return;
+
+        var entry = new ToastEntry
+        {
+            Text = msg.Text,
+            Level = msg.Level,
+            Icon = msg.Icon ?? msg.Level switch
+            {
+                MavlinkService.ToastLevel.Success => "✅",
+                MavlinkService.ToastLevel.Warning => "⚠️",
+                MavlinkService.ToastLevel.Error => "❌",
+                _ => "ℹ️"
+            }
+        };
+
+        // Auto-dismiss timer: errors stay 8s, warnings 6s, others 4s
+        double dismissMs = msg.Level switch
+        {
+            MavlinkService.ToastLevel.Error => 8000,
+            MavlinkService.ToastLevel.Warning => 6000,
+            _ => 4000
+        };
+
+        entry.Timer = new System.Threading.Timer(_ => BeginExit(entry.Id), null,
+                          (int)dismissMs, System.Threading.Timeout.Infinite);
+
+        _toasts[entry.Id] = entry;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void BeginExit(Guid id)
+    {
+        if (_disposed) return;
+        if (_toasts.TryGetValue(id, out var t))
+        {
+            t.Exiting = true;
+            try { InvokeAsync(StateHasChanged); } catch { return; }
+            t.Timer?.Dispose();
+            t.Timer = new System.Threading.Timer(_ => Remove(id), null, 200, System.Threading.Timeout.Infinite);
+        }
+    }
+
+    private void Remove(Guid id)
+    {
+        if (_disposed) return;
+        if (_toasts.TryRemove(id, out var t))
+            t.Timer?.Dispose();
+        try { InvokeAsync(StateHasChanged); } catch { }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        Drone.OnToast -= HandleToast;
+        foreach (var t in _toasts.Values) t.Timer?.Dispose();
+        _toasts.Clear();
+    }
+}
