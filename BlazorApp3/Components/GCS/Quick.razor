@@ -94,19 +94,28 @@
                 <span class="value small-text">@Drone.State.Longitude.ToString("F6")</span>
             </div>
         </div>
-    </div>
 
-    @* <div class="arm-action-area">
-        <button class="clean-arm-btn @(Drone.State.IsArmed ? "state-armed" : "state-disarmed")" @onclick="HandleArmClick">
-            <div class="icon-box">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 2L3 7V11C3 16.55 6.84 21.74 12 23C17.16 21.74 21 16.55 21 11V7L12 2Z" />
-                    <path d="M12 7V15M9 11H15" stroke-linecap="round" />
-                </svg>
-            </div>
-            <span class="btn-label">@(Drone.State.IsArmed ? "DISARM SYSTEM" : "ARM SYSTEM")</span>
-        </button>
-    </div> *@
+        <div class="tele-card">
+                <div class="label">ACCELEROMETER</div>
+                <div class="value-group @GetCalColor(Drone.LiveAccelStatus)">
+                    <span class="value small-text">@GetCalDisplayText(Drone.LiveAccelStatus)</span>
+                </div>
+        </div>
+
+        <div class="tele-card">
+                <div class="label">GYROSCOPE</div>
+                <div class="value-group @GetCalColor(Drone.LiveGyroStatus)">
+                    <span class="value small-text">@GetCalDisplayText(Drone.LiveGyroStatus)</span>
+                </div>
+        </div>
+
+        <div class="tele-card">
+                <div class="label">MAGNETOMETER</div>
+                <div class="value-group @GetCalColor(Drone.LiveMagStatus)">
+                    <span class="value small-text">@GetCalDisplayText(Drone.LiveMagStatus)</span>
+                </div>
+        </div>
+    </div>
 </div>
 
 <style>
@@ -306,17 +315,84 @@
     }
 
     .slim-select:hover {
-            border-color: #00f2ff;
-            color: white;
-        }
+        border-color: #00f2ff;
+        color: white;
+    }
 
     .slim-select option {
-            background: #0b0c10;
-        }
+        background: #0b0c10;
+    }
 
     .slim-btn:hover {
-            filter: brightness(1.2);
-        }
+        filter: brightness(1.2);
+    }
+
+    /* ── Calibration Status Section ──────────────────────────────── */
+    .cal-section {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+        width: 100%;
+    }
+
+    .cal-card {
+        background: rgba(18, 20, 28, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        padding: 8px 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 52px;
+        backdrop-filter: blur(4px);
+        transition: border-color 0.2s;
+    }
+
+    .cal-icon {
+        font-size: 1.1rem;
+        flex-shrink: 0;
+    }
+
+    .cal-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+
+    .cal-label {
+        font-size: 0.52rem;
+        font-weight: 700;
+        color: #6c757d;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        white-space: nowrap;
+    }
+
+    .cal-status {
+        font-size: 0.65rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        white-space: nowrap;
+    }
+
+    .cal-ok {
+        color: #3fb950;
+    }
+    /* green — calibrated */
+    .cal-warn {
+        color: #f0b429;
+    }
+    /* amber — in progress / standby */
+    .cal-err {
+        color: #f85149;
+    }
+    /* red   — failed */
+    .cal-idle {
+        color: #555;
+    }
+    /* grey  — not started */
 </style>
 
 @code {
@@ -338,4 +414,26 @@
             targetFlightMode = "";
         }
     }
+
+    // Returns CSS class based on calibration status string
+    private string GetCalColor(string status) => status?.ToUpper() switch
+    {
+        var s when s.Contains("SUCCESS") || s.Contains("CALIBRATED") || s.Contains("DONE") => "cal-ok",
+        var s when s.Contains("FAIL") || s.Contains("ERROR") || s.Contains("DENIED") || s.Contains("NO RESPONSE") => "cal-err",
+        var s when s.Contains("STANDBY") || s.Contains("NONE") => "cal-idle",
+        _ => "cal-warn"  // in-progress states: RECORDING, COMPUTING, PLACE LEVEL, etc.
+    };
+
+    // Condenses long status strings into short display labels
+    private string GetCalDisplayText(string status) => status?.ToUpper() switch
+    {
+        var s when s.Contains("STANDBY") => "STANDBY",
+        var s when s.Contains("SUCCESS") => "CALIBRATED",
+        var s when s.Contains("FAIL") => "FAILED",
+        var s when s.Contains("COMPUTING") => "COMPUTING...",
+        var s when s.Contains("RECORDING") => "RECORDING...",
+        var s when s.Contains("CANCELLED") => "CANCELLED",
+        var s when s.Contains("DENIED") => "DENIED",
+        _ => status ?? "STANDBY"
+    };
 }

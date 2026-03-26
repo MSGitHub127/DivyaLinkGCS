@@ -1,4 +1,4 @@
-﻿@page "/actions"
+@page "/actions"
 @inject MavlinkService Drone
 @implements IDisposable
 
@@ -12,8 +12,9 @@
             <span class="icon">🕹️</span> MISSION CONTROL
         </div>
 
-        <div class="command-scroll-area">
+        <div class="actions-body">
 
+            @* ── ARM / DISARM ── *@
             <div class="arm-action-area">
                 <button class="clean-arm-btn @(Drone.State.IsArmed ? "state-armed" : "state-disarmed")" @onclick="HandleArmClick">
                     <div class="icon-box">
@@ -26,44 +27,60 @@
                 </button>
             </div>
 
-            <div class="action-card">
-                <div class="card-header">
-                    <span class="card-icon">🚀</span>
-                    <span class="card-title">Precision Takeoff</span>
-                </div>
-                <div class="input-container">
-                    <label>TARGET ALTITUDE (METERS)</label>
-                    <div class="input-group">
-                        <input type="number" @bind="TakeoffAlt" step="1.0" min="1" class="cmd-input" />
-                        <button class="btn btn-green @(CanTakeoff ? "" : "disabled")" @onclick="HandleTakeoff">
-                            @(Drone.State.IsArmed ? "EXECUTE TAKEOFF" : "ARM REQUIRED")
-                        </button>
+            @* ── Precision Takeoff ── *@
+            <div class="action-row">
+                <div class="row-left">
+                    <div class="row-info">
+                        <span class="row-title">Precision Takeoff</span>
                     </div>
                 </div>
-                <p class="card-hint">Drone will rise to @TakeoffAlt m and hover.</p>
+                <div class="row-right">
+                    <div class="inline-input-group">
+                        <input type="number" @bind="TakeoffAlt" step="1" min="1" class="inline-input" />
+                        <span class="inline-unit">m</span>
+                    </div>
+                    <button class="row-btn btn-green @(CanTakeoff ? "" : "disabled")" @onclick="HandleTakeoff">
+                        @(Drone.State.IsArmed ? "GO" : "ARM")
+                    </button>
+                </div>
             </div>
 
-            <div class="action-card">
-                <div class="card-header">
-                    <span class="card-icon">🏠</span>
-                    <span class="card-title">Safe Return to Home</span>
-                </div>
-                <div class="input-container">
-                    <label>CLEARANCE ALTITUDE (METERS)</label>
-                    <div class="input-group">
-                        <input type="number" @bind="RtlAlt" step="1.0" min="5" class="cmd-input" />
-                        <button class="btn btn-blue" @onclick="HandleRTL">EXECUTE RTL</button>
+            @* ── Return to Home ── *@
+            <div class="action-row">
+                <div class="row-left">
+                    <div class="row-info">
+                        <span class="row-title">Return to Home</span>
                     </div>
                 </div>
-                <p class="card-hint">Drone climbs to @RtlAlt m before traveling to launch point.</p>
+                <div class="row-right">
+                    <div class="inline-input-group">
+                        <input type="number" @bind="RtlAlt" step="1" min="5" class="inline-input" />
+                        <span class="inline-unit">m</span>
+                    </div>
+                    <button class="row-btn btn-blue" @onclick="HandleRTL">RTL</button>
+                </div>
             </div>
 
+            @* ── Precision Landing ── *@
+            <div class="action-row">
+                <div class="row-left">
+                    <div class="row-info">
+                        <span class="row-title">Precision Landing</span>
+                    </div>
+                </div>
+                <div class="row-right">
+                    <div class="inline-input-group">
+                        <input type="number" @bind="LandSpeed" step="1" min="10" max="200" class="inline-input" />
+                        <span class="inline-unit">cm/s</span>
+                    </div>
+                    <button class="row-btn btn-red @(Drone.IsConnected ? "" : "disabled")" @onclick="HandleLand">LAND</button>
+                </div>
+            </div>
+
+            @* ── Emergency ── *@
             <div class="emergency-section">
-                <div class="card-title" style="color: var(--gcs-red); margin-bottom: 10px;">⚠️ CRITICAL OVERRIDES</div>
-                <div class="emergency-grid">
-                    <button class="btn btn-red" @onclick='() => Drone.SetFlightMode("LAND")'>LAND NOW</button>
-                    <button class="btn btn-orange" @onclick="HandleEmergencyDisarm">EMERGENCY DISARM</button>
-                </div>
+                <div class="emergency-label">⚠️ CRITICAL OVERRIDES</div>
+                <button class="btn btn-orange emergency-btn" @onclick="HandleEmergencyDisarm">EMERGENCY DISARM</button>
             </div>
 
         </div>
@@ -86,8 +103,8 @@
         display: flex;
         flex-direction: column;
         height: 100%;
-        gap: 16px;
-        padding: 20px;
+        gap: 10px;
+        padding: 20px 20px 5px 20px;
         background: transparent;
         width: 100%;
         max-width: 500px;
@@ -111,182 +128,47 @@
         flex: 1;
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 8px;
         min-height: 0;
         background: rgba(18, 20, 28, 0.6);
         border: 1px solid var(--gcs-border);
         border-radius: 8px;
-        padding: 16px;
+        padding: 10px 14px;
         backdrop-filter: blur(4px);
     }
 
     .header-strip {
-        padding-bottom: 12px;
+        padding-bottom: 8px;
         border-bottom: 1px solid var(--gcs-border);
         display: flex;
         align-items: center;
         gap: 10px;
         font-weight: 900;
-        font-size: 0.85rem;
+        font-size: 0.78rem;
         text-transform: uppercase;
         color: white;
         letter-spacing: 1.5px;
+        flex-shrink: 0;
     }
 
-    .command-scroll-area {
+    .actions-body {
         flex: 1;
-        overflow-y: auto;
         display: flex;
         flex-direction: column;
-        gap: 15px;
-        padding-right: 5px;
-    }
-
-    .action-card {
-        background: #010409;
-        border: 1px solid var(--gcs-border);
-        border-radius: 8px;
-        padding: 16px;
-        transition: border-color 0.2s;
-    }
-
-    .action-card:hover {
-            border-color: var(--gcs-cyan);
-        }
-
-    .card-header {
-        display: flex;
-        align-items: center;
         gap: 10px;
-        margin-bottom: 12px;
+        overflow: hidden;
+        min-height: 0;
     }
 
-    .card-title {
-        font-size: 0.9rem;
-        font-weight: bold;
-        color: white;
-    }
-
-    .card-icon {
-        font-size: 1.2rem;
-    }
-
-    .input-container {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-    }
-
-    .input-container label {
-            font-size: 0.6rem;
-            color: #8b949e;
-            font-weight: 800;
-            text-transform: uppercase;
-        }
-
-    .input-group {
-        display: flex;
-        gap: 10px;
-    }
-
-    .cmd-input {
-        width: 80px;
-        background: #010409;
-        border: 1px solid var(--gcs-border);
-        color: var(--gcs-cyan);
-        padding: 8px;
-        border-radius: 4px;
-        font-family: monospace;
-        font-weight: bold;
-        font-size: 1.1rem;
-        text-align: center;
-        outline: none;
-    }
-
-    .cmd-input:focus {
-            border-color: var(--gcs-cyan);
-        }
-
-    .btn {
-        flex: 1;
-        border: none;
-        border-radius: 4px;
-        color: white;
-        font-weight: 900;
-        cursor: pointer;
-        text-transform: uppercase;
-        font-size: 0.75rem;
-        transition: filter 0.2s;
-    }
-
-    .btn:hover {
-            filter: brightness(1.2);
-        }
-
-    .btn.disabled {
-            opacity: 0.2;
-            cursor: not-allowed;
-        }
-
-    .btn-green {
-        background: var(--gcs-green);
-        border: 1px solid #3fb950;
-    }
-
-    .btn-blue {
-        background: var(--gcs-cyan);
-        color: #000;
-    }
-
-    .btn-red {
-        background: var(--gcs-red);
-    }
-
-    .btn-orange {
-        background: var(--gcs-amber);
-    }
-
-    .card-hint {
-        font-size: 0.65rem;
-        color: #8b949e;
-        margin-top: 8px;
-        font-style: italic;
-    }
-
-    .emergency-section {
-        margin-top: 10px;
-        padding-top: 15px;
-        border-top: 1px dashed var(--gcs-border);
-    }
-
-    .emergency-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 10px;
-    }
-
-    .emergency-grid .btn {
-            height: 45px;
-        }
-
-    /* Custom Scrollbar */
-    .command-scroll-area::-webkit-scrollbar {
-        width: 4px;
-    }
-
-    .command-scroll-area::-webkit-scrollbar-thumb {
-        background: var(--gcs-border);
-        border-radius: 10px;
-    }
-
+    /* ── ARM button ─────────────────────────────────── */
     .arm-action-area {
         width: 100%;
-        margin-top: 5px;
+        flex-shrink: 0;
     }
 
     .clean-arm-btn {
         width: 100%;
-        height: 50px;
+        height: 46px;
         border: none;
         border-radius: 6px;
         display: flex;
@@ -298,7 +180,7 @@
         font-weight: 700;
         letter-spacing: 1px;
         text-transform: uppercase;
-        font-size: 0.9rem;
+        font-size: 0.8rem;
         color: white;
     }
 
@@ -319,14 +201,202 @@
     }
 
     .icon-box svg {
-        width: 20px;
-        height: 20px;
+        width: 18px;
+        height: 18px;
+    }
+
+    /* ── Action rows (no accordion) ─────────────────── */
+    .action-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        background: #010409;
+        border: 1px solid var(--gcs-border);
+        border-radius: 8px;
+        padding: 8px 14px;
+        flex-shrink: 0;
+        transition: border-color 0.2s;
+    }
+
+        .action-row:hover {
+            border-color: #444;
+        }
+
+    .row-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .row-icon {
+        font-size: 1.1rem;
+        flex-shrink: 0;
+    }
+
+    .row-info {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+
+    .row-title {
+        font-size: 0.76rem;
+        font-weight: 700;
+        color: white;
+        white-space: nowrap;
+    }
+
+    .row-hint {
+        font-size: 0.56rem;
+        color: #6c757d;
+        font-style: italic;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .param-tag {
+        font-family: monospace;
+        color: var(--gcs-cyan);
+        opacity: 0.8;
+        font-style: normal;
+        font-size: 0.5rem;
+    }
+
+    .row-right {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+    }
+
+    /* Value input inline */
+    .inline-input-group {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 85px;
+        background: #0a0b0e;
+        border: 1px solid var(--gcs-border);
+        border-radius: 4px;
+        padding: 4px 6px;
+    }
+
+    .inline-input {
+        width: 46px;
+        background: transparent;
+        border: none;
+        color: var(--gcs-cyan);
+        font-family: monospace;
+        font-weight: bold;
+        font-size: 0.88rem;
+        text-align: right;
+        outline: none;
+        -moz-appearance: textfield;
+    }
+
+        .inline-input::-webkit-outer-spin-button,
+        .inline-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+        }
+
+    .inline-unit {
+        font-size: 0.55rem;
+        color: #555;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    /* Action button */
+    .row-btn {
+        border: none;
+        border-radius: 4px;
+        color: white;
+        font-weight: 900;
+        cursor: pointer;
+        text-transform: uppercase;
+        font-size: 0.65rem;
+        transition: filter 0.2s;
+        padding: 6px 10px;
+        width: 60px;
+        display:flex;
+        justify-content: center;
+        align-items: center;
+        white-space: nowrap;
+    }
+
+        .row-btn:hover {
+            filter: brightness(1.2);
+        }
+
+        .row-btn.disabled {
+            opacity: 0.25;
+            cursor: not-allowed;
+        }
+
+    .btn-green {
+        background: var(--gcs-green);
+    }
+
+    .btn-blue {
+        background: var(--gcs-cyan);
+        color: #000;
+    }
+
+    .btn-red {
+        background: var(--gcs-red);
+    }
+
+    /* ── Emergency ──────────────────────────────────── */
+    .emergency-section {
+        padding-top: 8px;
+        border-top: 1px dashed var(--gcs-border);
+        flex-shrink: 0;
+        margin-top: auto;
+    }
+
+    .emergency-label {
+        font-size: 0.58rem;
+        font-weight: 800;
+        color: var(--gcs-red);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
+    }
+
+    .btn {
+        border: none;
+        border-radius: 4px;
+        color: white;
+        font-weight: 900;
+        cursor: pointer;
+        text-transform: uppercase;
+        font-size: 0.7rem;
+        transition: filter 0.2s;
+    }
+
+        .btn:hover {
+            filter: brightness(1.2);
+        }
+
+    .btn-orange {
+        background: var(--gcs-amber);
+    }
+
+    .emergency-btn {
+        width: 100%;
+        height: 36px;
     }
 </style>
 
 @code {
     private float TakeoffAlt = 10.0f;
     private float RtlAlt = 30.0f;
+    private float LandSpeed = 50.0f;
     private bool CanTakeoff => Drone.State.IsArmed;
 
     private void HandleArmClick() => Drone.SendArmRequest(!Drone.State.IsArmed);
@@ -341,29 +411,28 @@
     private void HandleTakeoff()
     {
         if (!CanTakeoff) return;
-
-        // 1. Drones usually need to be in GUIDED mode to accept software takeoff commands
         Drone.SetFlightMode("GUIDED");
-
-        // 2. MAV_CMD_NAV_TAKEOFF (Enum 22). Param 7 is altitude in meters.
         Drone.SendCommand(MAVLink.MAV_CMD.TAKEOFF, 0, 0, 0, 0, 0, 0, TakeoffAlt);
-
         Console.WriteLine($"Command Sent: Takeoff to {TakeoffAlt}m");
     }
 
     private void HandleRTL()
     {
-        // Set RTL_ALT parameter (ArduPilot reads this in Centimeters, not Meters!)
         Drone.SendParameter("RTL_ALT", RtlAlt * 100.0f);
-
-        // Trigger RTL Mode
         Drone.SetFlightMode("RTL");
         Console.WriteLine($"Command Sent: RTL with target clearance of {RtlAlt}m");
     }
 
+    private void HandleLand()
+    {
+        if (!Drone.IsConnected) return;
+        Drone.SendParameter("LAND_SPEED", LandSpeed);
+        Drone.SetFlightMode("LAND");
+        Console.WriteLine($"Land command sent — descent speed: {LandSpeed} cm/s");
+    }
+
     private void HandleEmergencyDisarm()
     {
-        // Second parameter 21196 is the "Force" magic number for ArduPilot disarm
         Drone.SendArmRequest(false, true);
     }
 

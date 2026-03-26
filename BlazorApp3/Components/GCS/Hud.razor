@@ -48,51 +48,27 @@
         </div>
 
         <div class="hud-container">
-            <div class="rc-indicator-wrapper" title="@(Drone.State.IsRcConnected ? "RC Connected" : "RC Disconnected")">
-                @if (Drone.State.IsRcConnected)
-                {
-                    <svg class="rc-custom-icon connected" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1080 1080">
-                        <g className="page" style="">
-                            <rect x="0" y="0" width="1080" height="1080" fill="rgb(0, 0, 0, 0)"></rect>
-                            <g className="element" id="78U4edEzCo" transform="translate(223.11290533264506, 223.1129053326448) rotate(0)" opacity="1" style="transform-origin:top left; filter:;">
-                                <g>
-                                    <g>
-                                        <defs>
-                                            <clipPath id="clip-78U4edEzCo">
-                                                <rect x="0" y="0" width="633.7741893347102" height="633.7741893347104"></rect>
-                                            </clipPath>
-                                        </defs>
-                                        <image href="data:image/svg+xml;base64,PHN2ZyB4bWxuczpkYz0iaHR0cDovL3B1cmwub3JnL2RjL2VsZW1lbnRzLzEuMS8iIHhtbG5zOmNjPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyMiIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyIgeG1sbnM6c3ZnPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczpzb2RpcG9kaT0iaHR0cDovL3NvZGlwb2RpLnNvdXJjZWZvcmdlLm5ldC9EVEQvc29kaXBvZGktMC5kdGQiIHhtbG5zOmlua3NjYXBlPSJodHRwOi8vd3d3Lmlua3NjYXBlLm9yZy9uYW1lc3BhY2VzL2lua3NjYXBlIiB2ZXJzaW9uPSIxLjEiIHg9IjBweCIgeT0iMHB4IiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMCwtOTUyLjM2MjE4KSI+PHBhdGggc3R5bGU9ImNvbG9yOiByZ2IoMCwgMCwgMCk7IGZpbGw6IHJnYigxMzgsIDE5MCwgNzgpOyIgZD0ibSAyNiw5NzcuMzYyMTUgYyAtOS45NDExMzEsMCAtMTguMDAwMDAwNSwxMC4wNTg5IC0xOC4wMDAwMDA1LDE5Ljk5OTk2IDAsOS45NDEwOSAyLjA1ODg3MDUsMzAuMDAwMDkgMTIuMDAwMDAwNSwzMC4wMDAwOSA1LjMyMzQ1OSwwIDE2LjExMDAzOSwtMTIuMzI1NSAxOS40MDYyNSwtMTYuMDAwMSBsIDIxLjE4NzUsMCBjIDMuMjk2MjEsMy42NzQ2IDE0LjA4Mjc5LDE2LjAwMDEgMTkuNDA2MjUsMTYuMDAwMSA5Ljk0MTEzLDAgMTIsLTIwLjA1OSAxMiwtMzAuMDAwMDkgMCwtOS45NDEwNiAtOC4wNTg4NywtMTkuOTk5OTYgLTE4LC0xOS45OTk5NiAtNS4zMjM0NiwwIC0xMC4xMTAwNCwwLjMyNTQgLTEzLjQwNjI1LDQgbCAtMjEuMTg3NSwwIGMgLTMuMjk2MjExLC0zLjY3NDYgLTguMDgyNzkxLC00IC0xMy40MDYyNSwtNCB6IG0gNDgsOSBjIDEuNjU2ODUsMCAzLDEuMzQzMSAzLDMgMCwxLjY1NjkgLTEuMzQzMTUsMyAtMywzIC0xLjY1Njg1MSwwIC0zLC0xLjM0MzEgLTMsLTMgMCwtMS42NTY5IDEuMzQzMTQ5LC0zIDMsLTMgeiBtIC00OC4yMTg3NSwxLjAzMTIgQSAxLjk5OTczNzksMS45OTEyOTMyIDAgMCAxIDI4LDk4OS40MjQ2NSBsIDAsMy45Njg3IDMuOTY4NzUsMCBhIDEuOTkxMjkzMiwxLjk5OTczNzkgMCAwIDEgMi4wMzEyNSwxLjc4MTMgMS45OTEyOTMyLDEuOTk5NzM3OSAwIDAgMSAtMi4wMzEyNSwyLjIxODY2IGwgLTMuOTY4NzUsMCAwLDMuOTY4NzkgYSAyLDEuOTkxNTU0MiAwIDAgMSAtNCwwIGwgMCwtMy45Njg3OSAtMy45Njg3NSwwIGEgMS45OTE1NTQyLDIgMCAxIDEgMCwtMy45OTk5NiBsIDMuOTY4NzUsMCAwLC0zLjk2ODcgYSAxLjk5OTczNzksMS45OTEyOTMyIDAgMCAxIDEuNzgxMjUsLTIuMDMxMyB6IE0gNjgsOTkyLjM2MjE1IGMgMS42NTY4NSwwIDMsMS4zNDMxIDMsMi45OTk5NiAwLDEuNjU2OSAtMS4zNDMxNSwzIC0zLDMgLTEuNjU2ODUxLDAgLTMsLTEuMzQzMSAtMywtMyAwLC0xLjY1Njg2IDEuMzQzMTQ5LC0yLjk5OTk2IDMsLTIuOTk5OTYgeiBtIDEyLDAgYyAxLjY1Njg1LDAgMywxLjM0MzEgMywyLjk5OTk2IDAsMS42NTY5IC0xLjM0MzE1MSwzIC0zLDMgLTEuNjU2ODUxLDAgLTMsLTEuMzQzMSAtMywtMyAwLC0xLjY1Njg2IDEuMzQzMTQ5LC0yLjk5OTk2IDMsLTIuOTk5OTYgeiBtIC02LDUuOTk5OTYgYyAxLjY1Njg1LDAgMywxLjM0MzEgMywyLjk5OTk5IDAsMS42NTY5IC0xLjM0MzE1LDMgLTMsMyAtMS42NTY4NTEsMCAtMywtMS4zNDMxIC0zLC0zIDAsLTEuNjU2ODkgMS4zNDMxNDksLTIuOTk5OTkgMywtMi45OTk5OSB6IiBmaWxsPSIjMDAwMDAwIiBzdHJva2U9Im5vbmUiIG1hcmtlcj0ibm9uZSIgdmlzaWJpbGl0eT0idmlzaWJsZSIgZGlzcGxheT0iaW5saW5lIiBvdmVyZmxvdz0idmlzaWJsZSIvPjwvZz48L3N2Zz4=" x="0" y="0" width="633.7741893347102" height="633.7741893347104" preserveAspectRatio="none" clip-path="url(#clip-78U4edEzCo)"></image>
-                                    </g>
-                                </g>
-                            </g>
-                        </g>
-                    </svg>
-                }
-                else
-                {
-                    <svg class="rc-custom-icon disconnected" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1080 1080">
-                        <g className="page" style="">
-                            <rect x="0" y="0" width="1080" height="1080" fill="rgb(0, 0, 0, 0)"></rect>
-                            <g className="element" id="78U4edEzCo" transform="translate(223.11290533264506, 223.1129053326448) rotate(0)" opacity="1" style="transform-origin:top left; filter:;">
-                                <g>
-                                    <g>
-                                        <defs>
-                                            <clipPath id="clip-78U4edEzCo">
-                                                <rect x="0" y="0" width="633.7741893347102" height="633.7741893347104"></rect>
-                                            </clipPath>
-                                            <linearGradient x1="50%" y1="100%" x2="49.999999999999986%" y2="0%" gradientUnits="userSpaceOnUse" id="color94308817">
-                                                <stop offset="0%" stop-color="rgba(150,150,150,1)"></stop>
-                                                <stop offset="100%" stop-color="rgba(133,155,111,1)"></stop>
-                                            </linearGradient>
-                                        </defs>
-                                        <image href="data:image/svg+xml;base64,PHN2ZyB4bWxuczpkYz0iaHR0cDovL3B1cmwub3JnL2RjL2VsZW1lbnRzLzEuMS8iIHhtbG5zOmNjPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyMiIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyIgeG1sbnM6c3ZnPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczpzb2RpcG9kaT0iaHR0cDovL3NvZGlwb2RpLnNvdXJjZWZvcmdlLm5ldC9EVEQvc29kaXBvZGktMC5kdGQiIHhtbG5zOmlua3NjYXBlPSJodHRwOi8vd3d3Lmlua3NjYXBlLm9yZy9uYW1lc3BhY2VzL2lua3NjYXBlIiB2ZXJzaW9uPSIxLjEiIHg9IjBweCIgeT0iMHB4IiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IHgxPSI1MCUiIHkxPSIxMDAlIiB4Mj0iNDkuOTk5OTk5OTk5OTk5OTg2JSIgeTI9IjAlIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSIgaWQ9ImNvbG9yOTQzMDg4MTciPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29sb3I9InJnYmEoMTUwLDE1MCwxNTAsMSkiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9InJnYmEoMTMzLDE1NSwxMTEsMSkiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgwLC05NTIuMzYyMTgpIj48cGF0aCBzdHlsZT0iY29sb3I6IzAwMDAwMDtlbmFibGUtYmFja2dyb3VuZDphY2N1bXVsYXRlOyIgZD0ibSAyNiw5NzcuMzYyMTUgYyAtOS45NDExMzEsMCAtMTguMDAwMDAwNSwxMC4wNTg5IC0xOC4wMDAwMDA1LDE5Ljk5OTk2IDAsOS45NDEwOSAyLjA1ODg3MDUsMzAuMDAwMDkgMTIuMDAwMDAwNSwzMC4wMDAwOSA1LjMyMzQ1OSwwIDE2LjExMDAzOSwtMTIuMzI1NSAxOS40MDYyNSwtMTYuMDAwMSBsIDIxLjE4NzUsMCBjIDMuMjk2MjEsMy42NzQ2IDE0LjA4Mjc5LDE2LjAwMDEgMTkuNDA2MjUsMTYuMDAwMSA5Ljk0MTEzLDAgMTIsLTIwLjA1OSAxMiwtMzAuMDAwMDkgMCwtOS45NDEwNiAtOC4wNTg4NywtMTkuOTk5OTYgLTE4LC0xOS45OTk5NiAtNS4zMjM0NiwwIC0xMC4xMTAwNCwwLjMyNTQgLTEzLjQwNjI1LDQgbCAtMjEuMTg3NSwwIGMgLTMuMjk2MjExLC0zLjY3NDYgLTguMDgyNzkxLC00IC0xMy40MDYyNSwtNCB6IG0gNDgsOSBjIDEuNjU2ODUsMCAzLDEuMzQzMSAzLDMgMCwxLjY1NjkgLTEuMzQzMTUsMyAtMywzIC0xLjY1Njg1MSwwIC0zLC0xLjM0MzEgLTMsLTMgMCwtMS42NTY5IDEuMzQzMTQ5LC0zIDMsLTMgeiBtIC00OC4yMTg3NSwxLjAzMTIgQSAxLjk5OTczNzksMS45OTEyOTMyIDAgMCAxIDI4LDk4OS40MjQ2NSBsIDAsMy45Njg3IDMuOTY4NzUsMCBhIDEuOTkxMjkzMiwxLjk5OTczNzkgMCAwIDEgMi4wMzEyNSwxLjc4MTMgMS45OTEyOTMyLDEuOTk5NzM3OSAwIDAgMSAtMi4wMzEyNSwyLjIxODY2IGwgLTMuOTY4NzUsMCAwLDMuOTY4NzkgYSAyLDEuOTkxNTU0MiAwIDAgMSAtNCwwIGwgMCwtMy45Njg3OSAtMy45Njg3NSwwIGEgMS45OTE1NTQyLDIgMCAxIDEgMCwtMy45OTk5NiBsIDMuOTY4NzUsMCAwLC0zLjk2ODcgYSAxLjk5OTczNzksMS45OTEyOTMyIDAgMCAxIDEuNzgxMjUsLTIuMDMxMyB6IE0gNjgsOTkyLjM2MjE1IGMgMS42NTY4NSwwIDMsMS4zNDMxIDMsMi45OTk5NiAwLDEuNjU2OSAtMS4zNDMxNSwzIC0zLDMgLTEuNjU2ODUxLDAgLTMsLTEuMzQzMSAtMywtMyAwLC0xLjY1Njg2IDEuMzQzMTQ5LC0yLjk5OTk2IDMsLTIuOTk5OTYgeiBtIDEyLDAgYyAxLjY1Njg1LDAgMywxLjM0MzEgMywyLjk5OTk2IDAsMS42NTY5IC0xLjM0MzE1MSwzIC0zLDMgLTEuNjU2ODUxLDAgLTMsLTEuMzQzMSAtMywtMyAwLC0xLjY1Njg2IDEuMzQzMTQ5LC0yLjk5OTk2IDMsLTIuOTk5OTYgeiBtIC02LDUuOTk5OTYgYyAxLjY1Njg1LDAgMywxLjM0MzEgMywyLjk5OTk5IDAsMS42NTY5IC0xLjM0MzE1LDMgLTMsMyAtMS42NTY4NTEsMCAtMywtMS4zNDMxIC0zLC0zIDAsLTEuNjU2ODkgMS4zNDMxNDksLTIuOTk5OTkgMywtMi45OTk5OSB6IiBmaWxsPSJ1cmwoJyNjb2xvcjk0MzA4ODE3JykiIHN0cm9rZT0ibm9uZSIgbWFya2VyPSJub25lIiB2aXNpYmlsaXR5PSJ2aXNpYmxlIiBkaXNwbGF5PSJpbmxpbmUiIG92ZXJmbG93PSJ2aXNpYmxlIi8+PC9nPjwvc3ZnPg==" x="0" y="0" width="633.7741893347102" height="633.7741893347104" preserveAspectRatio="none" clip-path="url(#clip-78U4edEzCo)"></image>
-                                    </g>
-                                </g>
-                            </g>
-                        </g>
-                    </svg>
-                }
+            <div class='rc-indicator-wrapper' title='@(Drone.State.IsRcConnected ? "RC Connected" : "RC Disconnected")'>
+                <svg class='rc-icon @(Drone.State.IsRcConnected ? "rc-on" : "rc-off")'
+                     xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+                    <path d="m 26,25 c -9.94,0 -18,10.06 -18,20 0,9.94 2.06,30 12,30
+                             5.32,0 16.11,-12.33 19.41,-16 l 21.19,0
+                             c 3.3,3.67 14.08,16 19.41,16 9.94,0 12,-20.06 12,-30
+                             0,-9.94 -8.06,-20 -18,-20 -5.32,0 -10.11,0.33 -13.41,4
+                             l -21.19,0 C 36.11,25.33 31.32,25 26,25 z
+                             m 48,9 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z
+                             m -48.22,1.03 a 2,2 0 0 1 1.78,2.03 l 0,3.97 3.97,0
+                             a 2,2 0 0 1 0,4 l -3.97,0 0,3.97 a 2,2 0 0 1 -4,0
+                             l 0,-3.97 -3.97,0 a 2,2 0 1 1 0,-4 l 3.97,0 0,-3.97
+                             a 2,2 0 0 1 2.22,-2.03 z
+                             M 68,40 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z
+                             m 12,0 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z
+                             m -6,6 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z" />
+                </svg>
             </div>
         </div>
 
@@ -311,12 +287,12 @@
         font-size: 1rem;
     }
 
-    .status-msg.disarmed {
+        .status-msg.disarmed {
             color: #ff3a3a;
             text-shadow: 0 0 10px #ff3a3a;
         }
 
-    .status-msg.armed {
+        .status-msg.armed {
             color: #00ff00;
             text-shadow: 0 0 10px #00ff00;
         }
@@ -350,21 +326,23 @@
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
     }
 
-    /* FORCES THE 1080px SVGs TO BECOME NORMAL ICONS */
-    .rc-custom-icon {
-        width: 32px;
-        height: 32px;
-        transition: all 0.3s ease;
+    .rc-icon {
+        width: 30px;
+        height: 30px;
+        transition: fill 0.4s ease, filter 0.4s ease;
     }
 
-    .rc-custom-icon.connected {
-            /* Adds a subtle professional green glow to your green SVG */
-            filter: drop-shadow(0 0 6px rgba(138, 190, 78, 0.6));
+        /* RC connected — green fill with glow */
+        .rc-icon.rc-on {
+            fill: #8abe4e;
+            filter: drop-shadow(0 0 5px rgba(138, 190, 78, 0.7));
         }
 
-     .rc-custom-icon.disconnected {
-            /* Dims your grey SVG slightly so it sits quietly in the background */
-            opacity: 0.8;
+        /* RC disconnected — grey, no glow */
+        .rc-icon.rc-off {
+            fill: #4a4a4a;
+            filter: none;
+            opacity: 0.75;
         }
 </style>
 

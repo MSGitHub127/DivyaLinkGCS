@@ -1,658 +1,955 @@
-﻿@page "/setup"
+@page "/setup"
 @inject MavlinkService Drone
 @inject IJSRuntime JS
 @implements IDisposable
 
-<div class="gcs-setup-container">
+<div class="gcs-setup-container @(AnyModuleExpanded ? "module-focus-mode" : "")">
     <div class="hud-wrapper">
         <Hud />
     </div>
 
-    <div class="setup-list">
+    <div class="setup-grid">
 
-        <div class="setup-module">
-            <div class="module-header">
+        <div class='setup-module @(expandedModules["Frame"] ? "module-expanded" : "")'>
+            <div class="module-header" @onclick='() => ToggleModule("Frame")'>
                 <i class="bi bi-gear-wide-connected"></i>
                 <span>FRAME GEOMETRY</span>
-                <button class="btn-gcs-primary" @onclick="ApplyFrame">SYNC PARAMS</button>
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["Frame"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
             </div>
-            <div class="module-content">
-                <div class="readout-row">
-                    <div class="readout"><label>ACTIVE TYPE</label><div class="value">@currentType</div></div>
-                    <div class="readout"><label>ACTIVE CLASS</label><div class="value">@currentClass</div></div>
-                </div>
-                <div class="control-group">
-                    <label class="input-label">VEHICLE TYPE</label>
-                    <select class="gcs-select" @bind="selectedFrameType">
-                        <option value="1">QUADCOPTER</option>
-                        <option value="2">HEXACOPTER</option>
-                        <option value="3">OCTACOPTER</option>
+            @if (expandedModules["Frame"])
+            {
+                <div class="module-content">
+                    <div class="module-action-bar">
+                        <button class="btn-gcs-primary"
+                                disabled="@(!Drone.IsLinkHealthy)"
+                                @onclick="ApplyFrame">
+                            APPLY & REBOOT
+                        </button>
+                    </div>
+
+                    @* ── Active config readouts ── *@
+                    <div class="readout-row" style="margin-bottom:10px;">
+                        <div class="readout">
+                            <label>ACTIVE VEHICLE</label>
+                            <div class="value">@FrameClassName</div>
+                        </div>
+                        <div class="readout">
+                            <label>ACTIVE LAYOUT</label>
+                            <div class="value">@FrameTypeName</div>
+                        </div>
+                        <div class="readout">
+                            <label>MOTORS</label>
+                            <div class="value">@Drone.State.MotorCount</div>
+                        </div>
+                    </div>
+
+                    @* ── SVG Motor diagram ── *@
+                    <div class="frame-diagram-wrap">
+                        <svg viewBox="0 0 200 200" class="frame-svg"
+                             xmlns="http://www.w3.org/2000/svg">
+
+                            @* Arms + motors rendered from MotorPositions *@
+                            @foreach (var m in MotorPositions)
+                            {
+                                @* Arm line from centre to motor *@
+                                <line x1="100" y1="100"
+                                      x2="@m.X.ToString("0.0")" y2="@m.Y.ToString("0.0")"
+                                      stroke="#30363d" stroke-width="4" stroke-linecap="round" />
+
+                                @* Motor circle *@
+                                <circle cx="@m.X.ToString("0.0")" cy="@m.Y.ToString("0.0")"
+                                        r="14"
+                                        fill="@(m.Cw ? "#1a2a1a" : "#1a1a2a")"
+                                        stroke="@(m.Cw ? "#3fb950" : "#58a6ff")"
+                                        stroke-width="2" />
+
+                                @* Rotation arc arrow *@
+                                @if (m.Cw)
+                                {
+                                    <path d="M @((m.X - 11).ToString("0.0")),@(m.Y.ToString("0.0"))
+                                                                                                              a 11 11 0 1 1 8 8"
+                                          fill="none" stroke="#3fb950" stroke-width="1.5"
+                                          stroke-linecap="round" />
+                                    <polygon points="@((m.X - 3).ToString("0.0")),@((m.Y + 8).ToString("0.0"))
+                                                                                                                      @((m.X + 3).ToString("0.0")),@((m.Y + 12).ToString("0.0"))
+                                                                                                                      @((m.X - 1).ToString("0.0")),@((m.Y + 14).ToString("0.0"))"
+                                             fill="#3fb950" />
+                                }
+                                else
+                                {
+                                    <path d="M @((m.X + 11).ToString("0.0")),@(m.Y.ToString("0.0"))
+                                                                                                              a 11 11 0 1 0 -8 8"
+                                          fill="none" stroke="#58a6ff" stroke-width="1.5"
+                                          stroke-linecap="round" />
+                                    <polygon points="@((m.X + 3).ToString("0.0")),@((m.Y + 8).ToString("0.0"))
+                                                                                                                      @((m.X - 3).ToString("0.0")),@((m.Y + 12).ToString("0.0"))
+                                                                                                                      @((m.X + 1).ToString("0.0")),@((m.Y + 14).ToString("0.0"))"
+                                             fill="#58a6ff" />
+                                }
+
+                                @* Motor number — MarkupString avoids RZ1023: Razor rejects *@
+                                @* ALL attributes on <text> (even x/y/style) because it parses  *@
+                                @* <text> as an HTML element, not an SVG element.               *@
+                                @((MarkupString)$"<text x='{m.X:0.0}' y='{m.Y + 1:0.0}' style='text-anchor:middle;dominant-baseline:middle;fill:white;font-size:8px;font-weight:bold;font-family:monospace;'>{m.Num}</text>")
+                            }
+
+                            @* Centre hub *@
+                            <circle cx="100" cy="100" r="10"
+                                    fill="#161b22" stroke="#30363d" stroke-width="2" />
+                            @((MarkupString)"<text x='100' y='100' style='text-anchor:middle;dominant-baseline:middle;fill:#58a6ff;font-size:7px;font-weight:bold;font-family:monospace;'>FC</text>")
+
+                            @* Forward arrow *@
+                            <polygon points="100,18 106,30 94,30"
+                                     fill="#f0b429" opacity="0.8" />
+                            @((MarkupString)"<text x='100' y='13' style='text-anchor:middle;fill:#f0b429;font-size:7px;font-family:monospace;opacity:0.8;'>FWD</text>")
+                        </svg>
+
+                        @* Legend *@
+                        <div class="frame-legend">
+                            <div class="legend-item">
+                                <span class="legend-dot" style="background:#3fb950;"></span>
+                                <span>CW (clockwise)</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-dot" style="background:#58a6ff;"></span>
+                                <span>CCW (counter-clockwise)</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-dot" style="background:#f0b429;"></span>
+                                <span>Forward</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    @* ── Selectors ── *@
+                    <label class="input-label" style="margin-top:8px;">VEHICLE TYPE (FRAME_CLASS)</label>
+                    <select class="gcs-select" @bind="selectedFrameClass" style="margin-bottom:6px;">
+                        <option value="1">Quadcopter (4 motors)</option>
+                        <option value="2">Hexacopter (6 motors)</option>
+                        <option value="3">Octocopter (8 motors)</option>
+                        <option value="5">Y6 (6 motors coaxial)</option>
+                        <option value="7">Tricopter (3 motors)</option>
                     </select>
-                    <label class="input-label">FRAME CLASS</label>
-                    <select class="gcs-select" @bind="selectedFrameClass">
-                        <option value="0">PLUS (+)</option>
-                        <option value="1">X-FRAME</option>
-                        <option value="2">V-FRAME</option>
+
+                    <label class="input-label" style="margin-top:6px;">MOTOR LAYOUT (FRAME_TYPE)</label>
+                    <select class="gcs-select" @bind="selectedFrameType" style="margin-bottom:10px;">
+                        <option value="0">Plus (+)</option>
+                        <option value="1">X</option>
+                        <option value="2">V (H-Frame)</option>
+                        <option value="3">H</option>
+                        <option value="10">CW X (reversed CW/CCW)</option>
                     </select>
+
+                    @* Info box — what changes after apply *@
+                    <div class="frame-info-box">
+                        <strong>⚠️ Reboot required.</strong> Frame changes take effect after power cycle.
+                        Motor numbering and rotation directions follow ArduPilot standard shown above.
+                        Verify prop directions match diagram before first flight.
+                    </div>
                 </div>
-            </div>
+            }
         </div>
 
-        <div class="setup-module">
-            <div class="module-header">
+        <div class='setup-module @(expandedModules["Sensors"] ? "module-expanded" : "")'>
+            <div class="module-header" @onclick='() => ToggleModule("Sensors")'>
                 <i class="bi bi-compass"></i>
                 <span>SENSORS & IMU</span>
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["Sensors"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
             </div>
-            <div class="module-content">
+            @if (expandedModules["Sensors"])
+            {
+                <div class="module-content">
 
-                <div class="sensor-rows-container">
-                    @* ACCELEROMETER ROW WITH WIZARD *@
-                    <div class="sensor-row-card accel-card">
-                        <div class="sr-main-bar">
-                            <div class="sr-info">
-                                <span class="sr-title">ACCELEROMETER</span>
-                                <span class="sr-status @(IsAccelCalibrating && Drone.LiveAccelStatus != "WAITING..." ? "active-text" : Drone.LiveAccelStatus == "FAILED" || Drone.LiveAccelStatus.Contains("DENIED") || Drone.LiveAccelStatus.Contains("NO RESPONSE") ? "text-danger" : Drone.LiveAccelStatus == "SUCCESS" ? "active-text" : "")">
-                                    @Drone.LiveAccelStatus
-                                </span>
-                            </div>
-                            <div class="sr-progress">
-                                <div class="cal-progress-bg @(IsAccelCalibrating ? "bg-active" : "")">
+                    <div class="sensor-rows-container">
+                        @* ACCELEROMETER ROW WITH WIZARD *@
+                        <div class="sensor-row-card accel-card">
+                            <div class="sr-main-bar">
+                                <div class="sr-info">
+                                    <span class="sr-title">ACCELEROMETER</span>
+                                    <span class="sr-status @(IsAccelCalibrating && Drone.LiveAccelStatus != "WAITING..." ? "active-text" : Drone.LiveAccelStatus == "FAILED" || Drone.LiveAccelStatus.Contains("DENIED") || Drone.LiveAccelStatus.Contains("NO RESPONSE") ? "text-danger" : Drone.LiveAccelStatus == "SUCCESS" ? "active-text" : "")">
+                                        @Drone.LiveAccelStatus
+                                    </span>
+                                </div>
+                                <div class="sr-progress">
+                                    <div class="cal-progress-bg @(IsAccelCalibrating ? "bg-active" : "")">
+                                        @if (Drone.LiveAccelStatus == "COMPUTING...")
+                                        {
+                                            <div class="cal-progress-indeterminate"></div>
+                                        }
+                                        else
+                                        {
+                                            <div class="cal-progress-fill" style="width: @(Drone.LiveAccelProgress)%"></div>
+                                        }
+                                    </div>
+                                </div>
+                                <div class="sr-actions">
                                     @if (Drone.LiveAccelStatus == "COMPUTING...")
                                     {
-                                        <div class="cal-progress-indeterminate"></div>
+                                        <div class="btn-sensor-working">
+                                            <div class="spinner-border-sm"></div>
+                                            <span>COMPUTING</span>
+                                        </div>
+                                    }
+                                    else if (Drone.LiveAccelStatus == "RECORDING...")
+                                    {
+                                        <div class="btn-sensor-working">
+                                            <div class="spinner-border-sm"></div>
+                                            <span>RECORDING</span>
+                                        </div>
+                                    }
+                                    else if (Drone.LiveAccelStatus == "WAITING...")
+                                    {
+                                        <div class="btn-sensor-working">
+                                            <div class="spinner-border-sm"></div>
+                                            <span>WAITING</span>
+                                        </div>
+                                    }
+                                    else if (IsAccelCalibrating)
+                                    {
+                                        <button class="btn-sensor-action" @onclick="Drone.AckCalibrationStep">NEXT</button>
                                     }
                                     else
                                     {
-                                        <div class="cal-progress-fill" style="width: @(Drone.LiveAccelProgress)%"></div>
+                                        <button class="btn-sensor-start" @onclick="StartAccel">START</button>
                                     }
+                                    <button class="btn-sensor-cancel" @onclick="CancelAccel">CANCEL</button>
                                 </div>
                             </div>
-                            <div class="sr-actions">
-                                @if (Drone.LiveAccelStatus == "COMPUTING...")
-                                {
-                                    <div class="btn-sensor-working">
-                                        <div class="spinner-border-sm"></div>
-                                        <span>COMPUTING</span>
+
+                            @* EXPANDED WIZARD UI (Only shows during active calibration) *@
+                            @if (IsAccelCalibrating && Drone.LiveAccelStatus != "WAITING...")
+                            {
+                                <div class="accel-wizard-panel">
+                                    <div class="drone-model-container">
+                                        <svg class="drone-svg @GetDroneOrientationClass(Drone.LiveAccelStatus)" viewBox="0 0 100 100">
+                                            <rect x="44" y="20" width="12" height="60" fill="#30363d" rx="4" />
+                                            <path d="M50 20 L40 35 L60 35 Z" fill="#00f2ff" />
+                                            <line x1="20" y1="20" x2="80" y2="80" stroke="#30363d" stroke-width="4" />
+                                            <line x1="20" y1="80" x2="80" y2="20" stroke="#30363d" stroke-width="4" />
+                                            <circle cx="20" cy="20" r="10" fill="#ff3a3a" opacity="0.8" />
+                                            <circle cx="80" cy="20" r="10" fill="#ff3a3a" opacity="0.8" />
+                                            <circle cx="20" cy="80" r="10" fill="#00f2ff" opacity="0.8" />
+                                            <circle cx="80" cy="80" r="10" fill="#00f2ff" opacity="0.8" />
+                                        </svg>
                                     </div>
-                                }
-                                else if (Drone.LiveAccelStatus == "RECORDING...")
-                                {
-                                    <div class="btn-sensor-working">
-                                        <div class="spinner-border-sm"></div>
-                                        <span>RECORDING</span>
+                                    <div class="wizard-text">
+                                        <div class="step-badge">
+                                            @(Drone.LiveAccelStatus == "COMPUTING..." ? "COMPUTING" : $"STEP {(Drone.LiveAccelProgress / 16) + 1} OF 6")
+                                        </div>
+                                        <div class="instruction-title">@GetAccelInstructionTitle(Drone.LiveAccelStatus)</div>
+                                        <div class="instruction-desc">@GetAccelInstructionDesc(Drone.LiveAccelStatus)</div>
                                     </div>
-                                }
-                                else if (Drone.LiveAccelStatus == "WAITING...")
-                                {
-                                    <div class="btn-sensor-working">
-                                        <div class="spinner-border-sm"></div>
-                                        <span>WAITING</span>
-                                    </div>
-                                }
-                                else if (IsAccelCalibrating)
-                                {
-                                    <button class="btn-sensor-action" @onclick="Drone.AckCalibrationStep">NEXT</button>
-                                }
-                                else
-                                {
-                                    <button class="btn-sensor-start" @onclick="StartAccel">START</button>
-                                }
-                                <button class="btn-sensor-cancel" @onclick="CancelAccel">CANCEL</button>
-                            </div>
+                                </div>
+                            }
                         </div>
 
-                        @* EXPANDED WIZARD UI (Only shows during active calibration) *@
-                        @if (IsAccelCalibrating && Drone.LiveAccelStatus != "WAITING...")
-                        {
-                            <div class="accel-wizard-panel">
-                                <div class="drone-model-container">
-                                    <svg class="drone-svg @GetDroneOrientationClass(Drone.LiveAccelStatus)" viewBox="0 0 100 100">
-                                        <rect x="44" y="20" width="12" height="60" fill="#30363d" rx="4" />
-                                        <path d="M50 20 L40 35 L60 35 Z" fill="#00f2ff" />
-                                        <line x1="20" y1="20" x2="80" y2="80" stroke="#30363d" stroke-width="4" />
-                                        <line x1="20" y1="80" x2="80" y2="20" stroke="#30363d" stroke-width="4" />
-                                        <circle cx="20" cy="20" r="10" fill="#ff3a3a" opacity="0.8" />
-                                        <circle cx="80" cy="20" r="10" fill="#ff3a3a" opacity="0.8" />
-                                        <circle cx="20" cy="80" r="10" fill="#00f2ff" opacity="0.8" />
-                                        <circle cx="80" cy="80" r="10" fill="#00f2ff" opacity="0.8" />
-                                    </svg>
+                        @* GYROSCOPE ROW WITH WIZARD *@
+                        <div class="sensor-row-card accel-card">
+                            <div class="sr-main-bar">
+                                <div class="sr-info">
+                                    <span class="sr-title">GYROSCOPE</span>
+                                    <span class="sr-status @(IsGyroCalibrating ? "active-text" : (Drone.LiveGyroStatus == "FAILED" ? "text-danger" : ""))">
+                                        @Drone.LiveGyroStatus
+                                    </span>
                                 </div>
-                                <div class="wizard-text">
-                                    <div class="step-badge">
-                                        @(Drone.LiveAccelStatus == "COMPUTING..." ? "COMPUTING" : $"STEP {(Drone.LiveAccelProgress / 16) + 1} OF 6")
+
+                                <div class="sr-progress">
+                                    <div class="cal-progress-bg @(IsGyroCalibrating ? "bg-active" : "")">
+                                        @if (IsGyroCalibrating)
+                                        {
+                                            <div class="cal-progress-indeterminate"></div>
+                                        }
+                                        else
+                                        {
+                                            <div class="cal-progress-fill" style="width: @(Drone.LiveGyroProgress)%"></div>
+                                        }
                                     </div>
-                                    <div class="instruction-title">@GetAccelInstructionTitle(Drone.LiveAccelStatus)</div>
-                                    <div class="instruction-desc">@GetAccelInstructionDesc(Drone.LiveAccelStatus)</div>
                                 </div>
-                            </div>
-                        }
-                    </div>
 
-                    @* GYROSCOPE ROW WITH WIZARD *@
-                    <div class="sensor-row-card accel-card">
-                        <div class="sr-main-bar">
-                            <div class="sr-info">
-                                <span class="sr-title">GYROSCOPE</span>
-                                <span class="sr-status @(IsGyroCalibrating ? "active-text" : (Drone.LiveGyroStatus == "FAILED" ? "text-danger" : ""))">
-                                    @Drone.LiveGyroStatus
-                                </span>
-                            </div>
-
-                            <div class="sr-progress">
-                                <div class="cal-progress-bg @(IsGyroCalibrating ? "bg-active" : "")">
+                                <div class="sr-actions">
                                     @if (IsGyroCalibrating)
                                     {
-                                        <div class="cal-progress-indeterminate"></div>
+                                        <div class="btn-sensor-working">
+                                            <div class="spinner-border-sm"></div>
+                                            <span>WORKING</span>
+                                        </div>
+                                    }
+                                    else if (Drone.LiveGyroStatus == "AUTO AT BOOT")
+                                    {
+                                        <button class="btn-sensor-start" style="opacity: 0.5; cursor: not-allowed;" disabled>AUTOMATIC</button>
                                     }
                                     else
                                     {
-                                        <div class="cal-progress-fill" style="width: @(Drone.LiveGyroProgress)%"></div>
+                                        <button class="btn-sensor-start" @onclick="StartGyro">
+                                            @(Drone.LiveGyroStatus == "FAILED" ? "RETRY" : "START")
+                                        </button>
                                     }
+                                    <button class="btn-sensor-cancel" @onclick="CancelGyro" title="Force Abort">CANCEL</button>
                                 </div>
                             </div>
 
-                            <div class="sr-actions">
-                                @if (IsGyroCalibrating)
-                                {
-                                    <div class="btn-sensor-working">
-                                        <div class="spinner-border-sm"></div>
-                                        <span>WORKING</span>
+                            @* EXPANDED WIZARD UI (Only shows during active calibration) *@
+                            @if (IsGyroCalibrating)
+                            {
+                                <div class="accel-wizard-panel">
+                                    <div class="drone-model-container gyro-container">
+                                        <svg class="gyro-svg" viewBox="0 0 100 100">
+                                            <ellipse cx="50" cy="50" rx="40" ry="15" fill="none" stroke="var(--gcs-cyan)" stroke-width="3" class="ring-x" />
+                                            <ellipse cx="50" cy="50" rx="15" ry="40" fill="none" stroke="var(--gcs-cyan)" stroke-width="3" class="ring-y" />
+                                            <circle cx="50" cy="50" r="6" fill="#fff" class="pulse-dot-fast" />
+                                        </svg>
                                     </div>
-                                }
-                                else if (Drone.LiveGyroStatus == "AUTO AT BOOT")
-                                {
-                                    <button class="btn-sensor-start" style="opacity: 0.5; cursor: not-allowed;" disabled>AUTOMATIC</button>
-                                }
-                                else
-                                {
-                                    <button class="btn-sensor-start" @onclick="StartGyro">
-                                        @(Drone.LiveGyroStatus == "FAILED" ? "RETRY" : "START")
-                                    </button>
-                                }
-                                <button class="btn-sensor-cancel" @onclick="CancelGyro" title="Force Abort">CANCEL</button>
-                            </div>
+                                    <div class="wizard-text">
+                                        <div class="step-badge" style="background: var(--gcs-cyan); color: #000;">HANDS OFF</div>
+                                        <div class="instruction-title">Calculating Baseline Offsets</div>
+                                        <div class="instruction-desc">The IMU is actively capturing zero-rotation data. Any vibration will corrupt the calibration. Please step away from the bench until complete.</div>
+                                    </div>
+                                </div>
+                            }
                         </div>
 
-                        @* EXPANDED WIZARD UI (Only shows during active calibration) *@
-                        @if (IsGyroCalibrating)
-                        {
-                            <div class="accel-wizard-panel">
-                                <div class="drone-model-container gyro-container">
-                                    <svg class="gyro-svg" viewBox="0 0 100 100">
-                                        <ellipse cx="50" cy="50" rx="40" ry="15" fill="none" stroke="var(--gcs-amber)" stroke-width="3" class="ring-x" />
-                                        <ellipse cx="50" cy="50" rx="15" ry="40" fill="none" stroke="var(--gcs-cyan)" stroke-width="3" class="ring-y" />
-                                        <circle cx="50" cy="50" r="6" fill="#fff" class="pulse-dot-fast" />
-                                    </svg>
+                        @* COMPASS ROW WITH WIZARD *@
+                        <div class="sensor-row-card accel-card">
+                            <div class="sr-main-bar">
+                                <div class="sr-info">
+                                    <span class="sr-title">COMPASS (MAG)</span>
+                                    <span class="sr-status @(IsMagCalibrating ? "active-text" : (Drone.LiveMagStatus.Contains("FAILED") || Drone.LiveMagStatus.Contains("DENIED") ? "text-danger" : ""))">
+                                        @Drone.LiveMagStatus
+                                    </span>
                                 </div>
-                                <div class="wizard-text">
-                                    <div class="step-badge" style="background: var(--gcs-amber); color: #000;">HANDS OFF</div>
-                                    <div class="instruction-title">Calculating Baseline Offsets</div>
-                                    <div class="instruction-desc">The IMU is actively capturing zero-rotation data. Any vibration will corrupt the calibration. Please step away from the bench until complete.</div>
+                                <div class="sr-progress">
+                                    <div class="cal-progress-bg @(IsMagCalibrating ? "bg-active" : "")">
+                                        <div class="cal-progress-fill" style="width: @(Drone.LiveMagProgress)%"></div>
+                                    </div>
+                                </div>
+                                <div class="sr-actions">
+                                    @if (IsMagCalibrating)
+                                    {
+                                        <div class="btn-sensor-working">
+                                            <div class="spinner-border-sm"></div>
+                                            <span>@Drone.LiveMagProgress%</span>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <button class="btn-sensor-start" @onclick="StartMag">
+                                            @(Drone.LiveMagStatus == "FAILED" ? "RETRY" : "START")
+                                        </button>
+                                    }
+                                    <button class="btn-sensor-cancel" @onclick="CancelMag" title="Force Abort">CANCEL</button>
                                 </div>
                             </div>
-                        }
-                    </div>
 
-                    @* COMPASS ROW WITH WIZARD *@
-                    <div class="sensor-row-card accel-card">
-                        <div class="sr-main-bar">
+                            @* EXPANDED WIZARD UI (Only shows during active calibration) *@
+                            @if (IsMagCalibrating)
+                            {
+                                <div class="accel-wizard-panel">
+                                    <div class="drone-model-container mag-container">
+                                        <svg class="mag-svg" viewBox="0 0 100 100">
+                                            <circle cx="50" cy="50" r="40" fill="none" stroke="var(--gcs-cyan)" stroke-width="2" stroke-dasharray="4 4" class="spin-z" />
+                                            <ellipse cx="50" cy="50" rx="40" ry="15" fill="none" stroke="#ff3a3a" stroke-width="2" class="spin-x" />
+                                            <ellipse cx="50" cy="50" rx="15" ry="40" fill="none" stroke="#3fb950" stroke-width="2" class="spin-y" />
+                                            <circle cx="50" cy="50" r="5" fill="#fff" />
+                                        </svg>
+                                    </div>
+                                    <div class="wizard-text">
+                                        <div class="step-badge" style="background: var(--gcs-cyan); color: #000;">DANCE REQUIRED</div>
+                                        <div class="instruction-title">Rotate on All Axes</div>
+                                        <div class="instruction-desc">Pick up the drone and slowly rotate it continuously around its pitch, roll, and yaw axes. Keep rotating until the progress bar reaches 100%.</div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+
+                        @* ONBOARD LED ROW *@
+                        <div class="sensor-row-card">
                             <div class="sr-info">
-                                <span class="sr-title">COMPASS (MAG)</span>
-                                <span class="sr-status @(IsMagCalibrating ? "active-text" : (Drone.LiveMagStatus.Contains("FAILED") || Drone.LiveMagStatus.Contains("DENIED") ? "text-danger" : ""))">
-                                    @Drone.LiveMagStatus
+                                <span class="sr-title">ONBOARD LEDS</span>
+                                <span class="sr-status @(isLedEnabled ? "active-text" : "")">
+                                    @(isLedEnabled ? "ENABLED" : "VANISHED")
                                 </span>
                             </div>
                             <div class="sr-progress">
-                                <div class="cal-progress-bg @(IsMagCalibrating ? "bg-active" : "")">
-                                    <div class="cal-progress-fill" style="width: @(Drone.LiveMagProgress)%"></div>
-                                </div>
+                                <span style="font-size: 0.65rem; color: #888; margin-top: 5px; display: block;">
+                                    Mutes the physical Pixhawk RGB status lights while on the bench.
+                                </span>
                             </div>
                             <div class="sr-actions">
-                                @if (IsMagCalibrating)
-                                {
-                                    <div class="btn-sensor-working">
-                                        <div class="spinner-border-sm"></div>
-                                        <span>@Drone.LiveMagProgress%</span>
-                                    </div>
-                                }
-                                else
-                                {
-                                    <button class="btn-sensor-start" @onclick="StartMag">
-                                        @(Drone.LiveMagStatus == "FAILED" ? "RETRY" : "START")
-                                    </button>
-                                }
-                                <button class="btn-sensor-cancel" @onclick="CancelMag" title="Force Abort">CANCEL</button>
+                                <button class="btn-sensor-action" style="background: #2ea043; color: white;" @onclick="() => TogglePixhawkLeds(true)">ON</button>
+                                <button class="btn-sensor-cancel" @onclick="() => TogglePixhawkLeds(false)">OFF</button>
                             </div>
                         </div>
 
-                        @* EXPANDED WIZARD UI (Only shows during active calibration) *@
-                        @if (IsMagCalibrating)
+                    </div>
+
+                </div>
+            }
+        </div>
+
+        <div class='setup-module @(expandedModules["RC"] ? "module-expanded" : "")'>
+            <div class="module-header" @onclick='() => ToggleModule("RC")'>
+                <i class="bi bi-controller"></i>
+                <span>RADIO CHANNELS (RC)</span>
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["RC"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
+            </div>
+            @if (expandedModules["RC"])
+            {
+                <div class="module-content" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div style="grid-column: span 2;" class="module-action-bar">
+                        <button class="btn-gcs-outline" @onclick="HandleRcClick"
+                                style="@(Drone.IsRcCalibrating ? "background: var(--gcs-cyan); color: #000;" : "")">
+                            @(Drone.IsRcCalibrating ? "SAVE CALIBRATION" : "CALIBRATE RC")
+                        </button>
+                    </div>
+
+                    @if (Drone.IsRcCalibrating)
+                    {
+                        <div style="grid-column: span 2; background: rgba(210, 153, 34, 0.1); border: 1px solid #d29922; color: #d29922; padding: 10px; border-radius: 4px; font-size: 0.75rem;">
+                            <strong>CALIBRATION ACTIVE:</strong> Move all sticks to their maximum limits, center them, then click SAVE.
+                        </div>
+                    }
+
+                    @for (int i = 0; i < 8; i++)
+                    {
+                        var chanNames = new[] { "1: ROLL", "2: PITCH", "3: THROTTLE", "4: YAW", "5: MODE 1", "6: MODE 2", "7: AUX 1", "8: AUX 2" };
+                        var rawVal = _localChannels[i];
+
+                        <div style="display: flex; flex-direction: column; gap: 4px;">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-end;">
+                                <span style="font-size: 0.65rem; color: #888; font-weight: bold;">@chanNames[i]</span>
+                                <span style="font-family: monospace; font-size: 0.85rem; font-weight: bold; color: @(rawVal == 0 ? "#ff3a3a" : "#00f2ff");">
+                                    @(rawVal == 0 ? "NO RC DATA" : $"{rawVal} us")
+                                </span>
+                            </div>
+
+                            <div style="width: 100%; height: 18px; background: #0a0b0d; border: 1px solid #333; border-radius: 4px; position: relative; overflow: hidden;">
+
+                                @if (Drone.IsRcCalibrating && Drone.RcMax[i] > Drone.RcMin[i] && rawVal != 0)
+                                {
+                                    <div style="position: absolute; height: 100%; background: rgba(0, 242, 255, 0.2);
+                                                                                                                                        left: @(CalculatePercent(Drone.RcMin[i]))%;
+                                                                                                                                        width: @(CalculatePercent(Drone.RcMax[i]) - CalculatePercent(Drone.RcMin[i]))%;">
+                                    </div>
+                                }
+
+                                <div style="position: absolute; height: 100%;
+                                                                                            background: @(Drone.IsRcCalibrating ? "#ffffff" : "#00f2ff");
+                                                                                            width: @(rawVal == 0 ? 50 : CalculatePercent(rawVal))%;
+                                                                                            opacity: @(rawVal == 0 ? 0.2 : 1.0);
+                                                                                            transition: width 0.1s linear;">
+                                </div>
+
+                                <div style="position: absolute; left: 50%; width: 2px; height: 100%; background: rgba(255, 0, 0, 0.6); z-index: 10;"></div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class='setup-module @(expandedModules["FlightModes"] ? "module-expanded" : "")'>
+            <div class="module-header" @onclick='() => ToggleModule("FlightModes")'>
+                <i class="bi bi-toggles"></i>
+                <span>FLIGHT MODES</span>
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["FlightModes"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
+            </div>
+            @if (expandedModules["FlightModes"])
+            {
+                <div class="module-content">
+                    <div class="module-action-bar">
+                        <div class="fm-active-badge">
+                            <span class="fm-active-label">ACTIVE</span>
+                            <span class="fm-active-mode">@Drone.State.FlightMode</span>
+                        </div>
+                        <button class="btn-gcs-primary" @onclick="SyncFlightModes">WRITE TO FC</button>
+                    </div>
+                    <div class="fm-channel-row">
+                        <span class="fm-ch-label">MODE CHANNEL</span>
+                        <select class="gcs-select-sm" @bind="flightModeChannel">
+                            <option value="5">CH 5</option>
+                            <option value="6">CH 6</option>
+                            <option value="7">CH 7</option>
+                            <option value="8">CH 8</option>
+                        </select>
+                        <span class="fm-ch-hint">RC channel that controls mode switching</span>
+                    </div>
+
+                    <div class="fm-grid">
+                        @for (int i = 0; i < 6; i++)
                         {
-                            <div class="accel-wizard-panel">
-                                <div class="drone-model-container mag-container">
-                                    <svg class="mag-svg" viewBox="0 0 100 100">
-                                        <circle cx="50" cy="50" r="40" fill="none" stroke="var(--gcs-cyan)" stroke-width="2" stroke-dasharray="4 4" class="spin-z" />
-                                        <ellipse cx="50" cy="50" rx="40" ry="15" fill="none" stroke="#ff3a3a" stroke-width="2" class="spin-x" />
-                                        <ellipse cx="50" cy="50" rx="15" ry="40" fill="none" stroke="#3fb950" stroke-width="2" class="spin-y" />
-                                        <circle cx="50" cy="50" r="5" fill="#fff" />
-                                    </svg>
+                            var idx = i;
+                            bool isActive = (flightModeSettings[idx] == Drone.State.FlightMode);
+                            <div class="fm-slot @(isActive ? "fm-slot-active" : "")">
+                                <div class="fm-slot-header">
+                                    <span class="fm-slot-num">MODE @(idx + 1)</span>
+                                    @if (isActive)
+                                    {
+                                        <span class="fm-active-pip">● ACTIVE</span>
+                                    }
                                 </div>
-                                <div class="wizard-text">
-                                    <div class="step-badge" style="background: var(--gcs-cyan); color: #000;">DANCE REQUIRED</div>
-                                    <div class="instruction-title">Rotate on All Axes</div>
-                                    <div class="instruction-desc">Pick up the drone and slowly rotate it continuously around its pitch, roll, and yaw axes. Keep rotating until the progress bar reaches 100%.</div>
-                                </div>
+                                <select class="gcs-select fm-select" @bind="flightModeSettings[idx]">
+                                    <option value="STABILIZE">STABILIZE</option>
+                                    <option value="ACRO">ACRO</option>
+                                    <option value="ALT_HOLD">ALT HOLD</option>
+                                    <option value="AUTO">AUTO</option>
+                                    <option value="GUIDED">GUIDED</option>
+                                    <option value="LOITER">LOITER</option>
+                                    <option value="RTL">RTL</option>
+                                    <option value="CIRCLE">CIRCLE</option>
+                                    <option value="LAND">LAND</option>
+                                    <option value="DRIFT">DRIFT</option>
+                                    <option value="SPORT">SPORT</option>
+                                    <option value="FLIP">FLIP</option>
+                                    <option value="AUTOTUNE">AUTOTUNE</option>
+                                    <option value="POSHOLD">POS HOLD</option>
+                                    <option value="BRAKE">BRAKE</option>
+                                    <option value="THROW">THROW</option>
+                                    <option value="SMART_RTL">SMART RTL</option>
+                                    <option value="FLOWHOLD">FLOW HOLD</option>
+                                    <option value="FOLLOW">FOLLOW</option>
+                                    <option value="ZIGZAG">ZIGZAG</option>
+                                    <option value="SYSTEMID">SYSTEM ID</option>
+                                    <option value="AUTOROTATE">AUTOROTATE</option>
+                                    <option value="AUTO_RTL">AUTO RTL</option>
+                                    <option value="TURTLE">TURTLE</option>
+                                </select>
+                                <div class="fm-slot-desc">@GetFlightModeDesc(flightModeSettings[idx])</div>
                             </div>
                         }
                     </div>
 
-                    @* ONBOARD LED ROW *@
-                    <div class="sensor-row-card">
-                        <div class="sr-info">
-                            <span class="sr-title">ONBOARD LEDS</span>
-                            <span class="sr-status @(isLedEnabled ? "active-text" : "")">
-                                @(isLedEnabled ? "ENABLED" : "VANISHED")
-                            </span>
-                        </div>
-                        <div class="sr-progress">
-                            <span style="font-size: 0.65rem; color: #888; margin-top: 5px; display: block;">
-                                Mutes the physical Pixhawk RGB status lights while on the bench.
-                            </span>
-                        </div>
-                        <div class="sr-actions">
-                            <button class="btn-sensor-action" style="background: #2ea043; color: white;" @onclick="() => TogglePixhawkLeds(true)">ON</button>
-                            <button class="btn-sensor-cancel" @onclick="() => TogglePixhawkLeds(false)">OFF</button>
-                        </div>
+                    <div class="fm-footer-note">
+                        <i class="bi bi-info-circle"></i>
+                        Modes 1–6 map to RC switch positions. Mode 1 = lowest PWM, Mode 6 = highest.
                     </div>
-
                 </div>
-
-            </div>
+            }
         </div>
 
-        <div class="setup-module">
-            <div class="module-header">
-                <i class="bi bi-controller"></i>
-                <span>RADIO CHANNELS (RC)</span>
-                <button class="btn-gcs-outline" @onclick="HandleRcClick" style="@(Drone.IsRcCalibrating ? "background: var(--gcs-cyan); color: #000;" : "")">
-                    @(Drone.IsRcCalibrating ? "SAVE CALIBRATION" : "CALIBRATE RC")
-                </button>
-            </div>
-
-            <div class="module-content" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-
-                @if (Drone.IsRcCalibrating)
-                {
-                    <div style="grid-column: span 2; background: rgba(210, 153, 34, 0.1); border: 1px solid #d29922; color: #d29922; padding: 10px; border-radius: 4px; font-size: 0.75rem;">
-                        <strong>CALIBRATION ACTIVE:</strong> Move all sticks to their maximum limits, center them, then click SAVE.
-                    </div>
-                }
-
-                @for (int i = 0; i < 8; i++)
-                {
-                    var chanNames = new[] { "1: ROLL", "2: PITCH", "3: THROTTLE", "4: YAW", "5: MODE 1", "6: MODE 2", "7: AUX 1", "8: AUX 2" };
-                    var rawVal = _localChannels[i];
-
-                    <div style="display: flex; flex-direction: column; gap: 4px;">
-                        <div style="display: flex; justify-content: space-between; align-items: flex-end;">
-                            <span style="font-size: 0.65rem; color: #888; font-weight: bold;">@chanNames[i]</span>
-                            <span style="font-family: monospace; font-size: 0.85rem; font-weight: bold; color: @(rawVal == 0 ? "#ff3a3a" : "#00f2ff");">
-                                @(rawVal == 0 ? "NO RC DATA" : $"{rawVal} us")
-                            </span>
-                        </div>
-
-                        <div style="width: 100%; height: 18px; background: #0a0b0d; border: 1px solid #333; border-radius: 4px; position: relative; overflow: hidden;">
-
-                            @if (Drone.IsRcCalibrating && Drone.RcMax[i] > Drone.RcMin[i] && rawVal != 0)
-                            {
-                                <div style="position: absolute; height: 100%; background: rgba(0, 242, 255, 0.2);
-                                                                    left: @(CalculatePercent(Drone.RcMin[i]))%;
-                                                                    width: @(CalculatePercent(Drone.RcMax[i]) - CalculatePercent(Drone.RcMin[i]))%;">
-                                </div>
-                            }
-
-                            <div style="position: absolute; height: 100%;
-                                                    background: @(Drone.IsRcCalibrating ? "#ffffff" : "#00f2ff");
-                                                    width: @(rawVal == 0 ? 50 : CalculatePercent(rawVal))%;
-                                                    opacity: @(rawVal == 0 ? 0.2 : 1.0);
-                                                    transition: width 0.1s linear;">
-                            </div>
-
-                            <div style="position: absolute; left: 50%; width: 2px; height: 100%; background: rgba(255, 0, 0, 0.6); z-index: 10;"></div>
-                        </div>
-                    </div>
-                }
-            </div>
-        </div>
-
-        <div class="setup-module">
-            <div class="module-header">
-                <i class="bi bi-toggles"></i>
-                <span>FLIGHT MODES</span>
-                <div class="fm-active-badge">
-                    <span class="fm-active-label">ACTIVE</span>
-                    <span class="fm-active-mode">@Drone.State.FlightMode</span>
-                </div>
-                <button class="btn-gcs-primary" style="margin-left:auto;" @onclick="SyncFlightModes">WRITE TO FC</button>
-            </div>
-            <div class="module-content">
-                <div class="fm-channel-row">
-                    <span class="fm-ch-label">MODE CHANNEL</span>
-                    <select class="gcs-select-sm" @bind="flightModeChannel">
-                        <option value="5">CH 5</option>
-                        <option value="6">CH 6</option>
-                        <option value="7">CH 7</option>
-                        <option value="8">CH 8</option>
-                    </select>
-                    <span class="fm-ch-hint">RC channel that controls mode switching</span>
-                </div>
-
-                <div class="fm-grid">
-                    @for (int i = 0; i < 6; i++)
-                    {
-                        var idx = i;
-                        bool isActive = (flightModeSettings[idx] == Drone.State.FlightMode);
-                        <div class="fm-slot @(isActive ? "fm-slot-active" : "")">
-                            <div class="fm-slot-header">
-                                <span class="fm-slot-num">MODE @(idx + 1)</span>
-                                @if (isActive)
-                                {
-                                    <span class="fm-active-pip">● ACTIVE</span>
-                                }
-                            </div>
-                            <select class="gcs-select fm-select" @bind="flightModeSettings[idx]">
-                                <option value="STABILIZE">STABILIZE</option>
-                                <option value="ACRO">ACRO</option>
-                                <option value="ALT_HOLD">ALT HOLD</option>
-                                <option value="AUTO">AUTO</option>
-                                <option value="GUIDED">GUIDED</option>
-                                <option value="LOITER">LOITER</option>
-                                <option value="RTL">RTL</option>
-                                <option value="CIRCLE">CIRCLE</option>
-                                <option value="LAND">LAND</option>
-                                <option value="DRIFT">DRIFT</option>
-                                <option value="SPORT">SPORT</option>
-                                <option value="FLIP">FLIP</option>
-                                <option value="AUTOTUNE">AUTOTUNE</option>
-                                <option value="POSHOLD">POS HOLD</option>
-                                <option value="BRAKE">BRAKE</option>
-                                <option value="THROW">THROW</option>
-                                <option value="SMART_RTL">SMART RTL</option>
-                                <option value="FLOWHOLD">FLOW HOLD</option>
-                                <option value="FOLLOW">FOLLOW</option>
-                                <option value="ZIGZAG">ZIGZAG</option>
-                                <option value="SYSTEMID">SYSTEM ID</option>
-                                <option value="AUTOROTATE">AUTOROTATE</option>
-                                <option value="AUTO_RTL">AUTO RTL</option>
-                                <option value="TURTLE">TURTLE</option>
-                            </select>
-                            <div class="fm-slot-desc">@GetFlightModeDesc(flightModeSettings[idx])</div>
-                        </div>
-                    }
-                </div>
-
-                <div class="fm-footer-note">
-                    <i class="bi bi-info-circle"></i>
-                    Modes 1–6 map to RC switch positions. Mode 1 = lowest PWM, Mode 6 = highest.
-                </div>
-            </div>
-        </div>
-
-        <div class="setup-module border-amber">
-            <div class="module-header warning">
-                <i class="bi bi-propeller"></i>
+        <div class='setup-module @(expandedModules["MotorTest"] ? "module-expanded" : "")'>
+            <div class="module-header warning" @onclick='() => ToggleModule("MotorTest")'>
+                <i class="bi bi-cpu"></i>
                 <span>MOTOR TEST (@Drone.State.MotorCount MOTORS DETECTED)</span>
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["MotorTest"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
             </div>
-            <div class="module-content">
-                <div class="mp-top-row">
-                    <div class="mp-input-group">
-                        <label>THROTTLE %</label>
-                        <input type="number" class="mp-input" @bind="motorTestThrottle" min="0" max="100" />
-                    </div>
-                    <div class="mp-input-group">
-                        <label>DURATION (S)</label>
-                        <input type="number" class="mp-input" @bind="motorTestDuration" min="1" max="15" />
-                    </div>
-                    <div class="mp-info-row" style="margin-left: auto;">
-                        <span>FRAME: @currentType</span>
-                    </div>
-                </div>
 
-                <div class="motor-grid">
-                    @for (int i = 1; i <= Drone.State.MotorCount; i++)
-                    {
-                        int motorId = i;
-                        <button class="btn-motor" @onclick="() => Drone.TestMotor(motorId, motorTestThrottle, motorTestDuration)">
-                            MOTOR @motorId
-                        </button>
-                    }
-                </div>
+            @if (expandedModules["MotorTest"])
+            {
+                <div class="module-content">
+                    <div class="mp-top-row">
+                        <div class="mp-input-group">
+                            <label>THROTTLE %</label>
+                            <input type="number" class="mp-input" @bind="motorTestThrottle" min="0" max="100" />
+                        </div>
+                        <div class="mp-input-group">
+                            <label>DURATION (S)</label>
+                            <input type="number" class="mp-input" @bind="motorTestDuration" min="1" max="15" />
+                        </div>
+                        <div class="mp-info-row" style="margin-left: auto;">
+                            <span>FRAME: @currentType</span>
+                        </div>
+                    </div>
 
-                <div class="mp-action-row">
-                    <button class="btn-mp" @onclick="() => Drone.TestAllMotors((float)motorTestThrottle, (float)motorTestDuration)">TEST ALL MOTORS</button>
-                    <button class="btn-mp" @onclick="() => Drone.TestMotorSequence((float)motorTestThrottle, (float)motorTestDuration)">RUN SEQUENCE</button>
-                    <button class="btn-mp-stop" @onclick="StopAllMotors">ABORT ALL</button>
-                </div>
+                    <div class="motor-grid">
+                        @for (int i = 1; i <= Drone.State.MotorCount; i++)
+                        {
+                            int motorId = i;
+                            <button class="btn-motor" @onclick="() => Drone.TestMotor(motorId, motorTestThrottle, motorTestDuration)">
+                                MOTOR @motorId
+                            </button>
+                        }
+                    </div>
 
-                <p class="footer-hint">CAUTION: PROPELLERS MUST BE REMOVED BEFORE TESTING</p>
-            </div>
+                    <div class="mp-action-row">
+                        <button class="btn-mp" @onclick="() => Drone.TestAllMotors((float)motorTestThrottle, (float)motorTestDuration)">TEST ALL MOTORS</button>
+                        <button class="btn-mp" @onclick="() => Drone.TestMotorSequence((float)motorTestThrottle, (float)motorTestDuration)">RUN SEQUENCE</button>
+                        <button class="btn-mp-stop" @onclick="StopAllMotors">ABORT ALL</button>
+                    </div>
+
+                    <p class="footer-hint">CAUTION: PROPELLERS MUST BE REMOVED BEFORE TESTING</p>
+                </div>
+            }
         </div>
 
-        <div class="setup-module border-amber">
-            <div class="module-header warning">
+        <div class='setup-module @(expandedModules["ESC"] ? "module-expanded" : "")'>
+            <div class="module-header warning" @onclick='() => ToggleModule("ESC")'>
                 <i class="bi bi-lightning-charge"></i>
                 <span>ESC CALIBRATION</span>
-                @if (escCalStep == 0)
-                {
-                    <button class="btn-gcs-amber" style="margin-left:auto;" @onclick="EscCalStart">BEGIN</button>
-                }
-                else if (escCalStep < 5)
-                {
-                    <button class="btn-gcs-danger" style="margin-left:auto;" @onclick="EscCalAbort">ABORT</button>
-                }
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["ESC"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
             </div>
-            <div class="module-content">
 
-                @* ── IDLE STATE ── *@
-                @if (escCalStep == 0)
-                {
-                    <div class="esc-method-select">
-                        <div class="esc-method-label">CALIBRATION METHOD</div>
-                        <div class="esc-method-cards">
-                            <div class="esc-method-card @(escCalMethod == 0 ? "selected" : "")" @onclick="() => escCalMethod = 0">
-                                <div class="esc-method-title">
-                                    <i class="bi bi-magic"></i> AUTO (RECOMMENDED)
+            @if (expandedModules["ESC"])
+            {
+                <div class="module-content">
+                    @if (escCalStep == 0)
+                    {
+                        <div class="module-action-bar">
+                            <button class="btn-gcs-amber"
+                                    @onclick="EscCalStart">
+                                BEGIN CALIBRATION
+                            </button>
+                        </div>
+                    }
+                    else if (escCalStep < 5)
+                    {
+                        <div class="module-action-bar">
+                            <button class="btn-gcs-danger"
+                                    @onclick="EscCalAbort">
+                                ABORT
+                            </button>
+                        </div>
+                    }
+
+                    @* ── IDLE STATE ── *@
+                    @if (escCalStep == 0)
+                    {
+                        <div class="esc-method-select">
+                            <div class="esc-method-label">CALIBRATION METHOD</div>
+                            <div class="esc-method-cards">
+                                <div class="esc-method-card @(escCalMethod == 0 ? "selected" : "")" @onclick="() => escCalMethod = 0">
+                                    <div class="esc-method-title">
+                                        <i class="bi bi-magic"></i> AUTO (RECOMMENDED)
+                                    </div>
+                                    <div class="esc-method-desc">FC sends full-throttle signal on next boot. Connect battery to start ESC calibration sequence automatically. Works with most ESCs.</div>
                                 </div>
-                                <div class="esc-method-desc">FC sends full-throttle signal on next boot. Connect battery to start ESC calibration sequence automatically. Works with most ESCs.</div>
-                            </div>
-                            <div class="esc-method-card @(escCalMethod == 1 ? "selected" : "")" @onclick="() => escCalMethod = 1">
-                                <div class="esc-method-title">
-                                    <i class="bi bi-sliders"></i> MANUAL (PASSTHROUGH)
+                                <div class="esc-method-card @(escCalMethod == 1 ? "selected" : "")" @onclick="() => escCalMethod = 1">
+                                    <div class="esc-method-title">
+                                        <i class="bi bi-sliders"></i> MANUAL (PASSTHROUGH)
+                                    </div>
+                                    <div class="esc-method-desc">FC passes RC throttle directly to ESCs. Move your TX throttle stick from max to min during calibration. Use if Auto method fails.</div>
                                 </div>
-                                <div class="esc-method-desc">FC passes RC throttle directly to ESCs. Move your TX throttle stick from max to min during calibration. Use if Auto method fails.</div>
                             </div>
                         </div>
-                    </div>
-                    <div class="esc-prereq">
-                        <div class="esc-prereq-title"><i class="bi bi-exclamation-triangle-fill text-amber"></i> BEFORE YOU BEGIN</div>
-                        <ul class="esc-prereq-list">
-                            <li>Remove all propellers</li>
-                            <li>Vehicle must be DISARMED</li>
-                            <li>Connect USB but NOT battery</li>
-                            @if (escCalMethod == 1)
-                            {
-                                <li>TX throttle stick at maximum position</li>
-                                <li>Verify RC calibration is complete</li>
-                            }
-                        </ul>
-                    </div>
-                }
-
-                @* ── STEP WIZARD ── *@
-                @if (escCalStep > 0)
-                {
-                    <div class="esc-wizard">
-                        <div class="esc-wizard-progress">
-                            @{
-                                int totalSteps = escCalMethod == 0 ? 4 : 5;
-                            }
-                            @for (int st = 1; st <= totalSteps; st++)
-                            {
-                                var stepNum = st;
-                                <div class="esc-step-dot @(escCalStep == stepNum ? "dot-active" : escCalStep > stepNum ? "dot-done" : "dot-pending")">
-                                    @if (escCalStep > stepNum)
-                                    {
-                                        <i class="bi bi-check-lg"></i>
-                                    }
-                                    else
-                                    {
-
-                                        @stepNum
-                                    }
-                                </div>
-                                @if (stepNum < totalSteps)
+                        <div class="esc-prereq">
+                            <div class="esc-prereq-title"><i class="bi bi-exclamation-triangle-fill text-cyan"></i> BEFORE YOU BEGIN</div>
+                            <ul class="esc-prereq-list">
+                                <li>Remove all propellers</li>
+                                <li>Vehicle must be DISARMED</li>
+                                <li>Connect USB but NOT battery</li>
+                                @if (escCalMethod == 1)
                                 {
-                                    <div class="esc-step-line @(escCalStep > stepNum ? "line-done" : "")"></div>
+                                    <li>TX throttle stick at maximum position</li>
+                                    <li>Verify RC calibration is complete</li>
                                 }
-                            }
+                            </ul>
                         </div>
+                    }
 
-                        <div class="esc-step-card">
-                            @if (escCalMethod == 0)
-                            {
-                                @* AUTO METHOD STEPS *@
-                                @switch (escCalStep)
-                                {
-                                    case 1:
-                                        <div class="esc-step-icon text-amber"><i class="bi bi-lightning-charge-fill"></i></div>
-                                        <div class="esc-step-title">WRITE CALIBRATION FLAG</div>
-                                        <div class="esc-step-body">Sending <code>ESC_CALIBRATION = 3</code> to flight controller. On next boot, the FC will output full-throttle PWM to all ESCs.</div>
-                                        <button class="btn-gcs-amber" @onclick="EscCalAutoStep1">WRITE PARAMETER →</button>
-                                        break;
-                                    case 2:
-                                        <div class="esc-step-icon text-amber"><i class="bi bi-plug-fill"></i></div>
-                                        <div class="esc-step-title">DISCONNECT POWER</div>
-                                        <div class="esc-step-body">Parameter written. Now <strong>disconnect USB cable</strong> and <strong>disconnect the battery</strong> completely. Wait 5 seconds for capacitors to discharge.</div>
-                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 3">I'VE DISCONNECTED →</button>
-                                        break;
-                                    case 3:
-                                        <div class="esc-step-icon text-cyan"><i class="bi bi-battery-charging"></i></div>
-                                        <div class="esc-step-title">CONNECT BATTERY</div>
-                                        <div class="esc-step-body">Connect the <strong>battery only</strong> (not USB yet). ESCs will beep to confirm they received the full-throttle signal. Wait for beeps to complete.</div>
-                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 4">ESCs BEEPED →</button>
-                                        break;
-                                    case 4:
-                                        <div class="esc-step-icon text-green"><i class="bi bi-check-circle-fill"></i></div>
-                                        <div class="esc-step-title">CALIBRATION COMPLETE</div>
-                                        <div class="esc-step-body">ESC endpoints have been set. Reconnect USB. The <code>ESC_CALIBRATION</code> parameter automatically resets to 0 after a successful calibration.</div>
-                                        <button class="btn-gcs-primary" @onclick="EscCalDone">FINISH</button>
-                                        break;
+                    @* ── STEP WIZARD ── *@
+                    @if (escCalStep > 0)
+                    {
+                        <div class="esc-wizard">
+                            <div class="esc-wizard-progress">
+                                @{
+                                    int totalSteps = escCalMethod == 0 ? 4 : 5;
                                 }
+                                @for (int st = 1; st <= totalSteps; st++)
+                                {
+                                    var stepNum = st;
+                                    <div class="esc-step-dot @(escCalStep == stepNum ? "dot-active" : escCalStep > stepNum ? "dot-done" : "dot-pending")">
+                                        @if (escCalStep > stepNum)
+                                        {
+                                            <i class="bi bi-check-lg"></i>
+                                        }
+                                        else
+                                        {
+
+                                            @stepNum
+                                        }
+                                    </div>
+                                    @if (stepNum < totalSteps)
+                                    {
+                                        <div class="esc-step-line @(escCalStep > stepNum ? "line-done" : "")"></div>
+                                    }
+                                }
+                            </div>
+
+                            <div class="esc-step-card">
+                                @if (escCalMethod == 0)
+                                {
+                                    @* AUTO METHOD STEPS *@
+                                    @switch (escCalStep)
+                                    {
+                                        case 1:
+                                            <div class="esc-step-icon text-cyan"><i class="bi bi-lightning-charge-fill"></i></div>
+                                            <div class="esc-step-title">WRITE CALIBRATION FLAG</div>
+                                            <div class="esc-step-body">Sending <code>ESC_CALIBRATION = 3</code> to flight controller. On next boot, the FC will output full-throttle PWM to all ESCs.</div>
+                                            <button class="btn-gcs-amber" @onclick="EscCalAutoStep1">WRITE PARAMETER →</button>
+                                            break;
+                                        case 2:
+                                            <div class="esc-step-icon text-cyan"><i class="bi bi-plug-fill"></i></div>
+                                            <div class="esc-step-title">DISCONNECT POWER</div>
+                                            <div class="esc-step-body">Parameter written. Now <strong>disconnect USB cable</strong> and <strong>disconnect the battery</strong> completely. Wait 5 seconds for capacitors to discharge.</div>
+                                            <button class="btn-gcs-primary" @onclick="() => escCalStep = 3">I'VE DISCONNECTED →</button>
+                                            break;
+                                        case 3:
+                                            <div class="esc-step-icon text-cyan"><i class="bi bi-battery-charging"></i></div>
+                                            <div class="esc-step-title">CONNECT BATTERY</div>
+                                            <div class="esc-step-body">Connect the <strong>battery only</strong> (not USB yet). ESCs will beep to confirm they received the full-throttle signal. Wait for beeps to complete.</div>
+                                            <button class="btn-gcs-primary" @onclick="() => escCalStep = 4">ESCs BEEPED →</button>
+                                            break;
+                                        case 4:
+                                            <div class="esc-step-icon text-green"><i class="bi bi-check-circle-fill"></i></div>
+                                            <div class="esc-step-title">CALIBRATION COMPLETE</div>
+                                            <div class="esc-step-body">ESC endpoints have been set. Reconnect USB. The <code>ESC_CALIBRATION</code> parameter automatically resets to 0 after a successful calibration.</div>
+                                            <button class="btn-gcs-primary" @onclick="EscCalDone">FINISH</button>
+                                            break;
+                                    }
+                                }
+                                else
+                                {
+                                    @* MANUAL PASSTHROUGH STEPS *@
+                                    @switch (escCalStep)
+                                    {
+                                        case 1:
+                                            <div class="esc-step-icon text-cyan"><i class="bi bi-arrow-up-circle-fill"></i></div>
+                                            <div class="esc-step-title">THROTTLE TO MAXIMUM</div>
+                                            <div class="esc-step-body">Move your transmitter <strong>throttle stick to full maximum</strong>. Keep it there until instructed.</div>
+                                            <button class="btn-gcs-amber" @onclick="EscCalManualStep1">THROTTLE IS MAX →</button>
+                                            break;
+                                        case 2:
+                                            <div class="esc-step-icon text-cyan"><i class="bi bi-plug-fill"></i></div>
+                                            <div class="esc-step-title">ENABLE PASSTHROUGH</div>
+                                            <div class="esc-step-body">Passthrough mode active — FC is now relaying RC throttle directly to all ESCs. <strong>Connect the battery now.</strong> ESCs will beep acknowledging full throttle.</div>
+                                            <button class="btn-gcs-primary" @onclick="() => escCalStep = 3">ESCs BEEPED →</button>
+                                            break;
+                                        case 3:
+                                            <div class="esc-step-icon text-cyan"><i class="bi bi-arrow-down-circle-fill"></i></div>
+                                            <div class="esc-step-title">THROTTLE TO MINIMUM</div>
+                                            <div class="esc-step-body">Move your transmitter <strong>throttle stick to full minimum (zero)</strong>. ESCs will beep again to confirm the low endpoint is set.</div>
+                                            <button class="btn-gcs-primary" @onclick="() => escCalStep = 4">ESCs BEEPED →</button>
+                                            break;
+                                        case 4:
+                                            <div class="esc-step-icon text-cyan"><i class="bi bi-power"></i></div>
+                                            <div class="esc-step-title">DISABLE PASSTHROUGH</div>
+                                            <div class="esc-step-body">Disabling passthrough mode. Disconnect battery and wait 5 seconds before reconnecting.</div>
+                                            <button class="btn-gcs-amber" @onclick="EscCalManualStep4">DISABLE PASSTHROUGH →</button>
+                                            break;
+                                        case 5:
+                                            <div class="esc-step-icon text-green"><i class="bi bi-check-circle-fill"></i></div>
+                                            <div class="esc-step-title">CALIBRATION COMPLETE</div>
+                                            <div class="esc-step-body">All ESC endpoints have been set. Your ESCs are now calibrated to your transmitter's throttle range.</div>
+                                            <button class="btn-gcs-primary" @onclick="EscCalDone">FINISH</button>
+                                            break;
+                                    }
+                                }
+                            </div>
+                        </div>
+                    }
+
+                    @* ── DONE BANNER ── *@
+                    @if (escCalStep == 99)
+                    {
+                        <div class="esc-done-banner">
+                            <i class="bi bi-check-circle-fill"></i>
+                            ESC CALIBRATION COMPLETE — All endpoints saved
+                            <button class="btn-link" @onclick="() => escCalStep = 0">Recalibrate</button>
+                        </div>
+                    }
+
+                </div>
+            }
+        </div>
+
+        <div class='setup-module @(expandedModules["Failsafe"] ? "module-expanded" : "")'>
+            <div class="module-header warning" @onclick='() => ToggleModule("Failsafe")'>
+                <i class="bi bi-exclamation-triangle"></i>
+                <span>SAFETY FAILSAFES</span>
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["Failsafe"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
+            </div>
+            @if (expandedModules["Failsafe"])
+            {
+                <div class="module-content">
+                    <div class="module-action-bar">
+                        <button class="btn-gcs-amber" @onclick="SaveFailsafes"
+                                disabled="@(!Drone.IsLinkHealthy)">
+                            SAVE ALL
+                        </button>
+                    </div>
+                    @* Status banner: shows sync state without hiding controls *@
+                    @if (!_fsParamsLoaded && Drone.IsLinkHealthy)
+                    {
+                        <div class="fs-loading" style="margin-bottom:8px;">
+                            <span>⏳ Reading from FC...</span>
+                            <button class="btn-preset" style="margin-left:8px;" @onclick="RefreshFailsafeParams">↺ Re-read</button>
+                        </div>
+                    }
+                    else if (!_fsParamsLoaded)
+                    {
+                        <div class="fs-loading" style="margin-bottom:8px;">
+                            <span style="color:#555;">⚠️ Not connected — showing defaults. Connect to read actual FC values.</span>
+                        </div>
+                    }
+
+                    <div class="fs-section-title">📡 RC SIGNAL LOSS <span class="fs-pn">(FS_THR_ENABLE)</span></div>
+                    <div class="fs-desc">Action when RC transmitter signal is lost for &gt;1 second.</div>
+                    <select class="gcs-select" @bind="rcLossAction" style="margin-bottom:8px;">
+                        <option value="0">Disabled (not recommended)</option>
+                        <option value="1">Always RTL</option>
+                        <option value="2">Continue if Auto, else RTL</option>
+                        <option value="3">Always Land</option>
+                        <option value="4">SmartRTL, else RTL</option>
+                        <option value="5">SmartRTL, else Land</option>
+                    </select>
+                    <label class="input-label">PWM THRESHOLD <span class="fs-pn">(FS_THR_VALUE)</span></label>
+                    <div style="display:flex;gap:8px;align-items:center;margin-top:6px;margin-bottom:8px;">
+                        <input type="number" class="gcs-select" style="width:88px;"
+                               @bind="rcThrValue" min="900" max="1100" step="5" />
+                        <span style="font-size:.67rem;color:#555;">µs · RC below this = lost · default 975</span>
+                    </div>
+                    @if (rcThrValue < 925 || rcThrValue > 1025)
+                    {
+                        <div class="fs-warning">⚠️ Unusual — standard range is 925–1025 µs</div>
+                    }
+
+                    <div class="fs-section-title" style="margin-top:12px;">🔋 BATTERY FAILSAFE <span class="fs-pn">(FS_BATT_ENABLE)</span></div>
+                    <div class="fs-desc">Action when voltage/mAh consumed crosses the threshold set in Battery Monitor.</div>
+                    <select class="gcs-select" @bind="lowBattAction" style="margin-bottom:8px;">
+                        <option value="0">Disabled</option>
+                        <option value="1">Land immediately</option>
+                        <option value="2">RTL</option>
+                        <option value="3">SmartRTL, else RTL</option>
+                        <option value="4">SmartRTL, else Land</option>
+                        <option value="5">Terminate motors ⚠️</option>
+                    </select>
+
+                    <div class="fs-section-title" style="margin-top:12px;">🖥️ GCS HEARTBEAT LOSS <span class="fs-pn">(FS_GCS_ENABLE)</span></div>
+                    <div class="fs-desc">Action when this GCS stops sending heartbeats for &gt;5 seconds (laptop crash, cable disconnect).</div>
+                    <select class="gcs-select" @bind="gcsLossAction" style="margin-bottom:8px;">
+                        <option value="0">Disabled</option>
+                        <option value="1">RTL</option>
+                        <option value="2">Continue mission (if in Auto)</option>
+                        <option value="3">SmartRTL, else RTL</option>
+                        <option value="4">SmartRTL, else Land</option>
+                    </select>
+
+                    <div class="fs-status-bar">
+                        <div class="fs-si @(int.Parse(rcLossAction) > 0 ? "fs-ok" : "fs-off")">📡 RC: @FsRcLbl(rcLossAction)</div>
+                        <div class="fs-si @(int.Parse(lowBattAction) > 0 ? "fs-ok" : "fs-off")">🔋 BATT: @FsBattLbl(lowBattAction)</div>
+                        <div class="fs-si @(int.Parse(gcsLossAction) > 0 ? "fs-ok" : "fs-off")">🖥️ GCS: @FsGcsLbl(gcsLossAction)</div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        <div class='setup-module @(expandedModules["Battery"] ? "module-expanded" : "")'>
+            <div class="module-header" @onclick='() => ToggleModule("Battery")'>
+                <i class="bi bi-battery-half"></i>
+                <span>BATTERY MONITOR</span>
+                <div class="module-spacer"></div>
+                <i class="bi @(expandedModules["Battery"] ? "bi-chevron-up" : "bi-chevron-down") module-chevron"></i>
+            </div>
+            @if (expandedModules["Battery"])
+            {
+                <div class="module-content">
+                    @if (_battParamsLoaded)
+                    {
+                        <div class="module-action-bar">
+                            <button class="btn-gcs-primary" @onclick="SaveBatterySettings">SAVE PARAMS</button>
+                        </div>
+                    }
+                    @if (Drone.IsLinkHealthy)
+                    {
+                        <div class="readout-row" style="flex-wrap:wrap;gap:5px;margin-bottom:8px;">
+                            <div class="readout"><label>VOLTAGE</label><div class="value @BVC">@Drone.State.Voltage.ToString("0.00") V</div></div>
+                            <div class="readout"><label>CURRENT</label><div class="value">@Drone.State.CurrentDraw.ToString("0.0") A</div></div>
+                            <div class="readout"><label>REMAINING</label><div class="value @BPC">@Drone.State.BatteryPercent.ToString("0") %</div></div>
+                            <div class="readout"><label>CELL V</label><div class="value @BCC">@(_battNumCells > 0 && Drone.State.Voltage > 0 ? (Drone.State.Voltage / _battNumCells).ToString("0.000") + " V" : "—")</div></div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                            <div style="flex:1;height:6px;background:#161b22;border-radius:3px;border:1px solid #30363d;overflow:hidden;">
+                                <div class="batt-bar @BPC" style="width:@Math.Max(0, Math.Min(100, (double)Drone.State.BatteryPercent))%;height:100%;border-radius:3px;transition:width .5s;"></div>
+                            </div>
+                            <span style="font-size:.67rem;color:#555;">@Drone.State.BatteryPercent.ToString("0")%</span>
+                        </div>
+                    }
+                    @if (!_battParamsLoaded)
+                    {
+                        <div class="fs-loading">
+                            @if (!Drone.IsLinkHealthy)
+                            {
+                                <span>🔌 Connect to load</span>
                             }
                             else
                             {
-                                @* MANUAL PASSTHROUGH STEPS *@
-                                @switch (escCalStep)
-                                {
-                                    case 1:
-                                        <div class="esc-step-icon text-amber"><i class="bi bi-arrow-up-circle-fill"></i></div>
-                                        <div class="esc-step-title">THROTTLE TO MAXIMUM</div>
-                                        <div class="esc-step-body">Move your transmitter <strong>throttle stick to full maximum</strong>. Keep it there until instructed.</div>
-                                        <button class="btn-gcs-amber" @onclick="EscCalManualStep1">THROTTLE IS MAX →</button>
-                                        break;
-                                    case 2:
-                                        <div class="esc-step-icon text-amber"><i class="bi bi-plug-fill"></i></div>
-                                        <div class="esc-step-title">ENABLE PASSTHROUGH</div>
-                                        <div class="esc-step-body">Passthrough mode active — FC is now relaying RC throttle directly to all ESCs. <strong>Connect the battery now.</strong> ESCs will beep acknowledging full throttle.</div>
-                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 3">ESCs BEEPED →</button>
-                                        break;
-                                    case 3:
-                                        <div class="esc-step-icon text-cyan"><i class="bi bi-arrow-down-circle-fill"></i></div>
-                                        <div class="esc-step-title">THROTTLE TO MINIMUM</div>
-                                        <div class="esc-step-body">Move your transmitter <strong>throttle stick to full minimum (zero)</strong>. ESCs will beep again to confirm the low endpoint is set.</div>
-                                        <button class="btn-gcs-primary" @onclick="() => escCalStep = 4">ESCs BEEPED →</button>
-                                        break;
-                                    case 4:
-                                        <div class="esc-step-icon text-amber"><i class="bi bi-power"></i></div>
-                                        <div class="esc-step-title">DISABLE PASSTHROUGH</div>
-                                        <div class="esc-step-body">Disabling passthrough mode. Disconnect battery and wait 5 seconds before reconnecting.</div>
-                                        <button class="btn-gcs-amber" @onclick="EscCalManualStep4">DISABLE PASSTHROUGH →</button>
-                                        break;
-                                    case 5:
-                                        <div class="esc-step-icon text-green"><i class="bi bi-check-circle-fill"></i></div>
-                                        <div class="esc-step-title">CALIBRATION COMPLETE</div>
-                                        <div class="esc-step-body">All ESC endpoints have been set. Your ESCs are now calibrated to your transmitter's throttle range.</div>
-                                        <button class="btn-gcs-primary" @onclick="EscCalDone">FINISH</button>
-                                        break;
-                                }
+
+                                <span>⏳ Loading...</span>
+                                <button class="btn-preset" style="margin-left:8px;" @onclick="RefreshBatteryParams">↺ Re-read</button>
                             }
                         </div>
-                    </div>
-                }
-
-                @* ── DONE BANNER ── *@
-                @if (escCalStep == 99)
-                {
-                    <div class="esc-done-banner">
-                        <i class="bi bi-check-circle-fill"></i>
-                        ESC CALIBRATION COMPLETE — All endpoints saved
-                        <button class="btn-link" @onclick="() => escCalStep = 0">Recalibrate</button>
-                    </div>
-                }
-
-            </div>
-        </div>
-
-        <div class="setup-module border-amber">
-            <div class="module-header warning">
-                <i class="bi bi-exclamation-triangle"></i>
-                <span>SAFETY FAILSAFES</span>
-                <button class="btn-gcs-amber" @onclick="SaveFailsafes">SAVE ALL</button>
-            </div>
-            <div class="module-content">
-                <div class="fs-row">
-                    <label class="input-label">RC LOSS ACTION</label>
-                    <select class="gcs-select-sm" @bind="rcLossAction"><option value="1">RTL</option><option value="2">LAND</option></select>
+                    }
+                    else
+                    {
+                        <label class="input-label">MONITOR TYPE <span class="fs-pn">(BATT_MONITOR)</span></label>
+                        <select class="gcs-select" @bind="battMonitorType" style="margin-bottom:6px;">
+                            <option value="0">Disabled</option>
+                            <option value="3">Analog Voltage Only</option>
+                            <option value="4">Analog Voltage + Current (Pixhawk PM)</option>
+                            <option value="7">UAVCAN BatteryInfo</option>
+                            <option value="8">BLHeli ESC</option>
+                            <option value="9">Sum of all ESCs</option>
+                        </select>
+                        <label class="input-label" style="margin-top:6px;">CELL COUNT <span class="fs-pn">(BATT_NUM_CELLS)</span></label>
+                        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+                            <input type="number" class="gcs-select" style="width:70px;" @bind="_battNumCells" min="1" max="12" step="1" />
+                            @if (_battNumCells > 0)
+                            {
+                                <span style="font-size:.67rem;color:#555;font-family:monospace;">Full @((_battNumCells * 4.2).ToString("0.0"))V · Low @((_battNumCells * 3.5).ToString("0.0"))V</span>
+                            }
+                        </div>
+                        <label class="input-label" style="margin-top:4px;">CAPACITY (mAh) <span class="fs-pn">(BATT_CAPACITY)</span></label>
+                        <input type="number" class="gcs-select" @bind="battCapacity" min="100" step="100" style="margin-bottom:5px;" />
+                        <label class="input-label" style="margin-top:5px;">LOW MAH <span class="fs-pn">(BATT_LOW_MAH)</span> <span style="color:#555;font-weight:400;">0=off</span></label>
+                        <input type="number" class="gcs-select" @bind="_battLowMah" min="0" step="100" style="margin-bottom:5px;" />
+                        <div class="fs-section-title" style="margin-top:8px;">⚡ VOLTAGE THRESHOLDS</div>
+                        @if (_battNumCells > 0)
+                        {
+                            <div class="batt-diag">
+                                @foreach (var (lbl, v, c) in new[] { ("ARM MIN", _battArmVolt, "t-arm"), ("LOW", _battLowVolt, "t-low"), ("CRITICAL", _battCrtVolt, "t-crt") })
+                                {
+                                    <div class="batt-diag-row">
+                                        <span class="td-lbl">@lbl</span>
+                                        <span class="td-v @c">@v.ToString("0.00")V</span>
+                                        <div class="td-track"><div class="td-fill @c" style="width:@TBW(v)%;"></div></div>
+                                        <span class="td-cell @c">@(_battNumCells > 0 && v > 0 ? (v / _battNumCells).ToString("0.00") + "V/c" : "off")</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        <label class="input-label">ARM MIN (V) <span class="fs-pn">(BATT_ARM_VOLT)</span></label>
+                        <input type="number" class="gcs-select" @bind="_battArmVolt" min="0" max="60" step="0.1" style="margin-bottom:4px;" />
+                        <label class="input-label" style="margin-top:5px;">LOW VOLTAGE (V) <span class="fs-pn">(BATT_LOW_VOLT)</span></label>
+                        <input type="number" class="gcs-select" @bind="_battLowVolt" min="0" max="60" step="0.1" style="margin-bottom:4px;" />
+                        <label class="input-label" style="margin-top:5px;">CRITICAL (V) <span class="fs-pn">(BATT_CRT_VOLT)</span></label>
+                        <input type="number" class="gcs-select" @bind="_battCrtVolt" min="0" max="60" step="0.1" style="margin-bottom:4px;" />
+                        @if (_battCrtVolt > 0 && _battLowVolt > 0 && _battCrtVolt >= _battLowVolt)
+                        {
+                            <div class="fs-warning">⚠️ Critical must be lower than Low</div>
+                        }
+                        <div class="fs-section-title" style="margin-top:8px;">🔧 SENSOR CALIBRATION</div>
+                        <div style="font-size:.67rem;color:#555;margin-bottom:5px;">Pixhawk PM: VoltMult=10.1 · A/V=17.0 · Offset=0</div>
+                        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px;">
+                            @foreach (var (lbl, k) in new[] { ("Pixhawk PM", "px"), ("Holybro PM07", "hb"), ("Mauch HS-200", "mu"), ("AttoPilot 180A", "ap") })
+                            {
+                                <button class="btn-preset" @onclick="() => BattPreset(k)">@lbl</button>
+                            }
+                        </div>
+                        <label class="input-label">VOLT MULT × <span class="fs-pn">(BATT_VOLT_MULT)</span></label>
+                        <input type="number" class="gcs-select" @bind="_battVoltMult" min="1" max="30" step="0.01" style="margin-bottom:4px;" />
+                        <label class="input-label" style="margin-top:5px;">AMPS/VOLT <span class="fs-pn">(BATT_AMP_PERVLT)</span></label>
+                        <input type="number" class="gcs-select" @bind="_battAmpPerVlt" min="0" max="200" step="0.1" style="margin-bottom:4px;" />
+                        <label class="input-label" style="margin-top:5px;">AMP OFFSET <span class="fs-pn">(BATT_AMP_OFFSET)</span></label>
+                        <input type="number" class="gcs-select" @bind="_battAmpOffset" min="-2" max="2" step="0.01" />
+                    }
                 </div>
-                <div class="fs-row">
-                    <label class="input-label">LOW BATT ACTION</label>
-                    <select class="gcs-select-sm" @bind="lowBattAction"><option value="1">RTL</option><option value="2">LAND</option></select>
-                </div>
-            </div>
-        </div>
-
-        <div class="setup-module">
-            <div class="module-header">
-                <i class="bi bi-battery-half"></i>
-                <span>BATTERY MONITOR</span>
-                <button class="btn-gcs-primary" @onclick="SaveBatterySettings">SAVE PARAMS</button>
-            </div>
-            <div class="module-content">
-                <div class="readout-row">
-                    <div class="readout">
-                        <label>LIVE VOLTAGE</label>
-                        <div class="value">@Drone.State.Voltage.ToString("0.00") V</div>
-                    </div>
-                    <div class="readout">
-                        <label>REMAINING</label>
-                        <div class="value">@Drone.State.BatteryPercent%</div>
-                    </div>
-                </div>
-
-                <div class="control-group">
-                    <label class="input-label">MONITOR TYPE</label>
-                    <select class="gcs-select" @bind="battMonitorType">
-                        <option value="0">0: DISABLED</option>
-                        <option value="3">3: ANALOG VOLTAGE ONLY</option>
-                        <option value="4">4: ANALOG VOLTAGE AND CURRENT</option>
-                        <option value="8">8: UAVCAN DIALOG</option>
-                        <option value="9">9: ESC TELEMETRY</option>
-                    </select>
-
-                    <label class="input-label" style="margin-top: 10px;">BATTERY CAPACITY (mAh)</label>
-                    <input type="number" class="gcs-select" @bind="battCapacity" min="0" step="100" />
-                </div>
-            </div>
+            }
         </div>
 
     </div>
@@ -672,15 +969,22 @@
         display: flex;
         flex-direction: column;
         height: 100%;
-        gap: 16px; /* Aligned with other tabs */
+        gap: 16px;
         padding: 20px;
-        background: var(--gcs-bg);
+        background: transparent;
         color: var(--gcs-text);
-        width: 100%; /* Aligned with other tabs */
-        max-width: 500px; /* Aligned with other tabs */
-        margin: 0 auto; /* Aligned with other tabs */
+        width: 100%;
+        max-width: 500px;
+        margin: 0 auto;
         overflow: hidden;
     }
+
+        /* ── Focus mode: a module is open ─────────────────────────────
+           Keep HUD visible. Only hide the other collapsed tiles so the
+           expanded module fills all remaining space without a scrollbar. */
+        .gcs-setup-container.module-focus-mode {
+            gap: 16px;
+        }
 
     .hud-wrapper {
         height: 300px;
@@ -688,10 +992,9 @@
         border-radius: 8px;
         overflow: hidden;
         box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-        border: 1px solid var(--gcs-border);
+        border: 1px solid #333;
         flex-shrink: 0;
-        background: #000;
-        position: relative; /* Keeps your text overlays perfectly positioned */
+        transition: height 0.25s ease;
     }
 
     .hud-overlay-text {
@@ -717,23 +1020,67 @@
         border-top: 1px solid var(--gcs-border);
     }
 
-    .setup-list {
+    /* ── Default grid: 2 columns, all 8 tiles visible ─────────── */
+    .setup-grid {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-auto-rows: min-content;
+        gap: 10px;
+        align-content: start;
+        overflow: hidden;
+        min-height: 0;
+    }
+
+    /* ── Focus grid: single column, expanded module fills height ─ */
+    .module-focus-mode .setup-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+        overflow: hidden;
+    }
+
+    /* Hide all non-expanded tiles in focus mode */
+    .module-focus-mode .setup-module:not(.module-expanded) {
+        display: none;
+    }
+
+    /* Expanded module fills all remaining space */
+    .module-focus-mode .setup-module.module-expanded {
         flex: 1;
         display: flex;
         flex-direction: column;
-        gap: 20px;
-        overflow-y: auto;
-        padding-right: 5px;
+        min-height: 0;
+        grid-column: unset;
     }
 
-        .setup-list::-webkit-scrollbar {
-            width: 6px;
+    /* Content area fills the module, scrolls internally */
+    .module-focus-mode .module-expanded .module-content {
+        flex: 1;
+        overflow-y: auto;
+        max-height: none; /* override the 400px cap — full height now */
+    }
+
+    /* ── Normal expanded (grid mode, non-focus) ──────────────── */
+    .setup-module.module-expanded {
+        grid-column: 1 / -1;
+    }
+
+        .setup-module.module-expanded .module-content {
+            max-height: 400px;
+            overflow-y: auto;
         }
 
-        .setup-list::-webkit-scrollbar-thumb {
-            background: var(--gcs-border);
-            border-radius: 10px;
-        }
+            .setup-module.module-expanded .module-content::-webkit-scrollbar,
+            .module-focus-mode .module-expanded .module-content::-webkit-scrollbar {
+                width: 4px;
+            }
+
+            .setup-module.module-expanded .module-content::-webkit-scrollbar-thumb,
+            .module-focus-mode .module-expanded .module-content::-webkit-scrollbar-thumb {
+                background: var(--gcs-border);
+                border-radius: 4px;
+            }
 
     .setup-module {
         background: var(--gcs-card);
@@ -742,26 +1089,60 @@
         display: flex;
         flex-direction: column;
         width: 100%;
-        transition: border 0.2s;
+        transition: border-color 0.2s;
+        min-width: 0;
     }
 
         .setup-module:hover {
             border-color: var(--gcs-cyan);
         }
 
+    /* Left bar removed — all modules uniform */
     .border-amber {
-        border-left: 4px solid var(--gcs-amber);
     }
 
     .module-header {
-        padding: 12px 16px;
-        border-bottom: 1px solid var(--gcs-border);
+        padding: 14px 16px;
+        /* Border-bottom only visible when module is expanded */
+        border-bottom: 1px solid transparent;
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
         font-weight: 800;
-        font-size: 0.75rem;
+        font-size: 0.7rem;
         text-transform: uppercase;
+        cursor: pointer;
+        user-select: none;
+        transition: background-color 0.2s, border-color 0.2s;
+        border-radius: 8px;
+        min-height: 58px;
+    }
+
+        .module-header:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+    /* Show separator only when expanded */
+    .module-expanded .module-header {
+        border-bottom-color: var(--gcs-border);
+        border-radius: 8px 8px 0 0;
+    }
+
+    .module-spacer {
+        flex: 1;
+    }
+
+    .module-chevron {
+        font-size: 0.75rem;
+        color: #555;
+        flex-shrink: 0;
+        transition: transform 0.2s, color 0.2s;
+    }
+
+    /* Rotate chevron when expanded */
+    .module-expanded .module-chevron {
+        transform: rotate(180deg);
+        color: var(--gcs-cyan);
     }
 
     /* ROW MAJOR SENSOR LAYOUT */
@@ -840,11 +1221,25 @@
             margin: 0; /* Resets any margins from old styles */
         }
 
+    /* Action bar — appears at the top of expanded module content.
+               Replaces the header-level buttons for a cleaner collapsed tile. */
+    .module-action-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 12px;
+        background: rgba(0, 242, 255, 0.04);
+        border: 1px solid rgba(0, 242, 255, 0.15);
+        border-radius: 6px;
+        margin-bottom: 4px;
+    }
+
     .module-content {
-        padding: 16px;
+        padding: 14px 16px 16px;
         display: flex;
         flex-direction: column;
-        gap: 15px;
+        gap: 12px;
     }
 
     .triple-card-grid {
@@ -968,6 +1363,262 @@
         margin-bottom: -10px;
     }
 
+    .fs-section-title {
+        font-size: .6rem;
+        font-weight: 800;
+        letter-spacing: 1px;
+        color: #d29922;
+        margin: 8px 0 4px;
+        border-bottom: 1px solid #1c2128;
+        padding-bottom: 3px;
+    }
+
+    .fs-pn {
+        color: #555;
+        font-size: .55rem;
+        font-weight: 400;
+        font-family: monospace;
+        margin-left: 4px;
+    }
+
+    .fs-desc {
+        font-size: .67rem;
+        color: #555;
+        margin-bottom: 5px;
+        line-height: 1.4;
+    }
+
+    .fs-loading {
+        font-size: .75rem;
+        color: #555;
+        padding: 8px 0;
+        display: flex;
+        align-items: center;
+    }
+
+    .fs-warning {
+        background: rgba(240,180,41,.08);
+        border: 1px solid rgba(240,180,41,.3);
+        border-radius: 5px;
+        padding: 5px 10px;
+        font-size: .7rem;
+        color: #f0b429;
+        margin: 3px 0 6px;
+    }
+
+    .fs-status-bar {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid #1c2128;
+    }
+
+    .fs-si {
+        font-size: .58rem;
+        font-weight: 800;
+        letter-spacing: .5px;
+        padding: 3px 7px;
+        border-radius: 4px;
+        border: 1px solid transparent;
+    }
+
+    .fs-ok {
+        background: rgba(46,160,67,.12);
+        border-color: #2ea043;
+        color: #3fb950;
+    }
+
+    .fs-off {
+        background: rgba(60,60,60,.15);
+        border-color: #444;
+        color: #666;
+    }
+
+    .bv-ok {
+        color: #3fb950 !important;
+    }
+
+    .bv-l {
+        color: #f0b429 !important;
+    }
+
+    .bv-c {
+        color: #ff6b6b !important;
+        animation: bpulse 1s infinite;
+    }
+
+    @@keyframes bpulse {
+        0%, 100% {
+            opacity: 1
+        }
+
+        50% {
+            opacity: .4
+        }
+    }
+
+    .batt-bar {
+        background: #3fb950;
+    }
+
+        .batt-bar.bv-l {
+            background: #f0b429;
+        }
+
+        .batt-bar.bv-c {
+            background: #ff6b6b;
+        }
+
+    .batt-diag {
+        background: #010409;
+        border: 1px solid #1c2128;
+        border-radius: 5px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+
+    .batt-diag-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .td-lbl {
+        font-size: .5rem;
+        font-weight: 700;
+        color: #555;
+        width: 52px;
+        text-align: right;
+        flex-shrink: 0;
+    }
+
+    .td-v {
+        font-size: .65rem;
+        font-weight: 700;
+        font-family: monospace;
+        width: 46px;
+        flex-shrink: 0;
+    }
+
+    .td-track {
+        flex: 1;
+        height: 5px;
+        background: #161b22;
+        border-radius: 3px;
+        overflow: hidden;
+    }
+
+    .td-fill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width .4s;
+    }
+
+    .td-cell {
+        font-size: .57rem;
+        font-family: monospace;
+        color: #555;
+        min-width: 64px;
+        text-align: right;
+        flex-shrink: 0;
+    }
+
+    .t-arm {
+        color: #58a6ff !important;
+    }
+
+        .t-arm.td-fill {
+            background: #58a6ff;
+        }
+
+    .t-low {
+        color: #f0b429 !important;
+    }
+
+        .t-low.td-fill {
+            background: #f0b429;
+        }
+
+    .t-crt {
+        color: #ff6b6b !important;
+    }
+
+        .t-crt.td-fill {
+            background: #ff6b6b;
+        }
+
+    .btn-preset {
+        background: #010409;
+        border: 1px solid #30363d;
+        color: #8b949e;
+        padding: 3px 9px;
+        border-radius: 4px;
+        font-size: .62rem;
+        cursor: pointer;
+        transition: all .2s;
+    }
+
+        .btn-preset:hover {
+            border-color: #58a6ff;
+            color: #58a6ff;
+        }
+
+    /* ── Frame Geometry Diagram ─────────────────────────────── */
+    .frame-diagram-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        background: #010409;
+        border: 1px solid #1c2128;
+        border-radius: 8px;
+        padding: 14px 10px 10px;
+        margin-bottom: 12px;
+    }
+
+    .frame-svg {
+        width: 180px;
+        height: 180px;
+        overflow: visible;
+    }
+
+    .frame-legend {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.62rem;
+        color: #8b949e;
+    }
+
+    .legend-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+
+    .frame-info-box {
+        background: rgba(240,180,41,0.06);
+        border: 1px solid rgba(240,180,41,0.2);
+        border-radius: 5px;
+        padding: 8px 12px;
+        font-size: 0.72rem;
+        color: #8b949e;
+        line-height: 1.5;
+    }
+
     .gcs-select, .gcs-select-sm {
         background: #010409;
         color: white;
@@ -1044,8 +1695,8 @@
 
     /* Gyroscope SVG Animations */
     .gyro-container {
-        border-color: var(--gcs-amber) !important;
-        background: rgba(210, 153, 34, 0.05) !important;
+        border-color: var(--gcs-cyan) !important;
+        background: rgba(0, 242, 255, 0.05) !important;
     }
 
     .ring-x {
@@ -1279,9 +1930,9 @@
         }
 
     .warning-banner {
-        background: rgba(210, 153, 34, 0.1);
-        border: 1px solid var(--gcs-amber);
-        color: var(--gcs-amber);
+        background: rgba(0, 242, 255, 0.06);
+        border: 1px solid var(--gcs-cyan);
+        color: var(--gcs-cyan);
         padding: 10px;
         border-radius: 4px;
         font-size: 0.65rem;
@@ -1325,14 +1976,26 @@
     }
 
     .btn-gcs-amber {
-        background: var(--gcs-amber);
+        background: var(--gcs-cyan);
+        color: #000;
         border: none;
         padding: 6px 12px;
         border-radius: 4px;
         font-size: 0.65rem;
         font-weight: 800;
         cursor: pointer;
+        transition: filter 0.2s;
     }
+
+        .btn-gcs-amber:hover {
+            filter: brightness(1.15);
+        }
+
+        .btn-gcs-amber:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+            filter: none;
+        }
 
     .fs-row {
         display: flex;
@@ -1756,8 +2419,8 @@
     }
 
     /* ═══════════════════════════════════════════
-           FLIGHT MODE MODULE
-        ═══════════════════════════════════════════ */
+                                   FLIGHT MODE MODULE
+                                ═══════════════════════════════════════════ */
     .fm-active-badge {
         display: flex;
         align-items: center;
@@ -1889,8 +2552,8 @@
     }
 
     /* ═══════════════════════════════════════════
-           ESC CALIBRATION WIZARD
-        ═══════════════════════════════════════════ */
+                                   ESC CALIBRATION WIZARD
+                                ═══════════════════════════════════════════ */
     .esc-method-select {
         margin-bottom: 14px;
     }
@@ -1923,8 +2586,8 @@
         }
 
         .esc-method-card.selected {
-            border-color: var(--gcs-amber, #e6a817) !important;
-            background: rgba(230, 168, 23, 0.06);
+            border-color: var(--gcs-cyan) !important;
+            background: rgba(0, 242, 255, 0.06);
         }
 
     .esc-method-title {
@@ -1955,7 +2618,7 @@
     .esc-prereq-title {
         font-size: 0.62rem;
         font-weight: 700;
-        color: var(--gcs-amber, #e6a817);
+        color: var(--gcs-cyan);
         letter-spacing: 1px;
         margin-bottom: 6px;
         display: flex;
@@ -2004,10 +2667,10 @@
     }
 
     .dot-active {
-        border-color: var(--gcs-amber, #e6a817) !important;
-        background: rgba(230, 168, 23, 0.15) !important;
-        color: var(--gcs-amber, #e6a817) !important;
-        box-shadow: 0 0 10px rgba(230,168,23,0.3);
+        border-color: var(--gcs-cyan) !important;
+        background: rgba(0, 242, 255, 0.15) !important;
+        color: var(--gcs-cyan) !important;
+        box-shadow: 0 0 10px rgba(0, 242, 255, 0.3);
     }
 
     .dot-done {
@@ -2079,7 +2742,7 @@
     }
 
     .text-amber {
-        color: var(--gcs-amber, #e6a817) !important;
+        color: var(--gcs-cyan) !important;
     }
 
     .esc-done-banner {
@@ -2128,12 +2791,22 @@
 </style>
 
 @code {
-    private string selectedFrameType = "1";
-    private string selectedFrameClass = "1";
+    private string selectedFrameClass = "1";   // FRAME_CLASS: 1=Quad,2=Hexa,3=Octa,5=Y6,7=Tri
+    private string selectedFrameType = "1";   // FRAME_TYPE:  0=Plus,1=X,2=V,3=H,10=CW-X
     private string currentType = "QUAD";
     private string currentClass = "X-FRAME";
+    // Failsafe
+    private bool _fsParamsLoaded = false;
     private string rcLossAction = "1";
-    private string lowBattAction = "1";
+    private int rcThrValue = 975;
+    private string lowBattAction = "2";
+    private string gcsLossAction = "0";
+    // Battery
+    private bool _battParamsLoaded = false;
+    private double _battLowVolt = 10.5, _battCrtVolt = 9.6, _battArmVolt = 11.5;
+    private int _battLowMah = 0;
+    private double _battVoltMult = 10.1, _battAmpPerVlt = 17.0, _battAmpOffset = 0.0;
+    private int _battNumCells = 3;
     // ESC calibration wizard state
     private int escCalStep = 0;   // 0=idle, 1-5=steps, 99=done
     private int escCalMethod = 0;   // 0=auto, 1=manual passthrough
@@ -2146,9 +2819,7 @@
     // Flight modes — 6 positions (FLTMODE1-6), matches ArduCopter FLTMODE params
     private string[] flightModeSettings = { "STABILIZE", "ALT_HOLD", "LOITER", "RTL", "LOITER", "RTL" };
     private string flightModeChannel = "5";   // FLTMODE_CH parameter
-    // Battery Monitor Settings
-    private string battMonitorType = "4"; // Default to Voltage & Current
-    private int battCapacity = 3300;      // Default to a standard 3300mAh lipo
+    private string battMonitorType = "4"; private int battCapacity = 3300;
     // Mission Planner Motor Test Settings
     private int motorTestThrottle = 5;
     private int motorTestDuration = 2;
@@ -2160,6 +2831,8 @@
         Drone.OnTelemetryUpdated += RefreshUi;
         Drone.OnRcChannelsUpdated += HandleRcUpdate;
         Drone.OnFlightModeParams += OnFlightModeParamsReceived;
+        Drone.OnFailsafeParams += HandleFailsafeParams;
+        Drone.OnBatteryParams += HandleBatteryParams;
     }
 
     private void HandleRcUpdate(ushort[] channels)
@@ -2175,7 +2848,23 @@
         InvokeAsync(StateHasChanged);
     }
 
-    private void RefreshUi() => InvokeAsync(StateHasChanged);
+    private bool _lastLink = false;
+    private void RefreshUi()
+    {
+        bool linkNow = Drone.IsLinkHealthy;
+
+        // Sync frame dropdowns from actual FC values whenever we have a link
+        if (Drone.State.FrameClass > 0)
+            selectedFrameClass = Drone.State.FrameClass.ToString();
+        if (Drone.State.FrameType >= 0)
+            selectedFrameType = Drone.State.FrameType.ToString();
+
+        // Reset loaded flags on disconnect so they re-load on next connect
+        if (_lastLink && !linkNow) { _fsParamsLoaded = false; _battParamsLoaded = false; }
+        _lastLink = linkNow;
+
+        InvokeAsync(StateHasChanged);
+    }
 
     // Accelerometer Handlers
     // Accelerometer
@@ -2205,13 +2894,111 @@
     // Safety clamp: PWM ranges from 800 to 2200. This scales it perfectly to 0-100% for CSS.
     private double CalculatePercent(ushort raw) => Math.Clamp((raw - 800) / 14.0, 0, 100);
 
-    private async Task ApplyFrame()
+    private void ApplyFrame()
     {
-        Drone.SetFrameConfig(int.Parse(selectedFrameType), int.Parse(selectedFrameClass));
-        currentType = selectedFrameType switch { "1" => "QUAD", "2" => "HEXA", "3" => "OCTA", _ => "CUSTOM" };
-        currentClass = selectedFrameClass switch { "0" => "PLUS (+)", "1" => "X-FRAME", _ => "CUSTOM" };
-        await Task.CompletedTask;
+        Drone.SetFrameConfig(int.Parse(selectedFrameClass), int.Parse(selectedFrameType));
     }
+
+    // ── Frame diagram helpers ─────────────────────────────────────────────
+    private string FrameClassName => int.Parse(selectedFrameClass) switch
+    {
+        1 => "QUADCOPTER",
+        2 => "HEXACOPTER",
+        3 => "OCTOCOPTER",
+        5 => "Y6",
+        7 => "TRICOPTER",
+        _ => "CUSTOM"
+    };
+    private string FrameTypeName => int.Parse(selectedFrameType) switch
+    {
+        0 => "PLUS (+)",
+        1 => "X",
+        2 => "V / H-FRAME",
+        3 => "H",
+        10 => "CW-X",
+        _ => "CUSTOM"
+    };
+
+    private record MotorPoint(double X, double Y, int Num, bool Cw);
+
+    private List<MotorPoint> MotorPositions
+    {
+        get
+        {
+            int fc = int.Parse(selectedFrameClass);
+            int ft = int.Parse(selectedFrameType);
+            double cx = 100, cy = 100, r = 68;
+
+            // Quad X / CW-X
+            if (fc == 1 && ft == 1)
+                return new() {
+                    new(cx + r*Math.Cos(ToRad(-45)),  cy + r*Math.Sin(ToRad(-45)),  1, false), // FR CCW
+                    new(cx + r*Math.Cos(ToRad(-135)), cy + r*Math.Sin(ToRad(-135)), 2, true),  // FL CW
+                    new(cx + r*Math.Cos(ToRad(135)),  cy + r*Math.Sin(ToRad(135)),  3, false), // RL CCW
+                    new(cx + r*Math.Cos(ToRad(45)),   cy + r*Math.Sin(ToRad(45)),   4, true),  // RR CW
+                };
+            // Quad Plus
+            if (fc == 1 && ft == 0)
+                return new() {
+                    new(cx,       cy - r, 1, false), // Front CCW
+                    new(cx + r,   cy,     2, true),  // Right CW
+                    new(cx,       cy + r, 3, false), // Back CCW
+                    new(cx - r,   cy,     4, true),  // Left CW
+                };
+            // Hexa X
+            if (fc == 2)
+            {
+                var pts = new List<MotorPoint>();
+                bool[] cw = { false, true, false, true, false, true };
+                for (int i = 0; i < 6; i++)
+                {
+                    double a = ToRad(-90 + i * 60);
+                    pts.Add(new(cx + r * Math.Cos(a), cy + r * Math.Sin(a), i + 1, cw[i]));
+                }
+                return pts;
+            }
+            // Octo X
+            if (fc == 3)
+            {
+                var pts = new List<MotorPoint>();
+                bool[] cw = { false, true, false, true, false, true, false, true };
+                for (int i = 0; i < 8; i++)
+                {
+                    double a = ToRad(-90 + i * 45);
+                    pts.Add(new(cx + r * Math.Cos(a), cy + r * Math.Sin(a), i + 1, cw[i]));
+                }
+                return pts;
+            }
+            // Tricopter
+            if (fc == 7)
+                return new() {
+                    new(cx,                          cy - r,                          1, false),
+                    new(cx + r*Math.Cos(ToRad(210)), cy + r*Math.Sin(ToRad(210)),     2, true),
+                    new(cx + r*Math.Cos(ToRad(330)), cy + r*Math.Sin(ToRad(330)),     3, false),
+                };
+            // Y6 (coaxial hexa, show 3 arms × 2 props)
+            if (fc == 5)
+            {
+                var pts = new List<MotorPoint>();
+                for (int i = 0; i < 3; i++)
+                {
+                    double a = ToRad(-90 + i * 120);
+                    double mx = cx + r * Math.Cos(a), my = cy + r * Math.Sin(a);
+                    pts.Add(new(mx - 8, my, i * 2 + 1, false));   // top CCW
+                    pts.Add(new(mx + 8, my, i * 2 + 2, true));    // bottom CW
+                }
+                return pts;
+            }
+            // Default: quad X
+            return new() {
+                new(cx + r*Math.Cos(ToRad(-45)),  cy + r*Math.Sin(ToRad(-45)),  1, false),
+                new(cx + r*Math.Cos(ToRad(-135)), cy + r*Math.Sin(ToRad(-135)), 2, true),
+                new(cx + r*Math.Cos(ToRad(135)),  cy + r*Math.Sin(ToRad(135)),  3, false),
+                new(cx + r*Math.Cos(ToRad(45)),   cy + r*Math.Sin(ToRad(45)),   4, true),
+            };
+        }
+    }
+    private static double ToRad(double deg) => deg * Math.PI / 180.0;
 
     private void SyncFlightModes()
     {
@@ -2258,24 +3045,93 @@
         }
     }
 
-    private void SaveFailsafes()
+    private void SaveFailsafes() =>
+        Drone.SaveFailsafeParams(int.Parse(rcLossAction), rcThrValue,
+            int.Parse(lowBattAction), int.Parse(gcsLossAction));
+
+    private void HandleFailsafeParams(MavlinkService.FailsafeParams p)
     {
-        Drone.SendParameter("FS_THR_ENABLE", float.Parse(rcLossAction));
-        Drone.SendParameter("FS_BATT_ENABLE", float.Parse(lowBattAction));
+        rcLossAction = p.ThrEnable.ToString(); rcThrValue = p.ThrValue;
+        lowBattAction = p.BattEnable.ToString(); gcsLossAction = p.GcsEnable.ToString();
+        _fsParamsLoaded = true; InvokeAsync(StateHasChanged);
     }
+
+    private void RefreshFailsafeParams()
+    {
+        _fsParamsLoaded = false; Drone.RequestParamRead("FS_THR_ENABLE");
+        Drone.RequestParamRead("FS_THR_VALUE"); Drone.RequestParamRead("FS_BATT_ENABLE");
+        Drone.RequestParamRead("FS_GCS_ENABLE");
+    }
+
+    // FS_THR_ENABLE: 0=off, 1=RTL, 2=Continue+RTL, 3=Land, 4=SRTL+RTL, 5=SRTL+Land
+    private string FsRcLbl(string v) => v switch
+    {
+        "0" => "OFF",
+        "1" => "RTL",
+        "2" => "CONT+RTL",
+        "3" => "LAND",
+        "4" => "SRTL+RTL",
+        "5" => "SRTL+LAND",
+        _ => v
+    };
+
+    // FS_BATT_ENABLE: 0=off, 1=Land, 2=RTL, 3=SRTL+RTL, 4=SRTL+Land, 5=KILL
+    private string FsBattLbl(string v) => v switch
+    {
+        "0" => "OFF",
+        "1" => "LAND",
+        "2" => "RTL",
+        "3" => "SRTL+RTL",
+        "4" => "SRTL+LAND",
+        "5" => "KILL",
+        _ => v
+    };
+
+    // FS_GCS_ENABLE: 0=off, 1=RTL, 2=Continue, 3=SRTL+RTL, 4=SRTL+Land
+    private string FsGcsLbl(string v) => v switch
+    {
+        "0" => "OFF",
+        "1" => "RTL",
+        "2" => "CONT",
+        "3" => "SRTL+RTL",
+        "4" => "SRTL+LAND",
+        _ => v
+    };
 
 
     private void SaveBatterySettings()
     {
-        // 1. Send the monitor type (enables the physical pins on the flight controller)
-        Drone.SendParameter("BATT_MONITOR", float.Parse(battMonitorType));
-
-        // 2. Send the total capacity (allows the drone to calculate accurate remaining %)
-        Drone.SendParameter("BATT_CAPACITY", battCapacity);
-
-        // Optional: Force a UI refresh to show immediate changes if needed
-        InvokeAsync(StateHasChanged);
+        if (_battCrtVolt > 0 && _battLowVolt > 0 && _battCrtVolt >= _battLowVolt)
+        { Drone.Toast("Critical must be lower than Low", MavlinkService.ToastLevel.Warning, "⚠️"); return; }
+        Drone.SaveBatteryParams(int.Parse(battMonitorType), battCapacity,
+            _battLowVolt, _battCrtVolt, _battArmVolt, _battLowMah,
+            _battVoltMult, _battAmpPerVlt, _battAmpOffset, _battNumCells);
     }
+
+    private void HandleBatteryParams(MavlinkService.BatteryParams p)
+    {
+        battMonitorType = p.Monitor.ToString(); battCapacity = p.Capacity;
+        _battLowVolt = p.LowVolt; _battCrtVolt = p.CrtVolt; _battArmVolt = p.ArmVolt;
+        _battLowMah = p.LowMah; _battVoltMult = p.VoltMult; _battAmpPerVlt = p.AmpPerVlt;
+        _battAmpOffset = p.AmpOffset; _battNumCells = p.NumCells;
+        _battParamsLoaded = true; InvokeAsync(StateHasChanged);
+    }
+
+    private void RefreshBatteryParams()
+    {
+        _battParamsLoaded = false;
+        Drone.RequestParamRead("BATT_MONITOR"); Drone.RequestParamRead("BATT_CAPACITY");
+        Drone.RequestParamRead("BATT_LOW_VOLT"); Drone.RequestParamRead("BATT_CRT_VOLT");
+        Drone.RequestParamRead("BATT_ARM_VOLT"); Drone.RequestParamRead("BATT_LOW_MAH");
+        Drone.RequestParamRead("BATT_VOLT_MULT"); Drone.RequestParamRead("BATT_AMP_PERVLT");
+        Drone.RequestParamRead("BATT_AMP_OFFSET"); Drone.RequestParamRead("BATT_NUM_CELLS");
+    }
+
+    private double TBW(double v) { if (_battNumCells <= 0) return 0; double f = _battNumCells * 4.2, d = _battNumCells * 3.0; return Math.Max(0, Math.Min(100, (v - d) / (f - d) * 100)); }
+    private void BattPreset(string k) { switch (k) { case "px": _battVoltMult = 10.1; _battAmpPerVlt = 17.0; _battAmpOffset = 0; break; case "hb": _battVoltMult = 12.02; _battAmpPerVlt = 18.0; _battAmpOffset = 0; break; case "mu": _battVoltMult = 10.1; _battAmpPerVlt = 39.877; _battAmpOffset = 0; break; case "ap": _battVoltMult = 15.7; _battAmpPerVlt = 36.364; _battAmpOffset = 0; break; } InvokeAsync(StateHasChanged); }
+    private string BVC => Drone.State.Voltage > 0 ? (_battCrtVolt > 0 && Drone.State.Voltage <= _battCrtVolt ? "bv-c" : _battLowVolt > 0 && Drone.State.Voltage <= _battLowVolt ? "bv-l" : "bv-ok") : "";
+    private string BPC => Drone.State.BatteryPercent switch { <= 10 => "bv-c", <= 25 => "bv-l", _ => "bv-ok" };
+    private string BCC { get { if (_battNumCells <= 0 || Drone.State.Voltage <= 0) return ""; double c = Drone.State.Voltage / _battNumCells; return c <= 3.3 ? "bv-c" : c <= 3.6 ? "bv-l" : "bv-ok"; } }
 
     private void TogglePixhawkLeds(bool enable)
     {
@@ -2372,6 +3228,8 @@
         Drone.OnTelemetryUpdated -= RefreshUi;
         Drone.OnRcChannelsUpdated -= HandleRcUpdate;
         Drone.OnFlightModeParams -= OnFlightModeParamsReceived;
+        Drone.OnFailsafeParams -= HandleFailsafeParams;
+        Drone.OnBatteryParams -= HandleBatteryParams;
     }
 
     // Called when MavlinkService has read all FLTMODE params from the FC
@@ -2380,5 +3238,31 @@
         flightModeSettings = modes;
         flightModeChannel = channel;
         InvokeAsync(StateHasChanged);
+    }
+
+    // Add inside @code { ... }
+    private Dictionary<string, bool> expandedModules = new()
+    {
+        { "Frame", false },
+        { "Sensors", false },
+        { "RC", false },
+        { "FlightModes", false },
+        { "MotorTest", false },
+        { "ESC", false },
+        { "Failsafe", false },
+        { "Battery", false }
+    };
+
+    private bool AnyModuleExpanded => expandedModules.Values.Any(v => v);
+
+    private void ToggleModule(string moduleName)
+    {
+        bool wasOpen = expandedModules[moduleName];
+        // Close all modules first
+        foreach (var key in expandedModules.Keys.ToList())
+            expandedModules[key] = false;
+        // Open clicked one only if it was closed
+        if (!wasOpen)
+            expandedModules[moduleName] = true;
     }
 }

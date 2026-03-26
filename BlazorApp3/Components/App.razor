@@ -1,8 +1,3 @@
-﻿@inject IConfiguration Configuration
-@{
-    var mapsApiKey = Configuration["GoogleMaps:ApiKey"] ?? string.Empty;
-}
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -14,208 +9,583 @@
     <link rel="stylesheet" href="BlazorApp3.styles.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        .leaflet-container {
+            background: #0a0b0d;
+        }
+
+        .leaflet-control-attribution {
+            background: rgba(10,11,13,.85) !important;
+            color: #555 !important;
+            font-size: .55rem !important;
+        }
+
+            .leaflet-control-attribution a {
+                color: #58a6ff !important;
+            }
+
+        .leaflet-control-layers {
+            background: rgba(10,11,13,.92) !important;
+            border: 1px solid #30363d !important;
+            border-radius: 6px !important;
+        }
+
+            .leaflet-control-layers label {
+                color: #c9d1d9 !important;
+                font-size: .78rem !important;
+            }
+
+        .leaflet-control-zoom a {
+            background: rgba(10,11,13,.92) !important;
+            border-color: #30363d !important;
+            color: #58a6ff !important;
+        }
+
+            .leaflet-control-zoom a:hover {
+                background: #161b22 !important;
+                color: #00f2ff !important;
+            }
+        /* ── Leaflet control position overrides ────────────────────────────
+                                   Leaflet stacks bottomleft controls from bottom:0 upward.
+                                   Our custom elements (coord-log, gps-badge) use absolute positioning
+                                   on the map-wrapper, so Leaflet controls must be nudged up to avoid
+                                   sitting under them.
+
+                                   bottomleft stack from bottom:
+                                     0  px  attribution bar (~20px)
+                                     20 px  zoom-label  (our L.control)
+                                     ─── custom elements above this ───
+                                     30 px  gps-badge   (position:absolute on wrapper)
+                                     62 px  coord-log   (position:absolute on wrapper)
+
+                                   bottomright stack:
+                                     0  px  attribution bar
+                                     20 px  scale bar
+                                     ─── buttons above this ───
+                                     54 px  recentre-btn
+                                     95 px  trail-btn
+
+                                   We push the Leaflet bottomleft container down by 0 (it lands naturally
+                                   at the very bottom), and our gps-badge/coord-log are absolute on the
+                                   wrapper so they always sit above — no collision.
+
+                                   The scale bar's right margin is set so it doesn't sit under our
+                                   right-edge buttons (which are right:12, width:34).                  */
+
+        /* Scale bar — nudge left so it clears the 34px buttons at right:12 */
+        .leaflet-bottom.leaflet-right .leaflet-control-scale {
+            margin-right: 54px;
+            margin-bottom: 4px;
+        }
+
+        /* Layer switcher — sits top-right; push it down slightly so it doesn't
+                                   clip the map-expand-btn which is top-left (no conflict), but give it
+                                   breathing room from the top edge */
+        .leaflet-top.leaflet-right {
+            top: 8px;
+        }
+
+        /* Zoom control — we use custom buttons so hide the default +/- box */
+        .leaflet-control-zoom {
+            display: none;
+        }
+
+        /* Attribution bar — dark theme */
+        .leaflet-control-attribution {
+            background: rgba(10,11,13,.82) !important;
+            color: #444 !important;
+            font-size: .52rem !important;
+            padding: 1px 6px !important;
+            border-radius: 4px 0 0 0 !important;
+        }
+
+            .leaflet-control-attribution a {
+                color: #555 !important;
+            }
+
+        /* Drone hover tooltip */
+        .drone-tooltip {
+            background: rgba(10,11,14,0.92) !important;
+            border: 1px solid #30363d !important;
+            border-radius: 6px !important;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.6) !important;
+            padding: 8px 10px !important;
+        }
+
+            .drone-tooltip::before {
+                display: none !important;
+            }
+
+        /* Tile sharpening: at deep zoom (18-22) Leaflet CSS-upscales tiles.
+                                   'pixelated' keeps hard edges crisp (identical to Mission Planner behaviour).
+                                   'crisp-edges' is the Firefox equivalent — both are needed. */
+        .leaflet-tile {
+            image-rendering: -webkit-optimize-contrast; /* Safari */
+            image-rendering: pixelated; /* Chrome/Edge */
+            image-rendering: crisp-edges; /* Firefox */
+        }
+
+        #map-coord-log {
+            position: absolute;
+            bottom: 62px; /* gps-badge bottom:30 + ~24px badge height + 8px gap */
+            left: 12px;
+            z-index: 1000;
+            background: rgba(10,11,13,.88);
+            border: 1px solid #30363d;
+            border-radius: 5px;
+            padding: 5px 10px;
+            font-size: .62rem;
+            font-family: monospace;
+            color: #00f2ff;
+            pointer-events: none;
+            min-width: 180px;
+            line-height: 1.6;
+        }
+    </style>
     <HeadOutlet />
 </head>
 <body>
     <Routes @rendermode="InteractiveServer" />
 
     <script src="_framework/blazor.web.js"></script>
-    <script src="https://maps.googleapis.com/maps/api/js?key=@mapsApiKey&loading=async"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <script>
-        window._gcsMap = null;
+        // ── DIVYALINK GCS — Leaflet Map Engine ─────────────────────────────────
+        // Key design decisions:
+        //   maxNativeZoom = highest zoom with real tiles (20 for Esri satellite).
+        //   maxZoom = 22 — Leaflet CSS-scales the zoom-20 tiles beyond this point.
+        //     This is identical to what Mission Planner does. No tile provider has
+        //     data past zoom 20-21; the "data not available" grey tiles in Google
+        //     Maps appeared because Google's API enforces a hard stop. Leaflet with
+        //     maxNativeZoom simply upscales instead of showing an error.
+        //   The Esri World Imagery layer is used as default because it has the
+        //   best global coverage at high zoom for India without API key billing.
+        // ───────────────────────────────────────────────────────────────────────
+
+        window._gcsMap    = null;
         window._gcsMarker = null;
         window._missionMarkers = [];
-        window._missionPath = null;
+        window._missionPath    = null;
+        window._trailPoints    = [];      // flight trail breadcrumbs
+        window._trailLine      = null;    // Leaflet polyline for trail
+        window._trailEnabled   = true;
+        window._accuracyCircle = null;    // GPS accuracy ring
+        window._MAX_TRAIL_PTS  = 400;     // cap to avoid memory growth
 
-        // THE FIX: Persistence logic added to initMap
+        function _validGps(lat, lng) {
+            return typeof lat === "number" && typeof lng === "number"
+                   && !Number.isNaN(lat) && !Number.isNaN(lng)
+                   && (Math.abs(lat) > 0.000001 || Math.abs(lng) > 0.000001);
+        }
+
+        function _updateCoordLog(lat, lng, src) {
+            const el = document.getElementById('map-coord-log');
+            if (el) el.innerHTML =
+                `<span style="color:#555;font-size:.58rem;">${src}</span><br>` +
+                `LAT <b>${lat.toFixed(7)}</b><br>LNG <b>${lng.toFixed(7)}</b>`;
+        }
+
+        // Custom SVG quadcopter arrow — rotates with heading
+        function _droneIcon(yawDeg) {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+                <g transform="rotate(${yawDeg},18,18)">
+                    <polygon points="18,4 28,30 18,24 8,30"
+                             fill="#00f2ff" stroke="#0a0b0d" stroke-width="1.5"
+                             stroke-linejoin="round"/>
+                </g></svg>`;
+            return L.divIcon({ html:svg, className:'', iconSize:[36,36], iconAnchor:[18,18] });
+        }
+
+        // ── Bing Maps quadkey tile helper ──────────────────────────────────
+        // Bing uses quadkey addressing instead of z/x/y. This wraps it into
+        // a standard Leaflet TileLayer using a custom getTileUrl override.
+        function _createBingLayer(imagerySet, opts) {
+            const layer = L.tileLayer('', opts);
+            layer.getTileUrl = function(coords) {
+                let quad = '';
+                for (let i = coords.z; i > 0; i--) {
+                    let digit = 0;
+                    const mask = 1 << (i - 1);
+                    if ((coords.x & mask) !== 0) digit++;
+                    if ((coords.y & mask) !== 0) digit += 2;
+                    quad += digit;
+                }
+                // imagerySet: 'a'=aerial, 'h'=hybrid, 'r'=road
+                return `https://ecn.t${Math.floor(Math.random()*4)}.tiles.virtualearth.net/tiles/${imagerySet}${quad}.jpeg?g=1`;
+            };
+            return layer;
+        }
+
         window.initMap = (lat, lng) => {
             const el = document.getElementById("map-element");
             if (!el) return;
 
-            // NEW: If map already exists, re-attach it WITHOUT changing zoom or center
-            if (window._gcsMap) {
-                const mapDiv = window._gcsMap.getDiv();
+            // Already alive — just reflow (tab switch back to map)
+            if (window._gcsMap) { window._gcsMap.invalidateSize(); return; }
 
-                // Keep the current view state
-                const currentCenter = window._gcsMap.getCenter();
-                const currentZoom = window._gcsMap.getZoom();
+            const isGpsValid  = _validGps(lat, lng);
+            const startLatLng = isGpsValid ? [lat, lng] : [20.5937, 78.9629];
+            const startZoom   = isGpsValid ? 19 : 5;
 
-                mapDiv.style.display = 'block';
-                el.appendChild(mapDiv);
+            window._gcsMap = L.map(el, {
+                center: startLatLng, zoom: startZoom,
+                // Native zoom 20 is real pixels on Google/Bing.
+                // 21-22 are Leaflet CSS-upscale of zoom-20 tiles — still far
+                // sharper than upscaling from zoom-17 (old Esri floor).
+                maxZoom: 22,
+                zoomControl: true,
+                attributionControl: true,
+                // Leaflet's default tap handler conflicts with map-click on
+                // mobile/touch screens — disable to avoid phantom waypoints.
+                tap: false
+            });
 
-                // Force Google Maps to acknowledge the new container size
-                google.maps.event.trigger(window._gcsMap, 'resize');
+            // ── Tile layer strategy ──────────────────────────────────────────
+            //
+            // MISSION PLANNER APPROACH REPLICATED:
+            //   Mission Planner defaults to Google Satellite which has native
+            //   zoom-20 tiles for most populated areas of the world, including
+            //   all of India. This is the single biggest clarity improvement.
+            //
+            // TILE SOURCES (ranked by clarity at flight zoom 18-21):
+            //   1. Google Satellite   — zoom 20 native, best India coverage
+            //   2. Google Hybrid      — satellite + road labels (like MP default)
+            //   3. Bing Satellite     — zoom 19-20, excellent alternative
+            //   4. Esri Clarity       — Esri's sharpest layer, zoom 19
+            //   5. Esri Hybrid        — Esri sat + labels
+            //   6. OSM                — zoom 19, good for street-level reference
+            //   7. Esri Topo          — terrain reference
+            //
+            // maxNativeZoom = highest zoom with REAL server tiles for that provider.
+            // maxZoom = 22 on all layers — Leaflet CSS-upscales past maxNativeZoom,
+            //   which is far sharper than the old approach of capping at zoom 17
+            //   and upscaling 5 levels (each level doubles pixel size).
+            //
+            // crossOrigin: true — required for canvas renderer; harmless otherwise.
+            // ────────────────────────────────────────────────────────────────
 
-                // Re-lock the position so it doesn't jump
-                window._gcsMap.setCenter(currentCenter);
-                window._gcsMap.setZoom(currentZoom);
-                return;
-            }
+            // 1×1 transparent GIF — shown for any 404 tile instead of broken-image
+            const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
-            if (typeof google === 'undefined' || typeof google.maps === 'undefined') {
-                setTimeout(() => window.initMap(lat, lng), 200);
-                return;
-            }
+            // ── Shared tile options factory ─────────────────────────────────
+            const tileOpts = (maxNative, extra) => Object.assign({
+                maxNativeZoom: maxNative,
+                maxZoom:       22,
+                keepBuffer:    6,          // pre-fetch 6 tiles around viewport
+                updateWhenIdle: false,     // load tiles while panning, not after
+                updateWhenZooming: false,  // don't re-fetch mid-pinch on mobile
+                errorTileUrl:  BLANK,
+                crossOrigin:   true
+            }, extra || {});
 
-            const isGpsValid = (Math.abs(lat) > 0.1 && Math.abs(lng) > 0.1);
-            const startPos = isGpsValid ? { lat: lat, lng: lng } : { lat: 20.5937, lng: 78.9629 };
+            // ── 1. Google Satellite (native zoom 20 — sharpest for India) ───
+            const googleSat = L.tileLayer(
+                'https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+                tileOpts(20, {
+                    subdomains: '0123',
+                    attribution: 'Map data &copy; Google'
+                })
+            );
 
-            try {
-                window._gcsMap = new google.maps.Map(el, {
-                    center: startPos,
-                    zoom: isGpsValid ? 18 : 5,
-                    mapTypeId: "hybrid",
-                    disableDefaultUI: true,
-                    fullscreenControl: true,
-                    zoomControl: true,
-                    mapTypeControl: true,
-                    mapTypeControlOptions: {
-                        style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
-                        position: google.maps.ControlPosition.TOP_LEFT,
-                        mapTypeIds: ["roadmap", "satellite", "hybrid", "terrain"]
-                    }
-                });
+            // ── 2. Google Hybrid (satellite + roads — Mission Planner default) ──
+            const googleHybrid = L.tileLayer(
+                'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+                tileOpts(20, {
+                    subdomains: '0123',
+                    attribution: 'Map data &copy; Google'
+                })
+            );
 
-                window._gcsMap.addListener("click", (e) => {
-                    if (typeof DotNet !== 'undefined') {
-                        DotNet.invokeMethodAsync('BlazorApp3', 'AddWaypointFromMap', e.latLng.lat(), e.latLng.lng())
-                              .catch(err => console.error("Interop Error:", err));
-                    }
-                });
-            } catch (error) {
-                console.error("Failed to render Google Map:", error);
-            }
+            // ── 3. Bing Satellite (excellent fallback, zoom 19) ─────────────
+            // Bing uses quadkey tiles — handled by a small helper below
+            const bingSat = _createBingLayer('a', tileOpts(19, {
+                attribution: 'Map data &copy; Microsoft Bing'
+            }));
+
+            // ── 4. Esri World Clarity (sharpest Esri layer, zoom 19) ────────
+            // "Clarity" product has better sharpening than World_Imagery
+            const esriClarity = L.tileLayer(
+                'https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                tileOpts(19, { attribution: 'Tiles &copy; Esri' })
+            );
+
+            // ── 5. Esri Hybrid (sat + reference labels) ─────────────────────
+            const esriHybrid = L.layerGroup([
+                L.tileLayer(
+                    'https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                    tileOpts(19, { attribution: 'Tiles &copy; Esri' })
+                ),
+                L.tileLayer(
+                    'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+                    tileOpts(19, { opacity: 0.85 })
+                )
+            ]);
+
+            // ── 6. OpenStreetMap (zoom 19, good road detail) ─────────────────
+            const osm = L.tileLayer(
+                'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                tileOpts(19, {
+                    subdomains: 'abc',
+                    attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>'
+                })
+            );
+
+            // ── 7. Esri Topo (terrain reference) ────────────────────────────
+            const esriTopo = L.tileLayer(
+                'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+                tileOpts(19, { attribution: 'Tiles &copy; Esri' })
+            );
+
+            // Google Satellite on by default — same as Mission Planner
+            googleSat.addTo(window._gcsMap);
+
+            L.control.layers({
+                '🛰️ Google Satellite':   googleSat,
+                '🛰️ Google Hybrid':      googleHybrid,
+                '🛰️ Bing Satellite':     bingSat,
+                '🛰️ Esri Clarity':       esriClarity,
+                '🛰️ Esri Hybrid':        esriHybrid,
+                '🗺️ Street (OSM)':       osm,
+                '🏔️ Terrain (Esri)':     esriTopo
+            }, {}, { position: 'topright', collapsed: true }).addTo(window._gcsMap);
+
+            // ── Zoom level indicator — bottomleft ───────────────────────────
+            window._zoomLabel = L.control({ position: 'bottomleft' });
+            window._zoomLabel.onAdd = () => {
+                const d = L.DomUtil.create('div', '');
+                d.id = 'map-zoom-label';
+                d.style.cssText =
+                    'background:rgba(10,11,13,.85);border:1px solid #30363d;' +
+                    'border-radius:4px;padding:2px 7px;font-size:.58rem;' +
+                    'font-family:monospace;color:#58a6ff;pointer-events:none;';
+                d.innerText = 'Z' + window._gcsMap.getZoom();
+                return d;
+            };
+            window._zoomLabel.addTo(window._gcsMap);
+            window._gcsMap.on('zoomend', () => {
+                const el = document.getElementById('map-zoom-label');
+                if (el) el.innerText = 'Z' + window._gcsMap.getZoom();
+            });
+
+            // Scale bar — bottomright, clears our trail/recentre buttons which are right:12
+            L.control.scale({ imperial: false, metric: true, position: 'bottomright' })
+                .addTo(window._gcsMap);
+
+            // Map click → waypoint interop
+            window._gcsMap.on('click', (e) => {
+                _updateCoordLog(e.latlng.lat, e.latlng.lng, 'MAP CLICK');
+                if (typeof DotNet !== 'undefined') {
+                    DotNet.invokeMethodAsync('BlazorApp3','AddWaypointFromMap',
+                        e.latlng.lat, e.latlng.lng)
+                        .catch(err => console.error("Interop:", err));
+                }
+            });
+            window._gcsMap.on('mousemove', (e) =>
+                _updateCoordLog(e.latlng.lat, e.latlng.lng, 'CURSOR'));
         };
 
-        // NEW: Function to safely hide the map when you leave the tab
-        window.preserveMap = () => {
-            if (window._gcsMap) {
-                const mapDiv = window._gcsMap.getDiv();
-                mapDiv.style.display = 'none';
-                document.body.appendChild(mapDiv); // Keep the map object alive in the body
-            }
-        };
+        window.preserveMap = () => { /* Leaflet: no-op */ };
 
-        function _validGps(lat, lng) {
-            if (typeof lat !== "number" || typeof lng !== "number") return false;
-            if (Number.isNaN(lat) || Number.isNaN(lng)) return false;
-            return (Math.abs(lat) > 0.000001 || Math.abs(lng) > 0.000001);
+        // ── Drone tooltip HTML ──────────────────────────────────────────────
+        function _droneTooltip(lat, lng, yaw, alt, spd, bat) {
+            return `<div style="font-family:monospace;font-size:0.65rem;line-height:1.6;color:#c9d1d9;min-width:130px;">
+                <div style="font-weight:900;color:#00f2ff;letter-spacing:1px;margin-bottom:3px;">DRONE</div>
+                <div>HDG <b style="color:#fff">${yaw.toFixed(0)}°</b></div>
+                <div>ALT <b style="color:#fff">${alt.toFixed(1)} m</b></div>
+                <div>SPD <b style="color:#fff">${spd.toFixed(1)} m/s</b></div>
+                <div>BAT <b style="color:${bat < 20 ? '#ff6b6b' : '#3fb950'}">${bat}%</b></div>
+                <div style="color:#555;font-size:0.55rem;margin-top:2px;">${lat.toFixed(7)}, ${lng.toFixed(7)}</div>
+            </div>`;
         }
 
-        function _ensureDroneMarker(pos, yaw) {
+        // ── GPS accuracy ring ───────────────────────────────────────────────
+        // hdop: horizontal dilution of precision from GPS_RAW_INT.
+        // Approximate accuracy radius = hdop × 3 metres (CEP 50% rule of thumb).
+        // We show it as a faint circle so the pilot can see fix quality visually.
+        function _updateAccuracyRing(lat, lng, hdop) {
             if (!window._gcsMap) return;
+            const radius = Math.max(1, (hdop || 1) * 3); // metres, min 1m
+            if (!window._accuracyCircle) {
+                window._accuracyCircle = L.circle([lat, lng], {
+                    radius,
+                    color:       '#00f2ff',
+                    fillColor:   '#00f2ff',
+                    fillOpacity: 0.06,
+                    weight:      1,
+                    opacity:     0.35,
+                    interactive: false
+                }).addTo(window._gcsMap);
+            } else {
+                window._accuracyCircle.setLatLng([lat, lng]);
+                window._accuracyCircle.setRadius(radius);
+            }
+        }
+
+        // ── Flight trail ────────────────────────────────────────────────────
+        function _appendTrail(lat, lng) {
+            if (!window._trailEnabled || !window._gcsMap) return;
+
+            window._trailPoints.push([lat, lng]);
+
+            // Cap trail length — drop oldest point when over limit
+            if (window._trailPoints.length > window._MAX_TRAIL_PTS)
+                window._trailPoints.shift();
+
+            if (!window._trailLine) {
+                window._trailLine = L.polyline(window._trailPoints, {
+                    color:       '#f0b429',
+                    weight:      2,
+                    opacity:     0.7,
+                    smoothFactor: 1,
+                    interactive: false
+                }).addTo(window._gcsMap);
+            } else {
+                window._trailLine.setLatLngs(window._trailPoints);
+            }
+        }
+
+        // ── Core drone marker update ────────────────────────────────────────
+        // Called by both jumpToDrone (first fix) and updateMapPos (every tick).
+        // extra = { alt, spd, bat, hdop } — passed from Blazor on each tick.
+        function _ensureDroneMarker(lat, lng, yaw, extra) {
+            if (!window._gcsMap) return;
+            const alt  = extra?.alt  ?? 0;
+            const spd  = extra?.spd  ?? 0;
+            const bat  = extra?.bat  ?? 0;
+            const hdop = extra?.hdop ?? 1;
+
             if (!window._gcsMarker) {
-                window._gcsMarker = new google.maps.Marker({
-                    position: pos,
-                    map: window._gcsMap,
-                    icon: {
-                        path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-                        scale: 6,
-                        fillColor: "#00f2ff",
-                        fillOpacity: 1,
-                        strokeWeight: 2,
-                        rotation: yaw
-                    }
+                window._gcsMarker = L.marker([lat, lng], {
+                    icon: _droneIcon(yaw),
+                    draggable: true,
+                    zIndexOffset: 1000
+                }).addTo(window._gcsMap);
+
+                // Persistent tooltip — always visible, updates every tick
+                window._gcsMarker.bindTooltip(
+                    _droneTooltip(lat, lng, yaw, alt, spd, bat),
+                    { permanent: false, direction: 'right', className: 'drone-tooltip', offset: [20, 0] }
+                );
+
+                window._gcsMarker.on('drag', (e) => {
+                    const p = e.target.getLatLng();
+                    _updateCoordLog(p.lat, p.lng, 'DRONE (DRAG)');
+                });
+                window._gcsMarker.on('dragend', (e) => {
+                    const p = e.target.getLatLng();
+                    _updateCoordLog(p.lat, p.lng, 'DRONE DROPPED');
                 });
             } else {
-                window._gcsMarker.setPosition(pos);
-                const icon = window._gcsMarker.getIcon();
-                icon.rotation = yaw;
-                window._gcsMarker.setIcon(icon);
+                window._gcsMarker.setLatLng([lat, lng]);
+                window._gcsMarker.setIcon(_droneIcon(yaw));
+                // Update tooltip content without re-binding
+                if (window._gcsMarker.getTooltip()) {
+                    window._gcsMarker.getTooltip().setContent(
+                        _droneTooltip(lat, lng, yaw, alt, spd, bat)
+                    );
+                }
+                _updateCoordLog(lat, lng, 'DRONE (LIVE)');
             }
+
+            _appendTrail(lat, lng);
+            _updateAccuracyRing(lat, lng, hdop);
         }
+
+        window.jumpToDrone = (lat, lng, yawDeg, extra) => {
+            if (!window._gcsMap || !_validGps(lat, lng)) return;
+            window._gcsMap.setView([lat, lng], Math.max(window._gcsMap.getZoom(), 19));
+            _ensureDroneMarker(lat, lng, yawDeg ?? 0, extra);
+        };
+        window.recentreToDrone = () => {
+            if (!window._gcsMap || !window._gcsMarker) return;
+            window._gcsMap.panTo(window._gcsMarker.getLatLng());
+        };
+        window.updateMapPos = (lat, lng, yawDeg, extra) => {
+            if (!window._gcsMap || !_validGps(lat, lng)) return;
+            _ensureDroneMarker(lat, lng, yawDeg ?? 0, extra);
+        };
+        window.setTrailEnabled = (enabled) => {
+            window._trailEnabled = enabled;
+            if (!enabled && window._trailLine) {
+                window._gcsMap?.removeLayer(window._trailLine);
+                window._trailLine   = null;
+                window._trailPoints = [];
+            }
+        };
+        window.clearTrail = () => {
+            if (window._trailLine) {
+                window._gcsMap?.removeLayer(window._trailLine);
+                window._trailLine   = null;
+            }
+            window._trailPoints = [];
+        };
 
         window.drawMission = (waypoints) => {
             if (!window._gcsMap) return;
-            window._missionMarkers.forEach(m => m.setMap(null));
+            window._missionMarkers.forEach(m => window._gcsMap.removeLayer(m));
             window._missionMarkers = [];
-            if (window._missionPath) {
-                window._missionPath.setMap(null);
-                window._missionPath = null;
-            }
-
-            if (!waypoints || waypoints.length === 0) return;
-            const pathCoords = [];
-
-            waypoints.forEach((wp) => {
-                const lat = wp.lat !== undefined ? wp.lat : wp.Lat;
-                const lng = wp.lng !== undefined ? wp.lng : wp.Lng;
-                const index = wp.index !== undefined ? wp.index : wp.Index;
-
-                if (lat === undefined || lng === undefined) return;
-
-                const pos = { lat: lat, lng: lng };
-                pathCoords.push(pos);
-
-                const marker = new google.maps.Marker({
-                    position: pos,
-                    map: window._gcsMap,
-                    draggable: true,
-                    label: {
-                        text: wp.IsHome || wp.isHome ? "H" : index.toString(),
-                        color: "black",
-                        fontWeight: "bold"
-                    },
-                    icon: {
-                        path: google.maps.SymbolPath.CIRCLE,
-                        fillColor: wp.IsHome || wp.isHome ? "#ff9900" : "#00f2ff",
-                        fillOpacity: 1,
-                        strokeColor: "#ffffff",
-                        strokeWeight: 2,
-                        scale: wp.IsHome || wp.isHome ? 10 : 8
-                    }
+            if (window._missionPath) { window._gcsMap.removeLayer(window._missionPath); window._missionPath = null; }
+            if (!waypoints || !waypoints.length) return;
+            const coords = [];
+            waypoints.forEach(wp => {
+                const lat=wp.lat??wp.Lat, lng=wp.lng??wp.Lng, idx=wp.index??wp.Index;
+                const home=wp.IsHome||wp.isHome;
+                if (lat===undefined||lng===undefined) return;
+                coords.push([lat,lng]);
+                const sz=home?22:18, bg=home?'#ff9900':'#00f2ff';
+                const icon=L.divIcon({html:`<div style="width:${sz}px;height:${sz}px;background:${bg};border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;color:#000;">${home?'H':idx}</div>`,className:'',iconSize:[sz,sz],iconAnchor:[sz/2,sz/2]});
+                const m=L.marker([lat,lng],{icon,draggable:true}).addTo(window._gcsMap);
+                m.bindTooltip(`WP${idx}: ${lat.toFixed(6)}, ${lng.toFixed(6)}`,{direction:'top'});
+                m.on('dragend', e=>{
+                    const p=e.target.getLatLng();
+                    if (typeof DotNet!=='undefined')
+                        DotNet.invokeMethodAsync('BlazorApp3','UpdateWaypointPosition',idx,p.lat,p.lng).catch(console.error);
                 });
-
-                marker.addListener("dragend", (e) => {
-                    if (typeof DotNet !== 'undefined') {
-                        DotNet.invokeMethodAsync('BlazorApp3', 'UpdateWaypointPosition', index, e.latLng.lat(), e.latLng.lng())
-                              .catch(err => console.error("Drag Update Error:", err));
-                    }
-                });
-                window._missionMarkers.push(marker);
+                window._missionMarkers.push(m);
             });
+            if (coords.length>1)
+                window._missionPath=L.polyline(coords,{color:'#2b58ff',weight:3,opacity:.85}).addTo(window._gcsMap);
+        };
 
-            if (pathCoords.length > 1) {
-                window._missionPath = new google.maps.Polyline({
-                    path: pathCoords,
-                    geodesic: true,
-                    strokeColor: "#2b58ff",
-                    strokeOpacity: 0.8,
-                    strokeWeight: 3,
-                    map: window._gcsMap
+        window.expandMap = () => {
+            document.querySelector('.gcs-wrapper')?.classList.add('map-fullscreen');
+            document.querySelector('.gcs-drawer')?.classList.add('map-fullscreen-drawer');
+            setTimeout(()=>window._gcsMap?.invalidateSize(), 320);
+        };
+        window.collapseMap = () => {
+            document.querySelector('.gcs-wrapper')?.classList.remove('map-fullscreen');
+            document.querySelector('.gcs-drawer')?.classList.remove('map-fullscreen-drawer');
+            setTimeout(()=>window._gcsMap?.invalidateSize(), 320);
+        };
+
+        window.scrollToBottom = (elementId) => {
+            const el = document.getElementById(elementId);
+            if (el) {
+                // Smooth scrolling feels much more professional for a GCS terminal
+                el.scrollTo({
+                    top: el.scrollHeight,
+                    behavior: 'smooth'
                 });
             }
         };
 
-        window.jumpToDrone = (lat, lng, yawDeg) => {
-            if (!window._gcsMap) return;
-            if (!_validGps(lat, lng)) return;
-            const pos = { lat: lat, lng: lng };
-            window._gcsMap.setCenter(pos);
-            window._gcsMap.setZoom(19);
-            _ensureDroneMarker(pos, yawDeg ?? 0);
-        };
-
-        window.updateMapPos = (lat, lng, yawDeg) => {
-            if (!window._gcsMap || !_validGps(lat, lng)) return;
-            const pos = { lat: lat, lng: lng };
-            _ensureDroneMarker(pos, yawDeg ?? 0);
+        // Instant scroll — used by Messages terminal so new lines appear immediately
+        // at the bottom without animation, matching MAVLink inspector behaviour.
+        window.scrollToBottomInstant = (elementId) => {
+            const el = document.getElementById(elementId);
+            if (el) el.scrollTop = el.scrollHeight;
         };
 
         window.downloadFile = (fileName, content) => {
-            const blob = new Blob([content], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = fileName;
-            a.click();
+            const blob=new Blob([content],{type:'application/json'});
+            const url=URL.createObjectURL(blob);
+            const a=document.createElement('a'); a.href=url; a.download=fileName; a.click();
             URL.revokeObjectURL(url);
         };
-
         window.triggerFilePicker = (id) => {
-            const el = document.getElementById(id);
-            if (el) el.click();
+            const el=document.getElementById(id); if(el) el.click();
         };
     </script>
 </body>

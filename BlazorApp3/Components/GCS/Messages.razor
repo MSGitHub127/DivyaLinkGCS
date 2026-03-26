@@ -1,5 +1,6 @@
-﻿@page "/messages"
+@page "/messages"
 @inject MavlinkService Drone
+@inject IJSRuntime JS
 @implements IDisposable
 
 <div class="messages-view-container">
@@ -13,7 +14,7 @@
             <span class="icon">📟</span> SYSTEM TERMINAL (@Drone.StatusMessages.Count)
         </div>
 
-        <div class="console-window">
+        <div id="terminal-scroll" class="console-window" @ref="_consoleWindow">
             @if (Drone.StatusMessages.Count == 0)
             {
                 <div class="empty-state">
@@ -108,10 +109,10 @@
         line-height: 1.4;
     }
 
-    .log-entry.critical-log {
-        color: #ff3a3a; /* Highlight critical errors in Red */
-        font-weight: bold;
-    }
+        .log-entry.critical-log {
+            color: #ff3a3a; /* Highlight critical errors in Red */
+            font-weight: bold;
+        }
 
     .empty-state {
         display: flex;
@@ -158,17 +159,39 @@
 </style>
 
 @code {
+    private ElementReference _consoleWindow;
+    private bool _shouldScroll = false;
+
     protected override void OnInitialized()
     {
         Drone.OnMessageReceived += RefreshUi;
     }
 
-    // THE FIX: Add 'string msg' here so it matches the new event signature
-    private void RefreshUi(string msg) => InvokeAsync(StateHasChanged);
+    private void RefreshUi(string msg)
+    {
+        _shouldScroll = true;
+        InvokeAsync(StateHasChanged);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_shouldScroll || firstRender)
+        {
+            _shouldScroll = false;
+            try
+            {
+                // Instant jump — no animation, matches terminal/MAVLink log behaviour
+                await JS.InvokeVoidAsync("eval",
+                    "var el=document.getElementById('terminal-scroll'); if(el) el.scrollTop=el.scrollHeight;");
+            }
+            catch { }
+        }
+    }
 
     private void ClearLogs()
     {
         lock (Drone.StatusMessages) { Drone.StatusMessages.Clear(); }
+        // _shouldScroll = true;
         StateHasChanged();
     }
 

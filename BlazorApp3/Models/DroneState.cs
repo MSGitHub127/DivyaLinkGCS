@@ -108,9 +108,20 @@ public class DroneState
         SatellitesVisible = other.SatellitesVisible;
         GpsFixType = other.GpsFixType;
 
+        AirSpeed = other.AirSpeed;
+        CpuLoad = other.CpuLoad;
+        ImuTemp = other.ImuTemp;
+
         MotorCount = other.MotorCount;
         FrameClass = other.FrameClass;
         FrameType = other.FrameType;
+
+        // IsRcConnected MUST be copied here. Without this, every UpdateState() call
+        // (heartbeat, GPS, attitude — running constantly) creates a new DroneState
+        // via this copy ctor, and IsRcConnected silently resets to its default (false).
+        // The toast fires correctly because it is a direct call, but the UI pill
+        // immediately loses the green state on the very next telemetry packet.
+        IsRcConnected = other.IsRcConnected;
 
         if (other.RawChannels != null)
         {
