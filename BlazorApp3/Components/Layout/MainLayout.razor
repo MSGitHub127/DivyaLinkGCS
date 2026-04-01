@@ -142,6 +142,11 @@
             {
                 <Setup />
             }
+            else if(activeTab == "Swarm")
+            {
+                <Swarm />
+            }
+")
         </div>
     </div>
 
@@ -524,12 +529,19 @@
 
     .sub-nav {
         display: flex;
-        gap: 10px;
+        gap: 6px;
         width: 100%;
-        max-width: 1400px;
+        margin: 0 auto; /* Centers the whole navigation block */
+        justify-content: center; /* Centers the buttons inside */
     }
 
+    .sub-nav::-webkit-scrollbar {
+            display: none;
+        }
+
+
     .nav-btn {
+        min-width:72px;
         flex: 1;
         background: #090a0c;
         border: 1px solid var(--border);
@@ -576,7 +588,7 @@
 
     private System.Threading.Timer? _autoDetectTimer;
 
-    private string[] tabs = { "Quick", "Actions", "Messages", "FlightPlan", "Pre Flight", "Setup" };
+    private string[] tabs = { "Quick", "Actions", "Messages", "FlightPlan", "Pre Flight", "Setup", "Swarm" };
 
     // Helpers
     private bool IsConnected => Drone.State.ConnectionStatus.Contains("Receiving");
@@ -752,6 +764,7 @@
         "FlightPlan" => "✈️",
         "Pre Flight" => "📋",
         "Setup" => "🛠️",
+        "Swarm" => "🐝",
         _ => "❓"
     };
 

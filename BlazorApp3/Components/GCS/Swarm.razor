@@ -1,0 +1,539 @@
+﻿@inject MavlinkService Drone
+@implements IDisposable
+
+<div class="drawer-header">
+    <div class="header-title">
+        <i class="bi bi-diagram-3-fill"></i>
+        <span>SWARM COMMANDER</span>
+    </div>
+    <div class="live-indicator">
+        <span class="status-dot"></span> <span class="status-text">DATALINK ACTIVE</span>
+    </div>
+</div>
+
+<div class="swarm-container">
+    @* --- TACTICAL FLEET SUMMARY --- *@
+    <div class="tactical-metrics">
+        <div class="metric-panel">
+            <span class="m-label">SYS.NODES</span>
+            <span class="m-value">@GetActiveDroneCount()</span>
+        </div>
+        <div class="metric-panel">
+            <span class="m-label">AIRBORNE</span>
+            <span class="m-value active-blue">@GetAirborneCount()</span>
+        </div>
+        <div class="metric-panel">
+            <span class="m-label">AVG BATT</span>
+            <span class="m-value @(GetAvgBattery() < 30 ? "alert-red" : "stable-green")">
+                @GetAvgBattery() <span class="m-unit">%</span>
+            </span>
+        </div>
+    </div>
+
+    @* --- GLOBAL OPERATIONS (FLAT TACTICAL UI) --- *@
+    <div class="ops-panel">
+        <div class="panel-header">GLOBAL BROADCAST COMMANDS</div>
+        <div class="ops-grid">
+            <button class="cmd-btn btn-arm" @onclick="() => SwarmArm(true)">
+                <i class="bi bi-shield-fill-exclamation"></i> ARM FLEET
+            </button>
+            <button class="cmd-btn btn-disarm" @onclick="() => SwarmArm(false)">
+                <i class="bi bi-shield-slash-fill"></i> DISARM FLEET
+            </button>
+
+            <div class="takeoff-macro">
+                <input type="number" class="tactical-input" @bind="takeoffAlt" min="2" max="100" />
+                <span class="tactical-unit">m</span>
+                <button class="cmd-btn btn-launch" @onclick="SwarmTakeoff">
+                    TAKEOFF ALL
+                </button>
+            </div>
+
+            <button class="cmd-btn btn-rtl" @onclick="SwarmRTL">
+                <i class="bi bi-house-door-fill"></i> RTL ALL
+            </button>
+            <button class="cmd-btn btn-land" @onclick="SwarmLand">
+                <i class="bi bi-arrow-down-square-fill"></i> LAND ALL
+            </button>
+        </div>
+    </div>
+
+    @* --- FLEET DATAGRID --- *@
+    <div class="datagrid-panel">
+        <div class="panel-header">FLEET TELEMETRY ROSTER</div>
+
+        <div class="datagrid">
+            <div class="dg-header">
+                <div class="col-sys">SYS</div>
+                <div class="col-state">STATE</div>
+                <div class="col-mode">MODE</div>
+                <div class="col-alt">ALT(m)</div>
+                <div class="col-bat">BATT</div>
+                <div class="col-tgt">PRIMARY</div>
+            </div>
+
+            <div class="dg-body">
+                @if (!Drone.State.HasVehicleId && Drone.ActiveSwarm.IsEmpty)
+                {
+                    <div class="dg-empty">
+                        <i class="bi bi-broadcast"></i>
+                        <span>NO MAVLINK NODES DETECTED</span>
+                    </div>
+                }
+                else
+                {
+                    @* Primary Drone Row *@
+                    @if (Drone.State.HasVehicleId)
+                    {
+                        <div class="dg-row @(Drone.target_sysid == Drone.State.SystemId ? "row-targeted" : "")" @onclick="() => SetTargetSysId(Drone.State.SystemId)">
+                            <div class="col-sys">@Drone.State.SystemId.ToString("D3")</div>
+                            <div class="col-state"><span class="tag @(Drone.State.IsArmed ? "tag-armed" : "tag-safe")">@(Drone.State.IsArmed ? "ARM" : "STBY")</span></div>
+                            <div class="col-mode">@Drone.State.FlightMode</div>
+                            <div class="col-alt">@Drone.State.Altitude.ToString("0.0")</div>
+                            <div class="col-bat @(Drone.State.BatteryPercent < 20 ? "alert-text" : "")">@Drone.State.BatteryPercent%</div>
+                            <div class="col-tgt">
+                                <div class="radio-indicator"></div>
+                            </div>
+                        </div>
+                    }
+
+                    @* Swarm Dictionary Rows *@
+                    @foreach (var kvp in Drone.ActiveSwarm.Where(x => x.Key != Drone.State.SystemId))
+                    {
+                        var sys = kvp.Value;
+                        <div class="dg-row @(Drone.target_sysid == kvp.Key ? "row-targeted" : "")" @onclick="() => SetTargetSysId(kvp.Key)">
+                            <div class="col-sys">@kvp.Key.ToString("D3")</div>
+                            <div class="col-state"><span class="tag @(sys.IsArmed ? "tag-armed" : "tag-safe")">@(sys.IsArmed ? "ARM" : "STBY")</span></div>
+                            <div class="col-mode">@sys.FlightMode</div>
+                            <div class="col-alt">@sys.Altitude.ToString("0.0")</div>
+                            <div class="col-bat @(sys.BatteryPercent < 20 ? "alert-text" : "")">@sys.BatteryPercent%</div>
+                            <div class="col-tgt">
+                                <div class="radio-indicator"></div>
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* Base Layout */
+    .swarm-container {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        height: calc(100% - 45px);
+        background-color: #0d1117;
+        color: #c9d1d9;
+        font-family: 'Segoe UI', Roboto, Helvetica, sans-serif;
+    }
+
+    /* Header styling */
+    .drawer-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0 16px;
+        border-bottom: 1px solid #30363d;
+    }
+
+    .header-title {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        color: #8b949e;
+    }
+
+    .live-indicator {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .status-dot {
+        width: 6px;
+        height: 6px;
+        background: #3fb950;
+        border-radius: 50%;
+        box-shadow: 0 0 4px #3fb950;
+    }
+
+    .status-text {
+        font-size: 0.6rem;
+        font-family: monospace;
+        color: #3fb950;
+        letter-spacing: 1px;
+    }
+
+    /* Tactical Metrics */
+    .tactical-metrics {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+    }
+
+    .metric-panel {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-top: 2px solid #444c56;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .m-label {
+        font-size: 0.6rem;
+        color: #8b949e;
+        font-weight: 700;
+        letter-spacing: 1px;
+        margin-bottom: 4px;
+    }
+
+    .m-value {
+        font-size: 1.5rem;
+        font-family: 'Courier New', Courier, monospace;
+        font-weight: bold;
+        line-height: 1;
+    }
+
+    .m-unit {
+        font-size: 0.8rem;
+        color: #8b949e;
+    }
+
+    .active-blue {
+        color: #58a6ff;
+    }
+
+    .stable-green {
+        color: #3fb950;
+    }
+
+    .alert-red {
+        color: #f85149;
+    }
+
+    /* Panels General */
+    .ops-panel, .datagrid-panel {
+        background: #161b22;
+        border: 1px solid #30363d;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .panel-header {
+        background: #21262d;
+        padding: 6px 12px;
+        font-size: 0.65rem;
+        font-weight: bold;
+        color: #8b949e;
+        border-bottom: 1px solid #30363d;
+        letter-spacing: 0.5px;
+    }
+
+    /* Operations Grid */
+    .ops-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 12px;
+    }
+
+    .takeoff-macro {
+        grid-column: span 2;
+        display: flex;
+        background: #0d1117;
+        border: 1px solid #30363d;
+        height: 36px;
+    }
+
+    .tactical-input {
+        background: transparent;
+        border: none;
+        color: #58a6ff;
+        width: 60px;
+        text-align: right;
+        font-family: monospace;
+        font-size: 1rem;
+        font-weight: bold;
+        outline: none;
+    }
+
+    .tactical-unit {
+        color: #8b949e;
+        font-size: 0.8rem;
+        padding: 0 10px 0 4px;
+        align-self: center;
+    }
+
+    .cmd-btn {
+        flex: 1;
+        background: #21262d;
+        border: 1px solid #363b42;
+        color: #c9d1d9;
+        font-size: 0.75rem;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 36px;
+        transition: 0.1s ease;
+    }
+
+    .cmd-btn:hover {
+            background: #30363d;
+        }
+
+    .cmd-btn:active {
+            background: #161b22;
+            border-color: #8b949e;
+        }
+
+    .btn-arm {
+        color: #ff8080;
+        border-color: rgba(248,81,73,0.4);
+    }
+
+    .btn-arm:hover {
+            background: rgba(248,81,73,0.1);
+        }
+
+    .btn-disarm {
+        color: #3fb950;
+        border-color: rgba(46,160,67,0.4);
+    }
+
+    .btn-launch {
+        background: #1f6feb;
+        border: none;
+        color: white;
+    }
+
+    .btn-launch:hover {
+            background: #388bfd;
+        }
+
+    .btn-rtl {
+        color: #d29922;
+    }
+
+    .btn-land {
+        color: #58a6ff;
+    }
+
+    /* Tactical Datagrid */
+    .datagrid-panel {
+        flex: 1;
+        overflow: hidden;
+    }
+
+    .datagrid {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+
+    .dg-header, .dg-row {
+        display: grid;
+        grid-template-columns: 50px 60px 1fr 60px 50px 60px;
+        align-items: center;
+        padding: 0 12px;
+        font-family: monospace;
+    }
+
+    .dg-header {
+        height: 28px;
+        font-size: 0.65rem;
+        color: #8b949e;
+        border-bottom: 1px solid #30363d;
+        background: #0d1117;
+    }
+
+    .dg-body {
+        flex: 1;
+        overflow-y: auto;
+    }
+
+    .dg-row {
+        height: 36px;
+        border-bottom: 1px solid #21262d;
+        cursor: pointer;
+        font-size: 0.8rem;
+        transition: background 0.1s;
+    }
+
+    .dg-row:hover {
+            background: #21262d;
+        }
+
+        /* Target Selection Styling */
+    .dg-row.row-targeted {
+            background: rgba(88, 166, 255, 0.1);
+            border-left: 3px solid #58a6ff;
+            padding-left: 9px; /* Offset for border */
+        }
+
+    .radio-indicator {
+        width: 14px;
+        height: 14px;
+        border: 2px solid #555;
+        border-radius: 50%;
+        margin: 0 auto;
+        position: relative;
+    }
+
+    .row-targeted .radio-indicator {
+        border-color: #58a6ff;
+    }
+
+    .row-targeted .radio-indicator::after {
+            content: '';
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            right: 2px;
+            bottom: 2px;
+            background: #58a6ff;
+            border-radius: 50%;
+        }
+
+    /* Grid Columns & Tags */
+    .col-sys {
+        color: #8b949e;
+    }
+
+    .row-targeted .col-sys {
+        color: #fff;
+        font-weight: bold;
+    }
+
+    .col-mode {
+        color: #58a6ff;
+    }
+
+    .col-tgt {
+        text-align: center;
+    }
+
+    .alert-text {
+        color: #f85149;
+        font-weight: bold;
+    }
+
+    .tag {
+        font-size: 0.6rem;
+        padding: 2px 4px;
+        border-radius: 2px;
+        font-weight: bold;
+        font-family: sans-serif;
+    }
+
+    .tag-armed {
+        background: #490202;
+        color: #ff8080;
+        border: 1px solid #f85149;
+    }
+
+    .tag-safe {
+        background: #04260f;
+        color: #3fb950;
+        border: 1px solid #2ea043;
+    }
+
+    .dg-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100px;
+        color: #444c56;
+        font-family: sans-serif;
+        font-size: 0.75rem;
+        font-weight: bold;
+    }
+
+    .dg-empty i {
+            font-size: 1.5rem;
+            margin-bottom: 8px;
+        }
+</style>
+
+@code {
+    private int takeoffAlt = 10;
+
+    protected override void OnInitialized()
+    {
+        Drone.OnTelemetryUpdated += StateHasChanged;
+    }
+
+    public void Dispose()
+    {
+        Drone.OnTelemetryUpdated -= StateHasChanged;
+    }
+
+    private int GetActiveDroneCount()
+    {
+        int count = Drone.ActiveSwarm.Count;
+        if (Drone.State.HasVehicleId && !Drone.ActiveSwarm.ContainsKey(Drone.State.SystemId)) count++;
+        return count;
+    }
+
+    private int GetAirborneCount()
+    {
+        int count = Drone.ActiveSwarm.Values.Count(d => d.Altitude > 2.0);
+        if (Drone.State.HasVehicleId && Drone.State.Altitude > 2.0 && !Drone.ActiveSwarm.ContainsKey(Drone.State.SystemId)) count++;
+        return count;
+    }
+
+    private int GetAvgBattery()
+    {
+        var drones = Drone.ActiveSwarm.Values.ToList();
+        if (Drone.State.HasVehicleId && !Drone.ActiveSwarm.ContainsKey(Drone.State.SystemId)) drones.Add(Drone.State);
+
+        if (!drones.Any()) return 0;
+        return (int)drones.Average(d => d.BatteryPercent);
+    }
+
+    private void SetTargetSysId(byte sysId)
+    {
+        Drone.target_sysid = sysId;
+        Drone.Toast($"GCS Primary Target set to SysID {sysId}", MavlinkService.ToastLevel.Info, "🎯");
+    }
+
+    // --- Swarm Commands ---
+    private void SwarmArm(bool arm)
+    {
+        Drone.BroadcastArmRequest(arm);
+        Drone.Toast(arm ? "SWARM COMMAND: ARMING" : "SWARM COMMAND: DISARMING",
+            arm ? MavlinkService.ToastLevel.Warning : MavlinkService.ToastLevel.Success,
+            arm ? "🔴" : "🟢");
+    }
+
+    private void SwarmTakeoff()
+    {
+        Drone.BroadcastFlightMode("GUIDED");
+        Task.Delay(500).ContinueWith(_ =>
+        {
+            Drone.BroadcastCommand(MAVLink.MAV_CMD.TAKEOFF, 0, 0, 0, 0, 0, 0, takeoffAlt);
+            Drone.Toast($"SWARM COMMAND: TAKEOFF TO {takeoffAlt}m", MavlinkService.ToastLevel.Warning, "🚀");
+        });
+    }
+
+    private void SwarmRTL()
+    {
+        Drone.BroadcastFlightMode("RTL");
+        Drone.Toast("SWARM COMMAND: RTL TRIGGERED", MavlinkService.ToastLevel.Warning, "🏠");
+    }
+
+    private void SwarmLand()
+    {
+        Drone.BroadcastFlightMode("LAND");
+        Drone.Toast("SWARM COMMAND: LAND TRIGGERED", MavlinkService.ToastLevel.Info, "🛬");
+    }
+}

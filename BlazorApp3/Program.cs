@@ -1,7 +1,12 @@
 using BlazorApp3.Components;
 using Microsoft.AspNetCore.Components.Server;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
+    WebRootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot")
+});
 
 // 1. Configure Logging to ensure your Console.WriteLine and _logger calls are visible
 builder.Logging.ClearProviders();

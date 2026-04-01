@@ -1,10 +1,13 @@
-using System.Linq;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
+using System.Collections.Concurrent;
 using System.IO.Ports;
+using System.Linq;
 using System.Management;
 using System.Text;
 using static MAVLink;
+using System.Net;
+using System.Net.Sockets;
 
 public enum ConnectionType { Serial, UDP, TCP }
 
@@ -19,6 +22,8 @@ public class MavlinkService : BackgroundService
     private DateTime _lastUiNotifyUtc = DateTime.MinValue;
 
     private SerialPort? _serialPort;
+    private UdpClient? _udpClient;
+    private readonly ConcurrentDictionary<byte, IPEndPoint> _droneEndpoints = new();
     private ConnectionType _connectionType = ConnectionType.Serial;
     private string _portName = "COM7";
     private int _baudRate = 115200;
@@ -59,7 +64,8 @@ public class MavlinkService : BackgroundService
                                                          // reject the single stale burst on drone connect
     private int _consecutiveHeartbeatCount = 0;
     private DateTime _lastHeartbeatForStability = DateTime.MinValue;
-
+    public ConcurrentDictionary<byte, DroneState> ActiveSwarm { get; } = new();
+    public byte PrimarySysId { get; set; } = 1;
     // Thread-safe Status Messages
     public List<string> StatusMessages { get; private set; } = new();
     public int StatusMessageCount { get { lock (StatusMessages) return StatusMessages.Count; } }
@@ -249,7 +255,7 @@ public class MavlinkService : BackgroundService
         _fsRecv = 0; _battRecv = 0;
         _battVoltMult = 10.1; _battAmpPerVlt = 17.0; _battAmpOffset = 0.0; _battNumCells = 3;
 
-        CloseSerialPort();
+        CloseConnections();
 
         _connDialogOpen = true;
         ShowConnDialog(true);
@@ -277,7 +283,7 @@ public class MavlinkService : BackgroundService
         }
 
         lock (_sync) { _shouldBeConnected = false; }
-        CloseSerialPort();
+        CloseConnections();
 
         WipeDataToBlankSlate();
 
@@ -322,29 +328,35 @@ public class MavlinkService : BackgroundService
             if (!shouldConnect)
             {
                 StopReadLoop();
-                CloseSerialPort();
+                CloseConnections();
                 await Task.Delay(250, stoppingToken);
                 continue;
             }
 
-            if (_serialPort == null || !_serialPort.IsOpen)
+            if (_connectionType == ConnectionType.Serial && _serialPort == null)
             {
                 StopReadLoop();
-
                 if (!TryOpenSerialPort(_portName, _baudRate))
                 {
-                    ReportConn("Waiting for device...");
+                    ReportConn("Waiting for Serial device...");
                     await Task.Delay(3000, stoppingToken);
                     continue;
                 }
-
-                ReportConn($"Port {_portName} opened. Listening for heartbeat...");
-
-                // Start dedicated non-blocking reader on its own task
+                ReportConn($"Port {_portName} opened. Listening...");
                 _readerCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 _ = Task.Run(() => ReadLoopAsync(_serialPort!, _readerCts.Token), stoppingToken);
             }
-
+            else if (_connectionType == ConnectionType.UDP && _udpClient == null)
+            {
+                StopReadLoop();
+                if (!TryOpenUdpPort(_portName))
+                {
+                    await Task.Delay(3000, stoppingToken);
+                    continue;
+                }
+                _readerCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                _ = Task.Run(() => UdpReadLoopAsync(_udpClient!, _readerCts.Token), stoppingToken);
+            }
             // Health check loop runs at 500ms — fast enough to detect link loss
             // without burning CPU. The reader task handles all actual data.
             await Task.Delay(500, stoppingToken);
@@ -431,7 +443,7 @@ public class MavlinkService : BackgroundService
 
         if (_shouldBeConnected)
         {
-            CloseSerialPort();
+            CloseConnections();
             WipeDataToBlankSlate();
             NotifyUi(force: true);
         }
@@ -528,7 +540,7 @@ public class MavlinkService : BackgroundService
     {
         try
         {
-            CloseSerialPort();
+            CloseConnections();
             _serialPort = new SerialPort(portName, speed, Parity.None, 8, StopBits.One)
             {
                 ReadTimeout = 500,
@@ -551,9 +563,79 @@ public class MavlinkService : BackgroundService
         {
             UpdateState(s => s.ConnectionStatus = $"Searching for {portName}...");
             ReportConn($"Failed to open port: {ex.Message}");
-            CloseSerialPort();
+            CloseConnections();
             NotifyUi(force: true);
             return false;
+        }
+    }
+
+    private bool TryOpenUdpPort(string portInput)
+    {
+        try
+        {
+            CloseConnections();
+
+            // If the user types nothing or an IP, default to the standard 14550 MAVLink port
+            int port = 14550;
+            if (int.TryParse(portInput, out int parsedPort)) port = parsedPort;
+
+            _udpClient = new UdpClient();
+            _udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+
+            // Listen on all network interfaces (Wi-Fi, Ethernet, etc.)
+            _udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+
+            UpdateState(s => s.ConnectionStatus = $"Listening on UDP {port}...");
+            ReportConn($"UDP Server started on port {port}. Waiting for drones...");
+            NotifyUi(force: true);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ReportConn($"Failed to start UDP: {ex.Message}");
+            CloseConnections();
+            NotifyUi(force: true);
+            return false;
+        }
+    }
+
+    private async Task UdpReadLoopAsync(UdpClient client, CancellationToken ct)
+    {
+        _logger.LogInformation("[MAVLink] UDP Swarm Reader started");
+        byte[] accum = new byte[512];
+        int accumLen = 0;
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var result = await client.ReceiveAsync(ct);
+                var chunk = result.Buffer;
+                var endpoint = result.RemoteEndPoint;
+
+                for (int i = 0; i < chunk.Length; i++)
+                {
+                    var pkt = ParseMavlinkByte(chunk[i], accum, ref accumLen);
+                    if (pkt != null)
+                    {
+                        // Map the drone's SysID to its Wi-Fi IP address instantly
+                        if (pkt.sysid != 0 && pkt.sysid != 255)
+                        {
+                            _droneEndpoints[pkt.sysid] = endpoint;
+                        }
+                        HandlePacket(pkt);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _logger.LogWarning(ex, "[MAVLink] UDP reader exited"); }
+
+        if (_shouldBeConnected)
+        {
+            CloseConnections();
+            WipeDataToBlankSlate();
+            NotifyUi(force: true);
         }
     }
 
@@ -609,6 +691,37 @@ public class MavlinkService : BackgroundService
         var now = DateTime.UtcNow;
         LastPacketTime = now;
 
+        // ── SWARM TELEMETRY INTERCEPTOR ─────────────────────────────────────────
+        // If the packet comes from a drone that isn't our primary target, 
+        // update its specific entry in the ActiveSwarm dictionary.
+        if (packet.sysid != target_sysid && packet.sysid != 0 && packet.sysid != 255)
+        {
+            var swarmNode = ActiveSwarm.GetOrAdd(packet.sysid, id => new DroneState { SystemId = id, HasVehicleId = true });
+
+            lock (swarmNode)
+            {
+                swarmNode.LastHeartbeat = DateTime.UtcNow;
+
+                if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.HEARTBEAT)
+                {
+                    var hb = (MAVLink.mavlink_heartbeat_t)packet.data;
+                    swarmNode.FlightMode = GetFlightModeString(hb.custom_mode);
+                    swarmNode.IsArmed = (((MAVLink.MAV_MODE_FLAG)hb.base_mode) & MAVLink.MAV_MODE_FLAG.SAFETY_ARMED) != 0;
+                }
+                else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.GLOBAL_POSITION_INT)
+                {
+                    var pos = (MAVLink.mavlink_global_position_int_t)packet.data;
+                    swarmNode.Altitude = pos.relative_alt / 1000.0f;
+                }
+                else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS)
+                {
+                    var sys = (MAVLink.mavlink_sys_status_t)packet.data;
+                    if (sys.battery_remaining <= 100) swarmNode.BatteryPercent = sys.battery_remaining;
+                }
+            }
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
         _rxPacketCounter++;
         if ((now - _rxCounterWindowStartUtc).TotalSeconds >= 1.0)
         {
@@ -632,6 +745,8 @@ public class MavlinkService : BackgroundService
                     s.SystemId = packet.sysid;
                     s.ComponentId = packet.compid;
                     s.HasVehicleId = true;
+                    target_sysid = packet.sysid;
+                    target_compid = packet.compid;
                     TryConfigureMessageIntervals();
                 }
 
@@ -1405,23 +1520,55 @@ public class MavlinkService : BackgroundService
 
     private bool TryGetTarget(out byte sysId, out byte compId)
     {
-        var s = _state;
-        if (s.HasVehicleId) { sysId = s.SystemId; compId = s.ComponentId; return true; }
-        sysId = 1; compId = 1; return false;
+        sysId = target_sysid;
+        compId = target_compid;
+        return true;
     }
 
-    private void SendBuffer(byte[] buffer)
+    private void SendBuffer(byte[] buffer, byte targetSysId = 0)
     {
-        var port = _serialPort;
-        if (port == null || !port.IsOpen) return;
-        try { port.Write(buffer, 0, buffer.Length); }
-        catch (Exception ex) { _logger.LogWarning(ex, "Error sending MAVLink packet"); }
+        if (_connectionType == ConnectionType.Serial && _serialPort?.IsOpen == true)
+        {
+            try { _serialPort.Write(buffer, 0, buffer.Length); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Error sending Serial packet"); }
+        }
+        else if (_connectionType == ConnectionType.UDP && _udpClient != null)
+        {
+            try
+            {
+                // If Target is 0 (Broadcast), blast the command to EVERY IP address we know about
+                if (targetSysId == 0)
+                {
+                    foreach (var endpoint in _droneEndpoints.Values.Distinct())
+                    {
+                        _udpClient.SendAsync(buffer, buffer.Length, endpoint);
+                    }
+                }
+                // Unicast: Send directly to the targeted drone's IP address
+                else if (_droneEndpoints.TryGetValue(targetSysId, out var specificEndpoint))
+                {
+                    _udpClient.SendAsync(buffer, buffer.Length, specificEndpoint);
+                }
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "Error sending UDP packet"); }
+        }
     }
 
     private void SendPacket(MAVLink.MAVLINK_MSG_ID msgid, object data)
     {
         var buffer = _parser.GenerateMAVLinkPacket20(msgid, data);
-        SendBuffer(buffer);
+
+        // Peek at the MAVLink packet to see who it's addressed to
+        byte routeTarget = target_sysid;
+
+        var type = data.GetType();
+        var targetField = type.GetField("target_system");
+        if (targetField != null)
+        {
+            routeTarget = (byte)targetField.GetValue(data);
+        }
+
+        SendBuffer(buffer, routeTarget);
     }
 
     private void TryConfigureMessageIntervals()
@@ -1899,16 +2046,76 @@ public class MavlinkService : BackgroundService
                 y = (int)(wp.Lng * 10000000),
                 z = (float)wp.Alt,
                 autocontinue = 1,
-                current = (byte)(req.seq == 0 ? 1 : 0),
+                // ArduPilot mission protocol:
+                //   seq=0 is the home position  → current=0
+                //   seq=1 is the first waypoint → current=1 (tells FC where to start)
+                //   seq>1 all other items        → current=0
+                current = (byte)(req.seq == 1 ? 1 : 0),
                 mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
             };
             SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_ITEM_INT, item);
         }
     }
 
-    private MAVLink.MAV_CMD TranslateCommand(string cmd) => cmd.ToUpper() switch { "TAKEOFF" => MAVLink.MAV_CMD.TAKEOFF, "LAND" => MAVLink.MAV_CMD.LAND, "RTL" => MAVLink.MAV_CMD.RETURN_TO_LAUNCH, _ => MAVLink.MAV_CMD.WAYPOINT };
+    private MAVLink.MAV_CMD TranslateCommand(string cmd) => cmd.ToUpper() switch
+    {
+        "TAKEOFF" => MAVLink.MAV_CMD.TAKEOFF,
+        "LAND" => MAVLink.MAV_CMD.LAND,
+        "RTL" => MAVLink.MAV_CMD.RETURN_TO_LAUNCH,
+        "LOITER" => MAVLink.MAV_CMD.LOITER_UNLIM,
+        _ => MAVLink.MAV_CMD.WAYPOINT
+    };
     public void SendReposition(double lat, double lon, float alt) => SendCommand(MAVLink.MAV_CMD.DO_REPOSITION, -1, 1, 0, 0, (float)lat, (float)lon, alt);
     public async Task DownloadFile(IJSRuntime js, string fileName, string content) => await js.InvokeVoidAsync("downloadFile", fileName, content);
+
+
+    // ── SWARM BROADCAST METHODS ──────────────────────────────────────────────
+    public void BroadcastCommand(MAVLink.MAV_CMD command, float p1 = 0, float p2 = 0, float p3 = 0, float p4 = 0, float p5 = 0, float p6 = 0, float p7 = 0)
+    {
+        var cmd = new MAVLink.mavlink_command_long_t
+        {
+            command = (ushort)command,
+            param1 = p1,
+            param2 = p2,
+            param3 = p3,
+            param4 = p4,
+            param5 = p5,
+            param6 = p6,
+            param7 = p7,
+            target_system = 0, // 0 = BROADCAST TO ALL DRONES
+            target_component = 0,
+            confirmation = 0
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
+        Console.WriteLine($"[SWARM] Broadcast CMD Sent: {command}");
+    }
+
+    public void BroadcastArmRequest(bool arm)
+    {
+        var req = new MAVLink.mavlink_command_long_t
+        {
+            target_system = 0, // BROADCAST
+            target_component = 0,
+            command = (ushort)MAVLink.MAV_CMD.COMPONENT_ARM_DISARM,
+            param1 = arm ? 1 : 0,
+            param2 = 0
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, req);
+    }
+
+    public void BroadcastFlightMode(string modeName)
+    {
+        uint modeId = modeName.ToUpper() switch { "STABILIZE" => 0, "ALT_HOLD" => 2, "AUTO" => 3, "GUIDED" => 4, "LOITER" => 5, "RTL" => 6, "LAND" => 9, _ => 0 };
+        var req = new MAVLink.mavlink_command_long_t
+        {
+            target_system = 0, // BROADCAST
+            target_component = 0,
+            command = (ushort)MAVLink.MAV_CMD.DO_SET_MODE,
+            param1 = 1,
+            param2 = modeId
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, req);
+    }
 
     // ---------------- CLEANUP ----------------
 
@@ -2057,16 +2264,33 @@ public class MavlinkService : BackgroundService
         _ => "UNKNOWN"
     };
 
-    private void CloseSerialPort()
+    private void CloseConnections()
     {
-        try { if (_serialPort?.IsOpen == true) { _serialPort.DiscardInBuffer(); _serialPort.DiscardOutBuffer(); _serialPort.Close(); } _serialPort?.Dispose(); }
-        catch { /* ignore close errors */ }
+        try
+        {
+            if (_serialPort?.IsOpen == true)
+            {
+                _serialPort.DiscardInBuffer();
+                _serialPort.DiscardOutBuffer();
+                _serialPort.Close();
+            }
+            _serialPort?.Dispose();
+        }
+        catch { }
         finally { _serialPort = null; }
+
+        try
+        {
+            _udpClient?.Close();
+            _udpClient?.Dispose();
+        }
+        catch { }
+        finally { _udpClient = null; _droneEndpoints.Clear(); }
     }
 
     public override void Dispose()
     {
-        CloseSerialPort();
+        CloseConnections();
         base.Dispose();
     }
 }
