@@ -1,4 +1,4 @@
-@page "/flightplan"
+﻿@page "/flightplan"
 @using BlazorApp3
 @using System.Text.Json
 @inject MavlinkService Drone
@@ -15,7 +15,7 @@
 
     <div class="flightplan-content">
         <div class="header-strip">
-            <span class="icon">??</span> FLIGHT PLAN EDITOR
+            <span class="icon">✈️</span> FLIGHT PLAN EDITOR
         </div>
 
         <div class="flightplan-body">
@@ -86,18 +86,28 @@
                     }
                     else
                     {
-                        @foreach (var wp in MissionItems.Where(x => !x.IsHome))
+                        @foreach (var mi in MissionItems.Where(x => !x.IsHome))
                         {
-                            <div class="wp-card @(activeWpIndex == wp.Index ? "active" : "")" @onclick="() => activeWpIndex = wp.Index">
-                                <div class="wp-idx">@(wp.Index == 0 ? "H" : wp.Index.ToString())</div>
+                            <div class="wp-card @(activeWpIndex == mi.Index ? "active" : "")" @onclick="() => activeWpIndex = mi.Index">
+                                <div class="wp-idx">@(mi.Index == 0 ? "H" : mi.Index.ToString())</div>
                                 <div class="wp-data">
-                                    <span class="wp-coord">@wp.Lat.ToString("F5"), @wp.Lng.ToString("F5")</span>
+                                    <span class="wp-coord">@mi.Lat.ToString("F5"), @mi.Lng.ToString("F5")</span>
                                     <div class="wp-edit-row">
                                         <label>ALT (m):</label>
-                                        <input type="number" @bind="wp.Alt" class="mini-input" @bind:after="TriggerMapRedraw" />
+                                        <input type="number" @bind="mi.Alt" class="mini-input"/>
                                     </div>
                                 </div>
-                                <button class="wp-del" @onclick="() => RemoveItem(wp)" title="Remove Waypoint">
+                                <select class="cmd-select" value="@mi.Command"
+                                        @onchange="@(e => { mi.Command = e.Value?.ToString() ?? "WAYPOINT"; TriggerMapRedraw(); })"
+                                        @onclick="() => {}"
+                                        @onclick:stopPropagation="true">
+                                    <option value="WAYPOINT">WAYPOINT</option>
+                                    <option value="TAKEOFF">TAKEOFF</option>
+                                    <option value="LOITER">LOITER</option>
+                                    <option value="LAND">LAND</option>
+                                    <option value="RTL">RTL</option>
+                                </select>
+                                <button class="wp-del" @onclick:stopPropagation="true" @onclick="() => RemoveItem(mi)">
                                     <i class="bi bi-x-lg"></i>
                                 </button>
                             </div>
@@ -194,7 +204,7 @@
 
     /* MAP VIEWPORT */
     .map-viewport {
-        height: 80px;
+        height: 50px;
         width: 100%;
         position: relative;
         border-radius: 6px;
@@ -401,15 +411,16 @@
         font-weight: 600;
     }
 
-    /* WAYPOINT CARDS */
+    /* WAYPOINT CARDS (Enlarged) */
     .wp-card {
         background: rgba(18, 20, 28, 0.8);
         border: 1px solid #333;
-        border-radius: 6px;
-        padding: 8px 10px;
+        border-radius: 8px; /* Slightly rounder corners */
+        padding: 16px 20px; /* Increased padding for taller cards */
+        font-size: 1.05rem; /* Increased font size */
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 16px; /* Increased gap between elements */
         cursor: pointer;
         transition: all 0.2s ease;
         flex-shrink: 0;
@@ -426,15 +437,15 @@
         }
 
     .wp-idx {
-        width: 24px;
-        height: 24px;
+        width: 32px; /* Increased from 24px */
+        height: 32px; /* Increased from 24px */
         background: #0b0c10;
         color: #888;
         border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 0.7rem;
+        font-size: 0.9rem; /* Increased from 0.7rem */
         font-weight: 800;
         border: 1px solid #333;
         transition: 0.2s;
@@ -453,7 +464,7 @@
     }
 
     .wp-coord {
-        font-size: 0.65rem;
+        font-size: 0.75rem; /* Increased from 0.65rem */
         font-family: 'Consolas', monospace;
         color: #ccc;
         font-weight: 600;
@@ -463,24 +474,24 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        margin-top: 4px;
+        margin-top: 6px; /* Slightly more breathing room */
     }
 
     .wp-edit-row label {
-            font-size: 0.55rem;
+            font-size: 0.65rem; /* Increased from 0.55rem */
             color: #888;
             font-weight: 800;
             margin: 0;
         }
 
     .mini-input {
-        width: 60px;
+        width: 75px; /* Increased from 60px */
         background: #08090b;
         border: 1px solid #333;
         color: #00ff66;
-        padding: 2px 4px;
+        padding: 4px 6px; /* Increased vertical padding */
         border-radius: 4px;
-        font-size: 0.7rem;
+        font-size: 0.85rem; /* Increased from 0.7rem */
         font-weight: bold;
         outline: none;
         transition: 0.2s;
@@ -495,9 +506,9 @@
         background: transparent;
         border: none;
         color: #666;
-        font-size: 1rem;
+        font-size: 1.3rem; /* Larger icon size */
         cursor: pointer;
-        padding: 4px;
+        padding: 8px; /* Larger click target area */
         transition: 0.2s;
         border-radius: 6px;
     }
@@ -562,6 +573,44 @@
                     filter: brightness(1.1);
                     transform: translateY(-1px);
                 }
+
+    /* NEW: Command Dropdown Styling */
+    .cmd-select {
+        background: #08090b;
+        border: 1px solid #333;
+        color: var(--gcs-cyan);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 800;
+        outline: none;
+        cursor: pointer;
+        margin-left: auto; /* Pushes the dropdown and delete button to the far right */
+        margin-right: 8px;
+        transition: border-color 0.2s;
+    }
+
+        .cmd-select:focus {
+            border-color: var(--gcs-cyan);
+        }
+
+        .cmd-select option {
+            background: #08090b;
+            color: white;
+        }
+
+    /* UPDATE: Adjust the delete button margin */
+    .wp-del {
+        margin-left: 0; /* Changed from auto, since cmd-select now handles the push */
+        background: transparent;
+        border: none;
+        color: #666;
+        font-size: 1.3rem;
+        cursor: pointer;
+        padding: 8px;
+        transition: 0.2s;
+        border-radius: 6px;
+    }
 </style>
 
 @code {
