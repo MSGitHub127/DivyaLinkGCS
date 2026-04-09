@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.IO.Ports;
 using System.Linq;
 using System.Management;
+using System.Threading;
 using System.Text;
 using static MAVLink;
 using System.Net;
@@ -16,13 +17,17 @@ public class MavlinkService : BackgroundService
     private readonly ILogger<MavlinkService> _logger;
     private readonly object _sync = new();
     private readonly MAVLink.MavlinkParse _parser = new();
+    private System.Threading.Timer _uiTickTimer;
 
     // UI Notification Throttle (10Hz is standard for GCS stability)
-    private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(100);
+    private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(55);
     private DateTime _lastUiNotifyUtc = DateTime.MinValue;
+    private DateTime _lastRcEventUtc = DateTime.MinValue;
 
     private SerialPort? _serialPort;
     private UdpClient? _udpClient;
+    private TcpClient? _tcpClient;
+    private NetworkStream? _tcpStream;
     private readonly ConcurrentDictionary<byte, IPEndPoint> _droneEndpoints = new();
     private ConnectionType _connectionType = ConnectionType.Serial;
     private string _portName = "COM7";
@@ -33,6 +38,7 @@ public class MavlinkService : BackgroundService
     public event Action<bool>? OnConnectionDialog;
     public event Action<string>? OnMessageReceived;
     public event Action? OnTelemetryUpdated;
+    public event Action? OnAttitudeUpdated;
     public event Action<string[], string>? OnFlightModeParams;  // modes[6], channel
     public event Action<FailsafeParams>? OnFailsafeParams;
     public event Action<BatteryParams>? OnBatteryParams;
@@ -110,7 +116,7 @@ public class MavlinkService : BackgroundService
     // Wireless telemetry (SiK/ESP) has higher latency and heartbeat gaps.
     // Treat any baud rate <= 57600 as wireless for timeout tolerance purposes.
     public bool IsWireless => _baudRate <= 57600;
-
+    private readonly SemaphoreSlim _tcpWriteLock = new(1, 1);
     // Heartbeat timeout: wired=3s, wireless=8s
     // SiK radios frequency-hop and can gap 2-3s without actually being disconnected.
     private double HeartbeatTimeoutSeconds => IsWireless ? 8.0 : 3.0;
@@ -254,8 +260,9 @@ public class MavlinkService : BackgroundService
         Array.Clear(_fltModeValues, 0, 6);
         _fsRecv = 0; _battRecv = 0;
         _battVoltMult = 10.1; _battAmpPerVlt = 17.0; _battAmpOffset = 0.0; _battNumCells = 3;
-
-        CloseConnections();
+        _uiTickTimer = new System.Threading.Timer(_ => OnTelemetryUpdated?.Invoke(), null, 0, 33);
+    
+    CloseConnections();
 
         _connDialogOpen = true;
         ShowConnDialog(true);
@@ -357,6 +364,17 @@ public class MavlinkService : BackgroundService
                 _readerCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 _ = Task.Run(() => UdpReadLoopAsync(_udpClient!, _readerCts.Token), stoppingToken);
             }
+            else if (_connectionType == ConnectionType.TCP && _tcpClient == null)
+            {
+                StopReadLoop();
+                if (!TryOpenTcpClient(_portName))
+                {
+                    await Task.Delay(3000, stoppingToken);
+                    continue;
+                }
+                _readerCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                _ = Task.Run(() => TcpReadLoopAsync(_tcpClient!, _tcpStream!, _readerCts.Token), stoppingToken);
+            }
             // Health check loop runs at 500ms — fast enough to detect link loss
             // without burning CPU. The reader task handles all actual data.
             await Task.Delay(500, stoppingToken);
@@ -393,8 +411,6 @@ public class MavlinkService : BackgroundService
     {
         const int CHUNK = 512;
         var chunk = new byte[CHUNK];
-        // Flat accumulation buffer — holds bytes being assembled into a packet
-        // Large enough for the largest possible MAVLink2 packet (280 bytes) + margin
         var accum = new byte[512];
         int accumLen = 0;
 
@@ -406,27 +422,26 @@ public class MavlinkService : BackgroundService
 
             while (!ct.IsCancellationRequested && port.IsOpen)
             {
-                // ReadAsync yields the thread — never blocks.
-                // CancelAfter(150ms) so we loop back to check ct even if no data arrives.
                 int read = 0;
                 try
                 {
-                    using var tcs = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    tcs.CancelAfter(150);
-                    read = await stream.ReadAsync(chunk, 0, CHUNK, tcs.Token).ConfigureAwait(false);
+                    // CRITICAL FIX: Removed the 150ms CancelAfter(). 
+                    // This stops the infinite OperationCanceledExceptions that were choking the server.
+                    read = await stream.ReadAsync(chunk, 0, CHUNK, ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) { continue; }
+                catch (OperationCanceledException) { break; } // Clean exit
                 catch (Exception ex) when (ex is System.IO.IOException || ex is InvalidOperationException || ex is UnauthorizedAccessException)
                 {
                     _logger.LogWarning("[MAVLink] Serial read error: {msg}", ex.Message);
                     break;
                 }
 
-                if (read == 0) continue;
+                if (read == 0)
+                {
+                    await Task.Delay(10, ct);
+                    continue;
+                }
 
-                // Feed received bytes into our state-machine parser.
-                // ParseMavlinkBytes processes one byte at a time, holding partial
-                // packet state in 'accum'. Returns each complete packet immediately.
                 for (int i = 0; i < read; i++)
                 {
                     var pkt = ParseMavlinkByte(chunk[i], accum, ref accumLen);
@@ -639,6 +654,125 @@ public class MavlinkService : BackgroundService
         }
     }
 
+    private bool TryOpenTcpClient(string target)
+    {
+        try
+        {
+            CloseConnections();
+
+            // 1. Strict Parsing: No hardcoded SITL fallbacks.
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                throw new ArgumentException("TCP connection target cannot be empty.");
+            }
+
+            var parts = target.Split(':');
+            if (parts.Length != 2 || !int.TryParse(parts[1], out int port))
+            {
+                throw new ArgumentException($"Invalid TCP target format: '{target}'. Expected 'IP:Port'.");
+            }
+
+            string ip = parts[0];
+
+            _tcpClient = new TcpClient();
+
+            // 2. High-Performance Socket Tuning
+            // Disable Nagle's Algorithm for zero-latency streaming
+            _tcpClient.NoDelay = true;
+
+            // Expand receive buffer for bulk C12 data payloads
+            _tcpClient.ReceiveBufferSize = 65536;
+
+            // 3. Hardware-Level Keep-Alives (Fails fast if C12 Wi-Fi bridge drops)
+            _tcpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+
+            if (OperatingSystem.IsWindows())
+            {
+                int size = sizeof(uint);
+                byte[] keepAlive = new byte[size * 3];
+                Buffer.BlockCopy(BitConverter.GetBytes(1u), 0, keepAlive, 0, size); // Enable
+                Buffer.BlockCopy(BitConverter.GetBytes(2000u), 0, keepAlive, size, size); // Time (2s)
+                Buffer.BlockCopy(BitConverter.GetBytes(1000u), 0, keepAlive, size * 2, size); // Interval (1s)
+                _tcpClient.Client.IOControl(IOControlCode.KeepAliveValues, keepAlive, null);
+            }
+
+            // 4. Bounded Connection Attempt
+            var result = _tcpClient.BeginConnect(ip, port, null, null);
+            var success = result.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(2));
+
+            if (!success || !_tcpClient.Connected)
+            {
+                throw new TimeoutException($"Connection to {ip}:{port} timed out.");
+            }
+
+            _tcpClient.EndConnect(result);
+            _tcpStream = _tcpClient.GetStream();
+
+            UpdateState(s => s.ConnectionStatus = $"Connected to TCP {ip}:{port}");
+            ReportConn($"TCP Connected to {ip}:{port}. Awaiting C12 data...");
+            NotifyUi(force: true);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ReportConn($"TCP Connection Failed: {ex.Message}");
+            CloseConnections();
+            NotifyUi(force: true);
+            return false;
+        }
+    }
+
+    private async Task TcpReadLoopAsync(TcpClient client, NetworkStream stream, CancellationToken ct)
+    {
+        _logger.LogInformation("[MAVLink] TCP Reader started");
+        const int CHUNK = 512;
+        var chunk = new byte[CHUNK];
+        var accum = new byte[512];
+        int accumLen = 0;
+
+        try
+        {
+            while (!ct.IsCancellationRequested && client.Connected)
+            {
+                int read = 0;
+                try
+                {
+                    read = await stream.ReadAsync(chunk, 0, CHUNK, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex) when (ex is System.IO.IOException || ex is ObjectDisposedException)
+                {
+                    _logger.LogWarning("[MAVLink] TCP read error: {msg}", ex.Message);
+                    break;
+                }
+
+                if (read == 0)
+                {
+                    await Task.Delay(10, ct);
+                    continue;
+                }
+
+                for (int i = 0; i < read; i++)
+                {
+                    var pkt = ParseMavlinkByte(chunk[i], accum, ref accumLen);
+                    if (pkt != null) HandlePacket(pkt);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[MAVLink] TCP Reader exited unexpectedly");
+        }
+
+        if (_shouldBeConnected)
+        {
+            CloseConnections();
+            WipeDataToBlankSlate();
+            NotifyUi(force: true);
+        }
+    }
+
     private void WipeDataToBlankSlate()
     {
         // Reset RC + sensor tracking state
@@ -654,6 +788,7 @@ public class MavlinkService : BackgroundService
         _sentCritBattToast = false;
         _lastFlightMode = "";
         _sensorAlerted.Clear();
+        ActiveSwarm.Clear(); // Clears ghost drones on disconnect
 
         // Immediately clear RC connected flag in DroneState so the HUD
         // icon turns grey the moment the drone disconnects — not after the
@@ -857,6 +992,7 @@ public class MavlinkService : BackgroundService
                     s.Yaw = s.HeadingDeg;
                 }
             });
+            OnAttitudeUpdated?.Invoke();
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.GLOBAL_POSITION_INT)
         {
@@ -1281,7 +1417,13 @@ public class MavlinkService : BackgroundService
             }
 
             // Fire AFTER state is updated so subscribers see correct IsRcConnected
-            OnRcChannelsUpdated?.Invoke(latestChannels);
+            // THROTTLE TO 10Hz: Prevents 50Hz RC packets from crashing the Blazor Server WebSockets!
+            var nowUtc = DateTime.UtcNow;
+            if ((nowUtc - _lastRcEventUtc).TotalMilliseconds >= 100)
+            {
+                _lastRcEventUtc = nowUtc;
+                OnRcChannelsUpdated?.Invoke(latestChannels);
+            }
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST || packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT)
         {
@@ -1527,31 +1669,57 @@ public class MavlinkService : BackgroundService
 
     private void SendBuffer(byte[] buffer, byte targetSysId = 0)
     {
-        if (_connectionType == ConnectionType.Serial && _serialPort?.IsOpen == true)
+        // Offload sending to a background thread so the Blazor UI thread NEVER freezes
+        _ = Task.Run(async () =>
         {
-            try { _serialPort.Write(buffer, 0, buffer.Length); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Error sending Serial packet"); }
-        }
-        else if (_connectionType == ConnectionType.UDP && _udpClient != null)
-        {
-            try
+            if (_connectionType == ConnectionType.Serial && _serialPort?.IsOpen == true)
             {
-                // If Target is 0 (Broadcast), blast the command to EVERY IP address we know about
-                if (targetSysId == 0)
+                try
                 {
-                    foreach (var endpoint in _droneEndpoints.Values.Distinct())
+                    lock (_sendLock) { _serialPort.BaseStream.Write(buffer, 0, buffer.Length); }
+                }
+                catch (Exception ex) { _logger.LogWarning(ex, "Error sending Serial packet"); }
+            }
+            else if (_connectionType == ConnectionType.UDP && _udpClient != null)
+            {
+                try
+                {
+                    // If Target is 0 (Broadcast), blast the command to EVERY IP address we know about
+                    if (targetSysId == 0)
                     {
-                        _udpClient.SendAsync(buffer, buffer.Length, endpoint);
+                        foreach (var endpoint in _droneEndpoints.Values.Distinct())
+                        {
+                            _udpClient.Send(buffer, buffer.Length, endpoint);
+                        }
+                    }
+                    // Unicast: Send directly to the targeted drone's IP address
+                    else if (_droneEndpoints.TryGetValue(targetSysId, out var specificEndpoint))
+                    {
+                        _udpClient.Send(buffer, buffer.Length, specificEndpoint);
                     }
                 }
-                // Unicast: Send directly to the targeted drone's IP address
-                else if (_droneEndpoints.TryGetValue(targetSysId, out var specificEndpoint))
+                catch (Exception ex) { _logger.LogWarning(ex, "Error sending UDP packet"); }
+            }
+            else if (_connectionType == ConnectionType.TCP && _tcpStream != null)
+            {
+                // 1. Wait asynchronously for the lock (does not freeze the thread)
+                await _tcpWriteLock.WaitAsync();
+                try
                 {
-                    _udpClient.SendAsync(buffer, buffer.Length, specificEndpoint);
+                    // 2. Write asynchronously to the OS network buffer
+                    await _tcpStream.WriteAsync(buffer, 0, buffer.Length);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error sending TCP packet");
+                }
+                finally
+                {
+                    // 3. Always release the lock
+                    _tcpWriteLock.Release();
                 }
             }
-            catch (Exception ex) { _logger.LogWarning(ex, "Error sending UDP packet"); }
-        }
+        });
     }
 
     private void SendPacket(MAVLink.MAVLINK_MSG_ID msgid, object data)
@@ -1672,7 +1840,6 @@ public class MavlinkService : BackgroundService
 
     public void SendCommand(MAVLink.MAV_CMD command, float p1, float p2, float p3, float p4, float p5, float p6, float p7)
     {
-        if (_serialPort == null || !_serialPort.IsOpen) return;
         if (!TryGetTarget(out byte sysId, out byte compId)) { sysId = 1; compId = 1; }
 
         var cmd = new MAVLink.mavlink_command_long_t
@@ -1690,11 +1857,10 @@ public class MavlinkService : BackgroundService
             confirmation = 0
         };
 
-        var packet = _parser.GenerateMAVLinkPacket20(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
-        lock (_sendLock) { _serialPort.Write(packet, 0, packet.Length); }
+        // Route this through SendPacket instead of locking the UI thread with _serialPort.Write
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
         Console.WriteLine($"CMD Sent: {command}");
     }
-
     // For accel calibration: ArduPilot expects a COMMAND_ACK back from the GCS
     // (not a COMMAND_LONG). This is the original MAVProxy/QGC protocol.
     private void SendAck(ushort command, byte result)
@@ -2286,7 +2452,19 @@ public class MavlinkService : BackgroundService
         }
         catch { }
         finally { _udpClient = null; _droneEndpoints.Clear(); }
+
+        try
+        {
+            _tcpStream?.Close();
+            _tcpStream?.Dispose();
+            _tcpClient?.Close();
+            _tcpClient?.Dispose();
+        }
+        catch { }
+        finally { _tcpStream = null; _tcpClient = null; }
     }
+
+
 
     public override void Dispose()
     {

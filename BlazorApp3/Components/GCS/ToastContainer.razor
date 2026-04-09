@@ -4,63 +4,26 @@
 
 @if (_toasts.Count > 0)
 {
-    <div class="toast-stack">
+    <div class="fixed bottom-[70px] right-[16px] left-auto z-[9999] flex flex-col gap-[8px] pointer-events-none max-w-[360px]">
         @foreach (var t in _toasts.Values.OrderBy(x => x.CreatedAt))
         {
-            <div class="toast-item toast-@t.Level.ToString().ToLower() @(t.Exiting ? "toast-exit" : "toast-enter")">
-                <span class="toast-icon">@t.Icon</span>
-                <span class="toast-text">@t.Text</span>
-                <button class="toast-close" @onclick="() => Remove(t.Id)">×</button>
+            <div class="flex items-start gap-[9px] p-[10px_13px] rounded-[7px] border-l-[3px] backdrop-blur-[8px] text-[0.68rem] font-semibold leading-[1.4] pointer-events-auto shadow-[0_4px_18px_rgba(0,0,0,0.5)] min-w-[260px] relative overflow-hidden @GetColorClasses(t.Level) @(t.Exiting ? "toast-exit" : "toast-enter")">
+                <span class="text-[0.95rem] shrink-0 mt-[1px]">@t.Icon</span>
+                <span class="flex-1">@t.Text</span>
+                <button class="bg-transparent border-none text-inherit opacity-45 text-[1rem] leading-none cursor-pointer pl-[4px] shrink-0 transition-opacity duration-150 hover:opacity-100" @onclick="() => Remove(t.Id)">×</button>
             </div>
         }
     </div>
 }
 
 <style>
-    .toast-stack {
-        position: fixed;
-        bottom: 70px; /* above footer nav */
-        right: 16px;
-        left: auto;
-        z-index: 9999;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        pointer-events: none;
-        max-width: 360px;
-    }
-
-    .toast-item {
-        display: flex;
-        align-items: flex-start;
-        gap: 9px;
-        padding: 10px 13px;
-        border-radius: 7px;
-        border-left: 3px solid transparent;
-        backdrop-filter: blur(8px);
-        font-size: 0.68rem;
-        font-weight: 600;
-        line-height: 1.4;
-        pointer-events: all;
-        box-shadow: 0 4px 18px rgba(0,0,0,0.5);
-        animation-duration: 0.25s;
-        animation-fill-mode: both;
-        animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-        min-width: 260px;
-        position: relative;
-        overflow: hidden;
-    }
-
     .toast-enter {
-        animation-name: toastIn;
+        animation: toastIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
     }
 
     .toast-exit {
-        animation-name: toastOut;
-        animation-timing-function: ease-in;
-        animation-duration: 0.18s;
+        animation: toastOut 0.18s ease-in both;
     }
-
     @@keyframes toastIn {
         from {
             opacity: 0;
@@ -72,7 +35,6 @@
             transform: translateX(0) scale(1);
         }
     }
-
     @@keyframes toastOut {
         from {
             opacity: 1;
@@ -88,57 +50,6 @@
             margin-bottom: -8px;
         }
     }
-
-    .toast-info {
-        background: rgba(18,22,30,0.95);
-        border-color: #58a6ff;
-        color: #c9d1d9;
-    }
-
-    .toast-success {
-        background: rgba(14,24,16,0.95);
-        border-color: #3fb950;
-        color: #aff7bc;
-    }
-
-    .toast-warning {
-        background: rgba(26,22,10,0.95);
-        border-color: #d29922;
-        color: #f0c060;
-    }
-
-    .toast-error {
-        background: rgba(26,10,10,0.95);
-        border-color: #f85149;
-        color: #ffa8a4;
-    }
-
-    .toast-icon {
-        font-size: 0.95rem;
-        flex-shrink: 0;
-        margin-top: 1px;
-    }
-
-    .toast-text {
-        flex: 1;
-    }
-
-    .toast-close {
-        background: none;
-        border: none;
-        color: inherit;
-        opacity: 0.45;
-        font-size: 1rem;
-        line-height: 1;
-        cursor: pointer;
-        padding: 0 0 0 4px;
-        flex-shrink: 0;
-        transition: opacity 0.15s;
-    }
-
-    .toast-close:hover {
-            opacity: 1;
-        }
 </style>
 
 @code {
@@ -160,6 +71,14 @@
     {
         Drone.OnToast += HandleToast;
     }
+
+    private string GetColorClasses(MavlinkService.ToastLevel level) => level switch
+    {
+        MavlinkService.ToastLevel.Success => "bg-[rgba(14,24,16,0.95)] border-l-[#3fb950] text-[#aff7bc]",
+        MavlinkService.ToastLevel.Warning => "bg-[rgba(26,22,10,0.95)] border-l-[#d29922] text-[#f0c060]",
+        MavlinkService.ToastLevel.Error => "bg-[rgba(26,10,10,0.95)] border-l-[#f85149] text-[#ffa8a4]",
+        _ => "bg-[rgba(18,22,30,0.95)] border-l-[#58a6ff] text-[#c9d1d9]"
+    };
 
     private void HandleToast(MavlinkService.ToastMessage msg)
     {
