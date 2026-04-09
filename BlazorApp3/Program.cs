@@ -24,17 +24,21 @@ builder.Services.AddSingleton<MavlinkService>();
 // 4. Start the Singleton as a Background Service [cite: 137]
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MavlinkService>());
 
+builder.Services.AddHostedService<MediaServerService>();
+
 // 5. Increase Circuit Options (Optional: helps with high-frequency telemetry)
 builder.Services.Configure<CircuitOptions>(options => {
     options.DetailedErrors = true;
+    options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(10);
 });
 
 // In Program.cs
 builder.Services.AddServerSideBlazor().AddHubOptions(options => {
-    options.MaximumReceiveMessageSize = 1024 * 1024;
-    options.HandshakeTimeout = TimeSpan.FromSeconds(30);
-    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    options.MaximumReceiveMessageSize = 1024 * 128;
+    options.HandshakeTimeout = TimeSpan.FromSeconds(60);
+    options.KeepAliveInterval = TimeSpan.FromSeconds(10);
 });
+
 
 var app = builder.Build();
 

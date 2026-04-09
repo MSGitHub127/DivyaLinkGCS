@@ -2,23 +2,24 @@
 @inject MavlinkService Drone
 @implements IDisposable
 
-<div class="quick-view-container">
+<div class="flex flex-col h-full gap-[16px] p-[20px] bg-transparent w-full max-w-[500px] mx-auto">
 
-    <div class="hud-wrapper">
+    <div class="h-[300px] w-full rounded-[8px] overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-[#333] shrink-0">
         <Hud />
     </div>
 
-    <div class="telemetry-grid">
+    <div class="grid grid-cols-3 gap-[8px] w-full">
 
-        <div class="tele-card mode-card">
-            <div class="label">FLIGHT MODE</div>
-            <div class="mode-content">
-                <div class="mode-text" style="color: @GetModeColor(Drone.State.FlightMode);">
+        @* FLIGHT MODE CARD (Updated for strict boundary limits) *@
+        <div class="bg-[rgba(18,20,28,0.8)] border border-[rgba(255,255,255,0.15)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px] overflow-hidden">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase text-center w-full truncate">FLIGHT MODE</div>
+            <div class="flex flex-col items-center w-full min-w-0">
+                <div class="text-[1rem] font-extrabold uppercase mb-1 drop-shadow-[0_0_10px_rgba(0,0,0,0.5)] w-full text-center truncate" style="color: @GetModeColor(Drone.State.FlightMode);">
                     @(Drone.State.FlightMode == "Unknown" ? "--" : Drone.State.FlightMode)
                 </div>
-                <div class="mode-action-row">
-                    <select class="slim-select" @bind="targetFlightMode">
-                        <option value="" disabled>CHANGE ▾</option>
+                <div class="flex items-stretch justify-center gap-[4px] w-full mt-[4px] h-[26px]">
+                    <select class="min-w-0 flex-1 bg-[rgba(0,0,0,0.5)] text-[#aaa] border border-[#444] rounded-[4px] text-[0.65rem] px-1 cursor-pointer outline-none h-full box-border hover:border-[#00f2ff] hover:text-white transition-colors [&>option]:bg-[#0b0c10]" @bind="targetFlightMode">
+                        <option value="" disabled>MODE</option>
                         <option value="STABILIZE">STABILIZE</option>
                         <option value="LOITER">LOITER</option>
                         <option value="ALT_HOLD">ALT HOLD</option>
@@ -27,384 +28,130 @@
                         <option value="AUTO">AUTO</option>
                         <option value="GUIDED">GUIDED</option>
                     </select>
-                    <button class="slim-btn" @onclick="ChangeFlightMode">SET</button>
+                    <button class="shrink-0 flex items-center justify-center px-2 text-[0.65rem] rounded-[4px] border-none bg-[#2b58ff] text-white font-bold cursor-pointer h-full box-border hover:brightness-120 transition-all" @onclick="ChangeFlightMode">SET</button>
                 </div>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">ALTITUDE</div>
-            <div class="value-group">
-                <span class="value">@Drone.State.Altitude.ToString("0.0")</span>
-                <span class="unit">m</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">ALTITUDE</div>
+            <div class="flex items-baseline gap-[2px] text-[#e0e0e0]">
+                <span class="text-[1.2rem] font-semibold font-mono">@Drone.State.Altitude.ToString("0.0")</span>
+                <span class="text-[0.7rem] text-[#888] font-normal">m</span>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">HEADING</div>
-            <div class="value-group">
-                <span class="value">@Drone.State.Yaw.ToString("0")</span>
-                <span class="unit">deg</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">HEADING</div>
+            <div class="flex items-baseline gap-[2px] text-[#e0e0e0]">
+                <span class="text-[1.2rem] font-semibold font-mono">@Drone.State.Yaw.ToString("0")</span>
+                <span class="text-[0.7rem] text-[#888] font-normal">deg</span>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">BATTERY</div>
-            <div class="value-group @(Drone.State.BatteryPercent < 20 ? "text-danger" : "text-success")">
-                <span class="value">@Drone.State.BatteryPercent</span>
-                <span class="unit">%</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">BATTERY</div>
+            <div class="flex items-baseline gap-[2px] @(Drone.State.BatteryPercent < 20 ? "text-[#ff3a3a]" : "text-[#00ff00]")">
+                <span class="text-[1.2rem] font-semibold font-mono">@Drone.State.BatteryPercent</span>
+                <span class="text-[0.7rem] text-[#888] font-normal">%</span>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">SATELLITES</div>
-            <div class="value-group">
-                @* Only show 0 if it stays 0; otherwise show the last valid count *@
-                <span class="value">@(Drone.State.SatCount > 0 ? Drone.State.SatCount : "--")</span>
-                <span class="unit">sats</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">SATELLITES</div>
+            <div class="flex items-baseline gap-[2px] text-[#e0e0e0]">
+                <span class="text-[1.2rem] font-semibold font-mono">@(Drone.State.SatCount > 0 ? Drone.State.SatCount : "--")</span>
+                <span class="text-[0.7rem] text-[#888] font-normal">sats</span>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">SPEED</div>
-            <div class="value-group">
-                <span class="value">@Drone.State.GroundSpeed.ToString("0.0")</span>
-                <span class="unit">m/s</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">SPEED</div>
+            <div class="flex items-baseline gap-[2px] text-[#e0e0e0]">
+                <span class="text-[1.2rem] font-semibold font-mono">@Drone.State.GroundSpeed.ToString("0.0")</span>
+                <span class="text-[0.7rem] text-[#888] font-normal">m/s</span>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">VOLTAGE</div>
-            <div class="value-group">
-                <span class="value">@Drone.State.Voltage.ToString("0.0")</span>
-                <span class="unit">V</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">VOLTAGE</div>
+            <div class="flex items-baseline gap-[2px] text-[#e0e0e0]">
+                <span class="text-[1.2rem] font-semibold font-mono">@Drone.State.Voltage.ToString("0.0")</span>
+                <span class="text-[0.7rem] text-[#888] font-normal">V</span>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">LATITUDE</div>
-            <div class="value-group">
-                <span class="value small-text">@Drone.State.Latitude.ToString("F6")</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">LATITUDE</div>
+            <div class="flex items-baseline gap-[2px] text-[#e0e0e0]">
+                <span class="text-[0.9rem] font-semibold font-mono">@Drone.State.Latitude.ToString("F6")</span>
             </div>
         </div>
 
-        <div class="tele-card">
-            <div class="label">LONGITUDE</div>
-            <div class="value-group">
-                <span class="value small-text">@Drone.State.Longitude.ToString("F6")</span>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">LONGITUDE</div>
+            <div class="flex items-baseline gap-[2px] text-[#e0e0e0]">
+                <span class="text-[0.9rem] font-semibold font-mono">@Drone.State.Longitude.ToString("F6")</span>
             </div>
         </div>
 
-        <div class="tele-card">
-                <div class="label">ACCELEROMETER</div>
-                <div class="value-group @GetCalColor(Drone.LiveAccelStatus)">
-                    <span class="value small-text">@GetCalDisplayText(Drone.LiveAccelStatus)</span>
-                </div>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">ACCELEROMETER</div>
+            <div class="flex items-baseline gap-[2px] @GetCalColor(Drone.LiveAccelStatus)">
+                <span class="text-[0.9rem] font-semibold font-mono">@GetCalDisplayText(Drone.LiveAccelStatus)</span>
+            </div>
         </div>
 
-        <div class="tele-card">
-                <div class="label">GYROSCOPE</div>
-                <div class="value-group @GetCalColor(Drone.LiveGyroStatus)">
-                    <span class="value small-text">@GetCalDisplayText(Drone.LiveGyroStatus)</span>
-                </div>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">GYROSCOPE</div>
+            <div class="flex items-baseline gap-[2px] @GetCalColor(Drone.LiveGyroStatus)">
+                <span class="text-[0.9rem] font-semibold font-mono">@GetCalDisplayText(Drone.LiveGyroStatus)</span>
+            </div>
         </div>
 
-        <div class="tele-card">
-                <div class="label">MAGNETOMETER</div>
-                <div class="value-group @GetCalColor(Drone.LiveMagStatus)">
-                    <span class="value small-text">@GetCalDisplayText(Drone.LiveMagStatus)</span>
-                </div>
+        <div class="bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[70px] backdrop-blur-[4px]">
+            <div class="text-[0.65rem] font-bold text-[#6c757d] tracking-[0.5px] mb-1 uppercase">MAGNETOMETER</div>
+            <div class="flex items-baseline gap-[2px] @GetCalColor(Drone.LiveMagStatus)">
+                <span class="text-[0.9rem] font-semibold font-mono">@GetCalDisplayText(Drone.LiveMagStatus)</span>
+            </div>
         </div>
     </div>
 </div>
 
-<style>
-    /* 1. CONTAINER LAYOUT */
-    .quick-view-container {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-        gap: 16px; /* Consistent vertical spacing */
-        padding: 20px;
-        background: transparent; /* Let main background show */
-        width: 100%;
-        max-width: 500px; /* Lock width to keep it sharp */
-        margin: 0 auto;
-    }
-
-    /* 2. HUD WRAPPER */
-    .hud-wrapper {
-        height: 300px; /* Clean height */
-        width: 100%;
-        border-radius: 8px;
-        overflow: hidden;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-        border: 1px solid #333;
-        flex-shrink: 0;
-    }
-
-    /* 3. TELEMETRY GRID */
-    .quick-view-container .telemetry-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr); /* 3 Equal columns */
-        gap: 8px; /* Clean, tight gap */
-        width: 100%;
-    }
-
-    /* 4. CLEAN CARD STYLE */
-    .quick-view-container .tele-card {
-        background: rgba(18, 20, 28, 0.6); /* Glassy dark */
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 6px;
-        padding: 10px 8px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 70px; /* Consistent height */
-        backdrop-filter: blur(4px);
-    }
-
-    .quick-view-container .label {
-        font-size: 0.65rem;
-        font-weight: 700;
-        color: #6c757d; /* Muted text */
-        letter-spacing: 0.5px;
-        margin-bottom: 4px;
-        text-transform: uppercase;
-    }
-
-    .quick-view-container .value-group {
-        display: flex;
-        align-items: baseline;
-        gap: 2px;
-        color: #e0e0e0;
-    }
-
-    .quick-view-container .value {
-        font-size: 1.2rem; /* Clean, readable number */
-        font-weight: 600;
-        font-family: 'Consolas', monospace; /* Monospace for numbers aligns better */
-    }
-
-    .small-text {
-        font-size: 0.9rem;
-    }
-    /* For Lat/Lon */
-
-    .unit {
-        font-size: 0.7rem;
-        color: #888;
-        font-weight: 400;
-    }
-
-    .text-success {
-        color: #00ff00;
-    }
-
-    .text-danger {
-        color: #ff3a3a;
-    }
-
-    /* 5. FLIGHT MODE SPECIAL CARD */
-    .mode-card {
-        /* Optional: make it stand out */
-        background: rgba(18, 20, 28, 0.8);
-        border-color: rgba(255, 255, 255, 0.15);
-    }
-
-    .mode-content {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        width: 100%;
-    }
-
-    .mode-text {
-        font-size: 1rem;
-        font-weight: 800;
-        text-transform: uppercase;
-        margin-bottom: 4px;
-        text-shadow: 0 0 10px rgba(0,0,0,0.5);
-    }
-
-    /* 6. CLEAN ARM BUTTON */
-    .arm-action-area {
-        width: 100%;
-        margin-top: 5px;
-    }
-
-    .clean-arm-btn {
-        width: 100%;
-        height: 50px;
-        border: none;
-        border-radius: 6px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        font-weight: 700;
-        letter-spacing: 1px;
-        text-transform: uppercase;
-        font-size: 0.9rem;
-        color: white;
-    }
-
-    .state-armed {
-        background: linear-gradient(90deg, #3a0d0d 0%, #ff3a3a 100%);
-        box-shadow: 0 4px 15px rgba(255, 58, 58, 0.2);
-    }
-
-    .state-disarmed {
-        background: linear-gradient(90deg, #0d3a1a 0%, #00ff66 100%);
-        box-shadow: 0 4px 15px rgba(0, 255, 102, 0.2);
-        color: #0b0c10; /* Dark text on bright green */
-    }
-
-    .clean-arm-btn:hover {
-        filter: brightness(1.1);
-        transform: translateY(-1px);
-    }
-
-    .icon-box svg {
-        width: 20px;
-        height: 20px;
-    }
-
-    .mode-action-row {
-        display: flex;
-        align-items: stretch; /* Forces the select and button to be identical heights */
-        justify-content: center;
-        gap: 6px; /* The space between the dropdown and button */
-        width: 100%;
-        margin-top: 8px;
-        height: 30px; /* Locks the row to exactly 30 pixels tall */
-    }
-
-    .slim-select {
-        flex: 1;
-        background: rgba(0, 0, 0, 0.5);
-        color: #aaa;
-        border: 1px solid #444;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        padding: 0 8px;
-        cursor: pointer;
-        outline: none;
-        height: 100%; /* Stretches to fill the 30px row */
-        box-sizing: border-box; /* Stops the border from making it taller than the button */
-    }
-
-    .slim-btn {
-        display: flex;
-        align-items: center; /* Centers the word "SET" vertically */
-        justify-content: center;
-        padding: 0 12px;
-        font-size: 0.75rem;
-        border-radius: 4px;
-        border: none;
-        background: #2b58ff;
-        color: white;
-        font-weight: bold;
-        cursor: pointer;
-        height: 100%; /* Stretches to fill the 30px row */
-        box-sizing: border-box;
-        transition: filter 0.2s;
-    }
-
-    .slim-select:hover {
-        border-color: #00f2ff;
-        color: white;
-    }
-
-    .slim-select option {
-        background: #0b0c10;
-    }
-
-    .slim-btn:hover {
-        filter: brightness(1.2);
-    }
-
-    /* ── Calibration Status Section ──────────────────────────────── */
-    .cal-section {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 8px;
-        width: 100%;
-    }
-
-    .cal-card {
-        background: rgba(18, 20, 28, 0.6);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 6px;
-        padding: 8px 10px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-height: 52px;
-        backdrop-filter: blur(4px);
-        transition: border-color 0.2s;
-    }
-
-    .cal-icon {
-        font-size: 1.1rem;
-        flex-shrink: 0;
-    }
-
-    .cal-info {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        min-width: 0;
-    }
-
-    .cal-label {
-        font-size: 0.52rem;
-        font-weight: 700;
-        color: #6c757d;
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
-        white-space: nowrap;
-    }
-
-    .cal-status {
-        font-size: 0.65rem;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-        white-space: nowrap;
-    }
-
-    .cal-ok {
-        color: #3fb950;
-    }
-    /* green — calibrated */
-    .cal-warn {
-        color: #f0b429;
-    }
-    /* amber — in progress / standby */
-    .cal-err {
-        color: #f85149;
-    }
-    /* red   — failed */
-    .cal-idle {
-        color: #555;
-    }
-    /* grey  — not started */
-</style>
-
 @code {
     protected override void OnInitialized() => Drone.OnTelemetryUpdated += RefreshUi;
-    private void RefreshUi() => InvokeAsync(StateHasChanged);
+    private DateTime _lastUiUpdate = DateTime.MinValue;
+    private void RefreshUi()
+    {
+        var now = DateTime.UtcNow;
+        // Throttle UI updates to 10Hz (100ms).
+        // The human eye can't read numbers changing faster than this anyway!
+        if ((now - _lastUiUpdate).TotalMilliseconds < 100) return;
+        _lastUiUpdate = now;
+
+        InvokeAsync(StateHasChanged);
+    }
     public void Dispose() => Drone.OnTelemetryUpdated -= RefreshUi;
 
     private void HandleArmClick() => Drone.SendArmRequest(!Drone.State.IsArmed);
-    private void ChangeMode(ChangeEventArgs e) { if (e.Value is string s && !string.IsNullOrEmpty(s)) Drone.SetFlightMode(s); }
-    private string GetModeColor(string mode) => mode.ToUpper() switch { "RTL" or "LAND" => "#ff3a3a", "LOITER" or "POSHOLD" => "#00ff00", "AUTO" or "GUIDED" => "#d946ef", "STABILIZE" or "ALT_HOLD" => "#ffcc00", "UNKNOWN" => "#666666", _ => "#00f2ff" };
+
+    private void ChangeMode(ChangeEventArgs e)
+    {
+        if (e.Value is string s && !string.IsNullOrEmpty(s)) Drone.SetFlightMode(s);
+    }
+
+    private string GetModeColor(string mode) => mode.ToUpper() switch
+    {
+        "RTL" or "LAND" => "#ff3a3a",
+        "LOITER" or "POSHOLD" => "#00ff00",
+        "AUTO" or "GUIDED" => "#d946ef",
+        "STABILIZE" or "ALT_HOLD" => "#ffcc00",
+        "UNKNOWN" => "#666666",
+        _ => "#00f2ff"
+    };
 
     private string targetFlightMode = "";
+
     private void ChangeFlightMode()
     {
         if (!string.IsNullOrEmpty(targetFlightMode))
@@ -415,16 +162,14 @@
         }
     }
 
-    // Returns CSS class based on calibration status string
     private string GetCalColor(string status) => status?.ToUpper() switch
     {
-        var s when s.Contains("SUCCESS") || s.Contains("CALIBRATED") || s.Contains("DONE") => "cal-ok",
-        var s when s.Contains("FAIL") || s.Contains("ERROR") || s.Contains("DENIED") || s.Contains("NO RESPONSE") => "cal-err",
-        var s when s.Contains("STANDBY") || s.Contains("NONE") => "cal-idle",
-        _ => "cal-warn"  // in-progress states: RECORDING, COMPUTING, PLACE LEVEL, etc.
+        var s when s.Contains("SUCCESS") || s.Contains("CALIBRATED") || s.Contains("DONE") => "text-[#3fb950]",
+        var s when s.Contains("FAIL") || s.Contains("ERROR") || s.Contains("DENIED") || s.Contains("NO RESPONSE") => "text-[#f85149]",
+        var s when s.Contains("STANDBY") || s.Contains("NONE") => "text-[#555]",
+        _ => "text-[#f0b429]"
     };
 
-    // Condenses long status strings into short display labels
     private string GetCalDisplayText(string status) => status?.ToUpper() switch
     {
         var s when s.Contains("STANDBY") => "STANDBY",
