@@ -3,34 +3,34 @@
 
 @if (_isOpen)
 {
-    <div class="conn-overlay">
-        <div class="conn-box @(_isError ? "error-box" : "")">
+    <div class="fixed inset-0 bg-[rgba(5,6,8,0.85)] backdrop-blur-[8px] flex items-center justify-center z-[99999] animate-[fadeIn_0.2s_ease-out]">
+        <div class="w-[380px] bg-[#0b0c10] border rounded-[8px] p-[30px_20px] text-center text-white flex flex-col items-center gap-[15px] transition-all duration-300 @(_isError ? "border-[#ff3a3a] shadow-[0_0_50px_rgba(255,58,58,0.2)]" : "border-[#2b58ff] shadow-[0_0_50px_rgba(43,88,255,0.15)]")">
 
             @if (_isError)
             {
-                <div class="icon-area error-anim">⚠️</div>
+                <div class="text-[3rem] leading-none animate-[popIn_0.3s_cubic-bezier(0.175,0.885,0.32,1.275)]">⚠️</div>
             }
             else
             {
-                <div class="spinner"></div>
+                <div class="w-[45px] h-[45px] border-[3px] border-[rgba(0,242,255,0.1)] border-t-[#00f2ff] rounded-full animate-spin"></div>
             }
 
-            <div class="conn-title">
+            <div class="font-extrabold text-[1.1rem] tracking-[1px]">
                 @(_isError ? "CONNECTION FAILED" : "CONNECTING TO DRONE")
             </div>
 
-            <div class="conn-status @(_isError ? "text-red" : "")">
+            <div class="font-mono text-[0.9rem] min-h-[1.2em] @(_isError ? "text-[#ff3a3a] font-bold" : "text-[#888]")">
                 @_statusMessage
             </div>
 
-            <div class="btn-row">
+            <div class="mt-[10px] flex gap-[10px]">
                 @if (_isError)
                 {
-                    <button class="action-btn close-btn" @onclick="ForceClose">CLOSE</button>
+                    <button class="px-[25px] py-[8px] rounded-[4px] font-bold text-[0.8rem] uppercase cursor-pointer transition-colors duration-200 bg-[#3a0d0d] border border-[#ff3a3a] text-[#ff3a3a] hover:bg-[#ff3a3a] hover:text-white" @onclick="ForceClose">CLOSE</button>
                 }
                 else
                 {
-                    <button class="action-btn cancel-btn" @onclick="UserCancel">CANCEL</button>
+                    <button class="px-[25px] py-[8px] rounded-[4px] font-bold text-[0.8rem] uppercase cursor-pointer transition-colors duration-200 bg-transparent border border-[#555] text-[#ccc] hover:border-white hover:text-white" @onclick="UserCancel">CANCEL</button>
                 }
             </div>
         </div>
@@ -38,131 +38,6 @@
 }
 
 <style>
-    /* 1. OVERLAY: Dark & Blurred */
-    .conn-overlay {
-        position: fixed;
-        inset: 0;
-        background: rgba(5, 6, 8, 0.85);
-        backdrop-filter: blur(8px);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 99999;
-        animation: fadeIn 0.2s ease-out;
-    }
-
-    /* 2. MAIN BOX */
-    .conn-box {
-        width: 380px;
-        background: #0b0c10;
-        border: 1px solid #2b58ff; /* Default Blue */
-        border-radius: 8px;
-        padding: 30px 20px;
-        box-shadow: 0 0 50px rgba(43, 88, 255, 0.15);
-        text-align: center;
-        color: white;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 15px;
-        transition: border-color 0.3s ease, box-shadow 0.3s ease;
-    }
-
-        /* ERROR STATE */
-        .conn-box.error-box {
-            border-color: #ff3a3a;
-            box-shadow: 0 0 50px rgba(255, 58, 58, 0.2);
-        }
-
-    /* 3. ANIMATIONS & ICONS */
-    .spinner {
-        width: 45px;
-        height: 45px;
-        border: 3px solid rgba(0, 242, 255, 0.1);
-        border-top: 3px solid #00f2ff;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-
-    .icon-area {
-        font-size: 3rem;
-        line-height: 1;
-    }
-
-    .error-anim {
-        animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-    }
-
-    /* 4. TEXT */
-    .conn-title {
-        font-weight: 800;
-        font-size: 1.1rem;
-        letter-spacing: 1px;
-    }
-
-    .conn-status {
-        font-family: 'Consolas', monospace;
-        font-size: 0.9rem;
-        color: #888;
-        min-height: 1.2em;
-    }
-
-    .text-red {
-        color: #ff3a3a;
-        font-weight: bold;
-    }
-
-    /* 5. BUTTONS */
-    .btn-row {
-        margin-top: 10px;
-        display: flex;
-        gap: 10px;
-    }
-
-    .action-btn {
-        padding: 8px 25px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-weight: bold;
-        font-size: 0.8rem;
-        transition: 0.2s;
-        text-transform: uppercase;
-    }
-
-    .cancel-btn {
-        background: transparent;
-        border: 1px solid #555;
-        color: #ccc;
-    }
-
-        .cancel-btn:hover {
-            border-color: white;
-            color: white;
-        }
-
-    .close-btn {
-        background: #3a0d0d;
-        border: 1px solid #ff3a3a;
-        color: #ff3a3a;
-    }
-
-        .close-btn:hover {
-            background: #ff3a3a;
-            color: white;
-        }
-
-    .hud-container.link-dead {
-        border: 3px solid #ff3a3a;
-        animation: flash-red 1s infinite;
-    }
-
-    /* Fix for Line 164 (and others) in ConnectionDialog.razor */
-    @@keyframes spin {
-        100% {
-            transform: rotate(360deg);
-        }
-    }
-
     @@keyframes fadeIn {
         from {
             opacity: 0;
@@ -172,7 +47,6 @@
             opacity: 1;
         }
     }
-
     @@keyframes popIn {
         from {
             transform: scale(0);
@@ -180,24 +54,6 @@
 
         to {
             transform: scale(1);
-        }
-    }
-
-    /* If you added the HUD flash alert, do the same there: */
-    @@keyframes flash-red {
-        0% {
-            opacity: 1;
-            border-color: rgba(255, 58, 58, 1);
-        }
-
-        50% {
-            opacity: 0.5;
-            border-color: rgba(255, 58, 58, 0.2);
-        }
-
-        100% {
-            opacity: 1;
-            border-color: rgba(255, 58, 58, 1);
         }
     }
 </style>

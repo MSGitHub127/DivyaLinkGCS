@@ -4,54 +4,54 @@
 @using System.IO.Ports
 @using System.Linq
 
-<div class="gcs-wrapper">
-    <header class="header">
-        <div class="brand-section">
-            <div class="logo">
-                <span class="logo-text">DIVYALINK</span>
-                <div class="tagline">by Vayunotics</div>
+<div class="gcs-wrapper flex flex-col h-screen bg-transparent overflow-hidden relative">
+
+    <header class="header fixed top-0 left-0 w-full h-[60px] z-[100] shrink-0 bg-[rgba(18,20,26,0.6)] backdrop-blur-md border-b border-[#242731] flex items-center justify-between px-2 md:px-5 transition-all duration-300">
+        <div class="flex items-center gap-2 md:gap-[15px]">
+            <div class="leading-[0.8] hidden sm:block">
+                <span class="bg-gradient-to-r from-[#3a86ff] to-[#ff00c8] bg-clip-text text-transparent font-black text-lg md:text-[1.6rem] tracking-[-0.5px] inline-block">DIVYALINK</span>
+                <div class="text-[0.55rem] text-[#888] tracking-[1.2px] uppercase mt-1">by Vayunotics</div>
             </div>
-            <div class="header-status-bar">
-                @* Telemetry link indicator *@
-                <div class="hdr-status-pill pill-telem @(IsDroneActuallyTalking ? "pill-online" : "pill-offline")">
+
+            <div class="flex items-center gap-1.5 flex-nowrap overflow-x-auto no-scrollbar pb-1 sm:pb-0">
+                @{
+                    var pillBase = "inline-flex items-center gap-1 px-2 py-1 rounded-[4px] text-[0.58rem] font-extrabold tracking-[0.8px] whitespace-nowrap transition-all duration-300 border";
+                }
+                <div class="@pillBase @(IsDroneActuallyTalking ? "bg-[rgba(0,200,80,0.12)] border-[#2ea043] text-[#3fb950]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
                     <i class="bi bi-router-fill"></i>
-                    <span>@(IsDroneActuallyTalking ? "TELEM" : "NO LINK")</span>
+                    <span class="hidden sm:inline">@(IsDroneActuallyTalking ? "TELEM" : "NO LINK")</span>
                 </div>
-
-                @* GPS fix status *@
-                <div class="hdr-status-pill @(Drone.State.GpsFixType >= 3 ? "pill-gps-fix" : Drone.State.GpsFixType >= 2 ? "pill-gps-weak" : "pill-gps-none")">
+                <div class="@pillBase @(Drone.State.GpsFixType >= 3 ? "bg-[rgba(0,200,80,0.10)] border-[#2ea043] text-[#3fb950]" : Drone.State.GpsFixType >= 2 ? "bg-[rgba(210,153,34,0.12)] border-[#d29922] text-[#e3a820]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
                     <i class="bi bi-reception-4"></i>
-                    <span>@(Drone.State.SatCount > 0 ? $"{Drone.State.SatCount} SAT" : "NO GPS")</span>
+                    <span class="hidden sm:inline">@(Drone.State.SatCount > 0 ? $"{Drone.State.SatCount} SAT" : "NO GPS")</span>
                 </div>
-
-                @* RC controller status *@
-                <div class="hdr-status-pill @(Drone.State.IsRcConnected ? "pill-rc-on" : "pill-rc-off")">
+                <div class="@pillBase @(Drone.State.IsRcConnected ? "bg-[rgba(0,220,80,0.20)] border-[#00cc55] text-[#00ee66]" : "bg-[rgba(220,60,60,0.18)] border-[#cc3333] text-[#ff6666]")">
                     <i class="bi bi-controller"></i>
-                    <span>@(Drone.State.IsRcConnected ? "RC" : "NO RC")</span>
+                    <span class="hidden sm:inline">@(Drone.State.IsRcConnected ? "RC" : "NO RC")</span>
                 </div>
-
-                @* Flight mode badge (only when connected) *@
                 @if (IsDroneActuallyTalking && Drone.State.FlightMode != "Unknown")
                 {
-                    <div class="hdr-status-pill pill-mode">
+                    <div class="@pillBase bg-[rgba(88,166,255,0.10)] border-[#58a6ff] text-[#58a6ff]">
                         <i class="bi bi-airplane-fill"></i>
-                        <span>@Drone.State.FlightMode</span>
+                        <span class="hidden sm:inline">@Drone.State.FlightMode</span>
                     </div>
                 }
-
-                @* Arm state *@
                 @if (IsDroneActuallyTalking)
                 {
-                    <div class="hdr-status-pill @(Drone.State.IsArmed ? "pill-armed" : "pill-disarmed")">
+                    <div class="@pillBase @(Drone.State.IsArmed ? "bg-[rgba(248,81,73,0.15)] border-[#f85149] text-[#ff8080]" : "bg-[rgba(46,160,67,0.10)] border-[#2ea043] text-[#3fb950]")">
                         <i class="bi @(Drone.State.IsArmed ? "bi-shield-fill-exclamation" : "bi-shield-fill-check")"></i>
-                        <span>@(Drone.State.IsArmed ? "ARMED" : "DISARMED")</span>
+                        <span class="hidden sm:inline">@(Drone.State.IsArmed ? "ARMED" : "DISARMED")</span>
                     </div>
                 }
             </div>
         </div>
 
-        <div class="connection-controls">
-            <select class="gcs-input" @bind="selectedType">
+        <div class="flex items-center gap-1.5 md:gap-[10px] overflow-x-auto no-scrollbar">
+            @{
+                var inputBase = "bg-[#08090b] border border-[#242731] text-white py-1 px-1.5 md:py-[5px] md:px-[10px] rounded-[4px] text-xs md:text-[0.8rem] outline-none focus:border-[#58a6ff]";
+            }
+
+            <select class="@inputBase hidden md:block" @bind="selectedType">
                 <option value="Serial">SERIAL</option>
                 <option value="UDP">UDP</option>
                 <option value="TCP">TCP</option>
@@ -59,14 +59,14 @@
 
             @if (selectedType == "Serial")
             {
-                <select class="gcs-input" @onchange="OnPortChanged" value="@selectedPort">
+                <select class="@inputBase" @onchange="OnPortChanged" value="@selectedPort">
                     @if (availablePorts.Count == 0)
                     {
                         <option value="" disabled selected>Scanning...</option>
                     }
                     else
                     {
-                        <option value="" disabled selected="@(string.IsNullOrEmpty(selectedPort))">-- Select Port --</option>
+                        <option value="" disabled selected="@(string.IsNullOrEmpty(selectedPort))">-- Port --</option>
                         @foreach (var port in Drone.GetAvailablePorts())
                         {
                             <option value="@port.PortId">@port.DisplayName</option>
@@ -76,423 +76,123 @@
             }
             else
             {
-                <input class="gcs-input" @bind="selectedPort" placeholder="127.0.0.1" style="width:120px;" />
+                <input class="@inputBase w-[100px] md:w-[120px]" @bind="selectedPort" placeholder="127.0.0.1" />
             }
 
-            <select class="gcs-input" @bind="selectedBaud">
-                <option value="9600">9600 (Legacy)</option>
-                <option value="19200">19200</option>
-                <option value="38400">38400</option>
-                <option value="57600">57600 (SiK Telemetry Radio)</option>
-                <option value="115200">115200 (Direct USB Standard)</option>
-                <option value="230400">230400</option>
-                <option value="460800">460800</option>
-                <option value="921600">921600 (High-Speed ESP Bridge)</option>
-                <option value="1500000">1500000 (Advanced/Custom)</option>
+            <select class="@inputBase hidden md:block" @bind="selectedBaud">
+                <option value="9600">9600</option>
+                <option value="57600">57600</option>
+                <option value="115200">115200</option>
             </select>
 
-            <div class="v-divider"></div>
-            <span class="status-indicator @(IsDroneActuallyTalking ? "online" : "offline")"></span>
+            <span class="w-[10px] h-[10px] rounded-full shrink-0 ml-1 @(IsDroneActuallyTalking ? "bg-[#00ff00] shadow-[0_0_8px_#00ff00]" : "bg-[#ff0000]")"></span>
 
-            <button class="connect-btn @(IsDroneActuallyTalking ? "online-red" : "offline-blue")"
-                    @onclick="ToggleConnection"
-                    disabled="@isAttempting">
+            <button class="shrink-0 border-none px-3 md:px-[20px] py-1.5 md:py-[8px] rounded-[4px] font-bold cursor-pointer text-[0.7rem] md:text-sm transition-colors @(IsDroneActuallyTalking ? "bg-[#ff3a3a] text-white hover:bg-red-600" : "bg-[#2b58ff] text-white hover:bg-blue-600")"
+                    @onclick="ToggleConnection" disabled="@isAttempting">
                 @if (isAttempting)
                 {
                     <span>VERIFYING...</span>
                 }
                 else
                 {
+
                     @(IsDroneActuallyTalking ? "DISCONNECT" : "CONNECT")
                 }
             </button>
         </div>
     </header>
 
-    <main class="viewport">
+    <main class="flex-1 relative z-10 overflow-hidden pt-[60px] pointer-events-none">
         <CascadingValue Value="activeTab">
-            @Body
+            <div class="pointer-events-auto h-full w-full">
+                @Body
+            </div>
         </CascadingValue>
     </main>
 
-    <div class="gcs-drawer @(string.IsNullOrEmpty(activeTab) ? "" : "open")">
-        <button class="close-overlay" @onclick='() => activeTab = ""'>&times;</button>
-        <div class="drawer-content">
+    @* <div class="fixed top-[60px] w-full sm:w-[540px] h-[calc(100vh-60px)] bg-[#0b0c10] border-r-2 border-[#7e3ff2] z-[1500] transition-all duration-300 overflow-y-auto overflow-x-hidden @(string.IsNullOrEmpty(activeTab) ? "-left-full sm:-left-[580px]" : "left-0")"> *@
+    <div class="fixed top-[var(--header-height)] w-full sm:w-[540px] h-[calc(100vh-var(--header-height))] bg-[rgba(15,17,23,0.7)] backdrop-blur-xl border-r border-[rgba(255,255,255,0.1)] z-[1500] transition-all duration-300 shadow-[20px_0_50px_rgba(0,0,0,0.3)] overflow-y-auto overflow-x-hidden @(string.IsNullOrEmpty(activeTab) ? "-left-full sm:-left-[580px]" : "left-0")"> 
+        <button class="absolute top-[5px] right-[5px] bg-transparent border-none text-[rgba(255,255,255,0.7)] text-[26px] font-bold p-0 cursor-pointer z-[2000] leading-none transition-all duration-200 hover:text-[#ff3a3a] hover:scale-125" @onclick='() => activeTab = ""'>&times;</button>
+        <div class="min-w-full sm:min-w-[480px] p-0 box-border">
             @if (activeTab == "Quick")
             {
                 <Quick />
             }
             else if (activeTab == "Actions")
             {
+
                 <Actions />
             }
             else if (activeTab == "Messages")
             {
+
                 <Messages />
             }
             else if (activeTab == "FlightPlan")
             {
+
                 <FlightPlan />
             }
             else if (activeTab == "Pre Flight")
             {
+
                 <PreFlight />
             }
             else if (activeTab == "Setup")
             {
+
                 <Setup />
             }
-            else if(activeTab == "Swarm")
+            else if (activeTab == "Swarm")
             {
+
                 <Swarm />
             }
-")
         </div>
     </div>
 
-    <footer class="footer">
-        <div class="sub-nav">
+    @* FLOATING FOOTER OVER MAP *@
+    <footer class="footer absolute bottom-0 left-0 w-full p-[15px_10px] flex justify-center z-[1000] transition-all duration-300 pointer-events-none">
+        <div class="flex gap-2 md:gap-[10px] w-full max-w-[750px] justify-center overflow-x-auto no-scrollbar pointer-events-auto px-2">
             @foreach (var tab in tabs)
             {
-                <button class="nav-btn @(activeTab == tab ? "active" : "")"
+                var isActive = activeTab == tab;
+                <button class="min-w-[65px] md:min-w-[80px] flex-1 rounded-[8px] text-white py-[8px] px-1 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 shadow-lg @(isActive ? "bg-gradient-to-br from-[#2b58ff] to-[#7e3ff2] border border-transparent shadow-[0_0_15px_rgba(126,63,242,0.4)]" : "bg-[rgba(10,11,14,0.85)] backdrop-blur-md border border-[#30363d] hover:bg-[#1a1f2e] hover:border-[#58a6ff]")"
                         @onclick="() => HandleTabClick(tab)">
-                    <i class="cyan-icon">@GetIcon(tab)</i>
-                    <span>@tab</span>
+                    <i class="not-italic mb-[4px] text-[1.1rem] @(isActive ? "text-white" : "text-[#00f2ff]")">@GetIcon(tab)</i>
+                    <span class="text-[0.6rem] md:text-[0.7rem] font-bold tracking-wider whitespace-nowrap">@tab</span>
                 </button>
             }
         </div>
     </footer>
+
     <ConnectionDialog />
     <ToastContainer />
 </div>
 
 <style>
-    :root {
-        --bg-dark: #0a0b0d;
-        --panel-bg: #12141a;
-        --border: #242731;
-        --accent-blue: #2b58ff;
-        --accent-purple: #7e3ff2;
-        --cyan: #00f2ff;
+    .no-scrollbar::-webkit-scrollbar {
+        display: none;
     }
 
-    * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-        font-family: 'Segoe UI', sans-serif;
+    .no-scrollbar {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
     }
 
-    .gcs-wrapper {
-        display: flex;
-        flex-direction: column;
-        height: 100vh;
-        background: var(--bg-dark);
-        overflow: hidden; /* Prevents double scrollbars */
-    }
-
-    /* THE DRAWER (Left Side) */
-    .gcs-drawer {
-        position: fixed;
-        top: 60px;
-        /* FIX: Increased to 540px to fit the 500px content comfortably */
-        width: 540px;
-        left: -580px;
-        height: calc(100vh - 120px);
-        background: #0b0c10;
-        border-right: 2px solid #7e3ff2;
-        z-index: 1500;
-        transition: left 0.3s ease-in-out;
-        /* Keep the scrollbar always visible to prevent jumping */
-        overflow-y: auto;
-        overflow-x: hidden;
-    }
-
-        .gcs-drawer.open {
-            left: 0; /* Slide in */
-        }
-
-    .drawer-content {
-        min-width: 480px;
-        padding: 0; /* Slight padding so the X doesn't cover text immediately */
-        box-sizing: border-box;
-    }
-
-    /* Sidebar Header Layout */
-    .drawer-header {
-        display: flex;
-        justify-content: space-between; /* Pushes Title Left, X Right */
-        align-items: center; /* Centers them vertically */
-        padding: 15px 20px; /* Adds breathing room */
-        background: #12141a; /* Darker header background */
-        border-bottom: 1px solid #7e3ff2; /* Neon purple separator */
-        min-height: 50px;
-    }
-
-        /* Title Styling */
-        .drawer-header span {
-            font-size: 1.1rem;
-            font-weight: bold;
-            color: white;
-            letter-spacing: 1px;
-        }
-
-    .close-overlay {
-        position: absolute; /* Floats over content */
-        top: 5px;
-        right: 5px;
-        background: transparent; /* No background color */
-        border: none;
-        color: rgba(255, 255, 255, 0.7); /* Semi-transparent white */
-        font-size: 26px; /* Large and easy to hit */
-        font-weight: bold;
-        padding: 0;
-        cursor: pointer;
-        z-index: 2000; /* Ensures it sits ON TOP of your HUD/Map */
-        line-height: 1;
-        transition: all 0.2s ease;
-    }
-
-        /* Hover Effect */
-        .close-overlay:hover {
-            color: #ff3a3a; /* Bright red on hover */
-            transform: scale(1.2);
-        }
-    /* HEADER STYLING */
-    .header {
-        height: 60px;
-        z-index: 100;
-        flex-shrink: 0;
-        background: var(--panel-bg);
-        border-bottom: 1px solid var(--border);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0 20px;
-    }
-
-    /* Ensure these specific styles are present for the connection bar */
-    .v-divider {
-        width: 1px;
-        height: 20px;
-        background: #333;
-        margin: 0 10px;
-    }
-
-    .status-indicator {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        display: inline-block;
-        margin-right: 5px;
-    }
-
-    .online {
-        background: #00ff00;
-        box-shadow: 0 0 8px #00ff00;
-    }
-
-    .offline {
-        background: #ff0000;
-    }
-
-    .offline-blue {
-        background: #2b58ff;
-        color: white;
-    }
-
-    .online-red {
-        background: #ff3a3a;
-        color: white;
-    }
-
-    .brand-section {
-        display: flex; /* Forces children (Logo and Sat-Count) to be side-by-side */
-        align-items: center; /* Vertically aligns them in the center of the 60px header */
-        gap: 15px; /* Space between logo and sat-count */
-    }
-
-    .logo {
-        line-height: 0.8; /* Keeps the tagline close to the brand name */
-    }
-
-    .logo-text {
-        background: linear-gradient(to right, #3a86ff, #ff00c8);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 900;
-        font-size: 1.6rem;
-        letter-spacing: -0.5px;
-        display: inline-block;
-    }
-
-    .tagline {
-        font-size: 0.55rem;
-        color: #888;
-        letter-spacing: 1.2px;
-        text-transform: uppercase;
-        margin-top: 4px;
-    }
-
-    .header-status-bar {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        flex-wrap: nowrap;
-    }
-
-    .hdr-status-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        padding: 3px 8px;
-        border-radius: 4px;
-        font-size: 0.58rem;
-        font-weight: 800;
-        letter-spacing: 0.8px;
-        border: 1px solid transparent;
-        white-space: nowrap;
-        transition: background 0.3s, border-color 0.3s, color 0.3s;
-    }
-
-    /* Telemetry */
-    .pill-online {
-        background: rgba(0,200,80,0.12);
-        border-color: #2ea043;
-        color: #3fb950;
-    }
-
-    .pill-offline {
-        background: rgba(80,80,80,0.10);
-        border-color: #484f58;
-        color: #8b949e;
-    }
-
-    /* GPS */
-    .pill-gps-fix {
-        background: rgba(0,200,80,0.10);
-        border-color: #2ea043;
-        color: #3fb950;
-    }
-
-    .pill-gps-weak {
-        background: rgba(210,153,34,0.12);
-        border-color: #d29922;
-        color: #e3a820;
-    }
-
-    .pill-gps-none {
-        background: rgba(80,80,80,0.10);
-        border-color: #484f58;
-        color: #8b949e;
-    }
-
-    /* RC — green when bound, red when not (red = danger, not just absent) */
-    .pill-rc-on {
-        background: rgba(0,220,80,0.20);
-        border-color: #00cc55;
-        color: #00ee66;
-    }
-
-    .pill-rc-off {
-        background: rgba(220,60,60,0.18);
-        border-color: #cc3333;
-        color: #ff6666;
-    }
-
-    /* Flight mode */
-    .pill-mode {
-        background: rgba(88,166,255,0.10);
-        border-color: #58a6ff;
-        color: #58a6ff;
-    }
-
-    /* Arm state */
-    .pill-armed {
-        background: rgba(248,81,73,0.15);
-        border-color: #f85149;
-        color: #ff8080;
-    }
-
-    .pill-disarmed {
-        background: rgba(46,160,67,0.10);
-        border-color: #2ea043;
-        color: #3fb950;
-    }
-
-    .connection-controls {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-
-    .gcs-input {
-        background: #08090b;
-        border: 1px solid var(--border);
-        color: white;
-        padding: 5px 10px;
-        border-radius: 4px;
-        font-size: 0.8rem;
-    }
-
-    .divider {
-        width: 1px;
-        height: 25px;
-        background: var(--border);
-        margin: 0 10px;
-    }
-
-    .status-indicator {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-    }
-
-    .online {
-        background: #00ff00;
-        box-shadow: 0 0 10px #00ff00;
-    }
-
-    .offline {
-        background: #ff0000;
-    }
-
-    .connect-btn {
-        background: var(--accent-blue);
-        color: white;
-        border: none;
-        padding: 8px 20px;
-        border-radius: 4px;
-        font-weight: bold;
-        cursor: pointer;
-    }
-
-    /* VIEWPORT */
-    .viewport {
-        flex: 1;
-        position: relative;
-        z-index: 10;
-        overflow: hidden;
-    }
-
-    /* MAP FULLSCREEN MODE ─────────────────────────────────────────────────
-           When .map-fullscreen is on .gcs-wrapper, header and footer slide away
-           and the viewport fills the entire screen. The map then reflows via JS. */
     .gcs-wrapper.map-fullscreen .header {
         transform: translateY(-100%);
         opacity: 0;
         pointer-events: none;
-        transition: transform 0.3s ease, opacity 0.3s ease;
     }
 
     .gcs-wrapper.map-fullscreen .footer {
         transform: translateY(100%);
         opacity: 0;
         pointer-events: none;
-        transition: transform 0.3s ease, opacity 0.3s ease;
     }
 
-    .gcs-wrapper.map-fullscreen .viewport {
+    .gcs-wrapper.map-fullscreen main {
         position: fixed;
         top: 0;
         left: 0;
@@ -501,78 +201,10 @@
         z-index: 900;
     }
 
-    /* Drawer stays on top in fullscreen */
     .map-fullscreen-drawer {
         top: 0 !important;
         height: 100vh !important;
     }
-
-    /* Header and footer get transitions always so collapse is smooth too */
-    .header {
-        transition: transform 0.3s ease, opacity 0.3s ease;
-    }
-
-    .footer {
-        transition: transform 0.3s ease, opacity 0.3s ease;
-    }
-
-    /* FOOTER STYLING */
-    .footer {
-        background: var(--panel-bg); /* Was var(--bg-dark) in some versions, using panel for contrast */
-        border-top: 1px solid var(--border);
-        padding: 10px;
-        display: flex;
-        justify-content: center;
-        z-index: 2000; /* Ensure it stays on top of the map */
-        flex-shrink: 0; /* CRITICAL: Prevents footer from being squashed */
-    }
-
-    .sub-nav {
-        display: flex;
-        gap: 6px;
-        width: 100%;
-        margin: 0 auto; /* Centers the whole navigation block */
-        justify-content: center; /* Centers the buttons inside */
-    }
-
-    .sub-nav::-webkit-scrollbar {
-            display: none;
-        }
-
-
-    .nav-btn {
-        min-width:72px;
-        flex: 1;
-        background: #090a0c;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        color: white;
-        padding: 12px 5px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        cursor: pointer;
-        transition: 0.2s;
-    }
-
-        .nav-btn i.cyan {
-            color: var(--cyan);
-            font-style: normal;
-            margin-bottom: 5px;
-        }
-
-        .nav-btn span {
-            font-size: 0.75rem;
-        }
-
-        .nav-btn.active {
-            background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-purple) 100%);
-            border: none;
-        }
-
-            .nav-btn.active i {
-                color: white;
-            }
 </style>
 
 @code {
@@ -581,70 +213,41 @@
     private string selectedPort = "";
     private int selectedBaud = 57600;
 
-    // UI State
     private List<string> availablePorts = new();
     private bool isManualConnected = false;
     private bool isAttempting = false;
-
     private System.Threading.Timer? _autoDetectTimer;
-
     private string[] tabs = { "Quick", "Actions", "Messages", "FlightPlan", "Pre Flight", "Setup", "Swarm" };
 
-    // Helpers
     private bool IsConnected => Drone.State.ConnectionStatus.Contains("Receiving");
-
-    // Use the stable cached IsLinkHealthy flag from MavlinkService.
-    // This only flips after 3 confirmed consecutive heartbeat misses (1.5s).
-    // Drone.IsConnected re-evaluates DateTime.UtcNow on every call which causes
-    // the TELEM pill to flicker every render tick during normal SiK heartbeat gaps.
     private bool IsDroneActuallyTalking => Drone.IsLinkHealthy;
 
     protected override void OnInitialized()
     {
         _autoDetectTimer = new System.Threading.Timer(AutoDetectPorts, null, 0, 1000);
         Drone.OnTelemetryUpdated += RefreshUi;
-        // RC state changes come via OnRcChannelsUpdated, NOT OnTelemetryUpdated.
-        // Without this subscription the RC pill never turns green even when RC is connected.
         Drone.OnRcChannelsUpdated += OnRcUpdated;
-        // DO NOT add: Drone.OnToast += _ => InvokeAsync(StateHasChanged);
-        // Anonymous lambdas cannot be unsubscribed. Every Blazor reconnect stacks
-        // another copy on the singleton service -> crash loop. ToastContainer owns OnToast.
     }
 
-    // Runs on a background thread, so we must use InvokeAsync for UI updates
     private void AutoDetectPorts(object? state)
     {
         try
         {
-            // 1. Get the raw list from Windows
             var currentPhysicalPorts = SerialPort.GetPortNames().Distinct().OrderBy(x => x).ToList();
-
             InvokeAsync(() =>
             {
-                // 2. SAFETY CHECK: Is our active port currently missing?
-                // We check this EVERY time, independent of the dropdown list update.
                 if (isManualConnected && !string.IsNullOrEmpty(selectedPort))
                 {
                     if (!currentPhysicalPorts.Contains(selectedPort))
                     {
-                        // CABLE UNPLUGGED! Force Disconnect immediately.
-                        Console.WriteLine($"Port {selectedPort} lost! Disconnecting...");
-
                         Drone.StopConnection();
                         isManualConnected = false;
                         selectedPort = "";
-
-                        // Force button to update to "CONNECT" instantly
-                        // StateHasChanged();
                     }
                 }
-
-                // 3. UI LIST UPDATE: Only update dropdown if list changed (Prevents flickering)
                 if (!currentPhysicalPorts.SequenceEqual(availablePorts.OrderBy(x => x)))
                 {
                     availablePorts = currentPhysicalPorts;
-
-                    // If we weren't connected but had a port selected that is now gone, clear it
                     if (!isManualConnected && !string.IsNullOrEmpty(selectedPort) && !availablePorts.Contains(selectedPort))
                     {
                         selectedPort = "";
@@ -653,7 +256,7 @@
                 StateHasChanged();
             });
         }
-        catch { /* Ignore scanning errors */ }
+        catch { }
     }
 
     private void OnPortChanged(ChangeEventArgs e)
@@ -664,14 +267,8 @@
 
     private async Task ToggleConnection()
     {
-        if (isAttempting) return; // Prevent double clicks
-
-        // 1. Validation: If Serial mode, must have a port
-        if (selectedType == "Serial" && string.IsNullOrEmpty(selectedPort))
-        {
-            Console.WriteLine("No port selected!");
-            return;
-        }
+        if (isAttempting) return;
+        if (selectedType == "Serial" && string.IsNullOrEmpty(selectedPort)) return;
 
         isAttempting = true;
         await InvokeAsync(StateHasChanged);
@@ -680,80 +277,33 @@
         {
             if (isManualConnected)
             {
-                // DISCONNECT
                 Drone.StopConnection();
                 isManualConnected = false;
             }
             else
             {
-                // CONNECT
                 Drone.Connect(Enum.Parse<ConnectionType>(selectedType), selectedPort, selectedBaud);
-
-                // ============================================================
-                // REPLACE THE OLD "await Task.Delay(3000)" WITH THIS LOOP:
-                // ============================================================
-
-                // Smart Wait Loop: Checks every 0.5s for up to 30 seconds
-                // --- UNIFIED 30-SECOND TIMER LOOP ---
                 for (int i = 0; i < 60; i++)
                 {
-                    // 1. CHECK FOR "FULL" CONNECTION (Data is Flowing)
-                    // We check specifically for Attitude or Satellites
                     bool hasData = Drone.State.Roll != 0 || Drone.State.SatCount > 0 || Drone.State.Altitude != 0;
-
-                    if (IsDroneActuallyTalking && hasData)
-                    {
-                        break; // SUCCESS! Exit loop immediately.
-                    }
-
-                    // 2. CHECK FOR USER CANCEL
+                    if (IsDroneActuallyTalking && hasData) break;
                     if (Drone.State.ConnectionStatus == "Disconnected") break;
-
-                    // 3. CALCULATE TIME LEFT
-                    int secondsLeft = 30 - (i / 2);
-
-                    // 4. DISPLAY SITUATIONAL STATUS
-                    if (!IsDroneActuallyTalking)
-                    {
-                        // PHASE 1: No Heartbeat yet (Radio warming up)
-                        Drone.ReportStatus($"Connecting... ({secondsLeft}s)");
-                    }
-                    else
-                    {
-                        // PHASE 2: Heartbeat found, but waiting for Telemetry
-                        Drone.ReportStatus($"Link Established! Waiting for Data... ({secondsLeft}s)");
-                    }
-
                     await Task.Delay(500);
                 }
-                // ============================================================
-
-                // Final Verification after the loop finishes or breaks
                 if (IsDroneActuallyTalking)
                 {
                     isManualConnected = true;
-                    Drone.RequestDataStreams(); // Request Telemetry
+                    Drone.RequestDataStreams();
                 }
                 else
                 {
-                    // If we timed out or were cancelled, ensure everything is clean
                     Drone.StopConnection();
                     isManualConnected = false;
-                    Console.WriteLine("Connection timed out (No Heartbeat)");
                 }
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Toggle Error: {ex.Message}");
-            isManualConnected = false;
-        }
-        finally
-        {
-            // Always re-enable button
-            isAttempting = false;
-            await InvokeAsync(StateHasChanged);
-        }
+        catch (Exception) { isManualConnected = false; }
+        finally { isAttempting = false; await InvokeAsync(StateHasChanged); }
     }
 
     private string GetIcon(string t) => t switch
@@ -771,16 +321,12 @@
     private DateTime _lastHeaderRender = DateTime.MinValue;
     private void RefreshUi()
     {
-        // Throttled to 2Hz — header only shows sat count / arm state, no need for 10Hz
         var now = DateTime.UtcNow;
         if ((now - _lastHeaderRender).TotalMilliseconds < 500) return;
         _lastHeaderRender = now;
         InvokeAsync(StateHasChanged);
     }
 
-    // RC state change handler. MavlinkService writes IsRcConnected BEFORE firing
-    // this event, so Drone.State.IsRcConnected is already correct when we read it.
-    // Only re-renders on actual transitions (connected <-> disconnected).
     private bool _lastRcState = false;
     private void OnRcUpdated(ushort[] _)
     {
@@ -802,4 +348,3 @@
         activeTab = (activeTab == tab) ? "" : tab;
     }
 }
-
