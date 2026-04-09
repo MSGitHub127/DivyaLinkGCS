@@ -1,23 +1,25 @@
 ﻿@inject MavlinkService Drone
 @implements IDisposable
 
-<div class="hud-component-container">
-    <div class="hud-frame">
+<div class="w-full h-full flex justify-center">
+    <div class="relative w-full h-full min-h-[280px] bg-black rounded-[12px] overflow-hidden border-2 border-[#333] shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] font-mono text-white">
 
-        <div class="horizon-layer"
-             style="transform: rotate(@(-Drone.State.Roll)deg) translateY(@(Drone.State.Pitch * 4)px);">
-            <div class="sky"></div>
-            <div class="ground"></div>
-            <div class="pitch-ladder">
-                <div class="line pos-20"></div>
-                <div class="line pos-10"></div>
-                <div class="line zero"></div>
-                <div class="line neg-10"></div>
-                <div class="line neg-20"></div>
+        @* HORIZON - Standard CSS transition for native Blazor rendering *@
+        <div class="absolute top-[-50%] left-[-50%] w-[200%] h-[200%] ease-linear will-change-transform z-[1]"
+             style="transform: rotate(@(-Drone.State.Roll)deg) translateY(@(Drone.State.Pitch * 4)px); transition: transform 55ms cubic-bezier(0.25, 1, 0.5, 1);">
+            <div class="h-1/2 bg-gradient-to-b from-[#3a86ff] to-[#87ceeb] border-b-2 border-white"></div>
+            <div class="h-1/2 bg-gradient-to-b from-[#8b4513] to-[#cd853f]"></div>
+            <div class="absolute inset-0 flex flex-col justify-center items-center">
+                <div class="absolute h-[1px] bg-[rgba(255,255,255,0.7)] top-[30%] w-[60px]"></div>
+                <div class="absolute h-[1px] bg-[rgba(255,255,255,0.7)] top-[40%] w-[80px]"></div>
+                <div class="absolute top-[50%] w-[120px] h-[2px] bg-[#00f2ff] shadow-[0_0_5px_#00f2ff]"></div>
+                <div class="absolute top-[60%] w-[80px] border-t border-dashed border-white bg-transparent"></div>
+                <div class="absolute top-[70%] w-[60px] border-t border-dashed border-white bg-transparent"></div>
             </div>
         </div>
 
-        <div class="crosshair-svg">
+        @* CROSSHAIR *@
+        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[5]">
             <svg viewBox="0 0 100 100" width="60" height="60">
                 <path d="M 10 50 L 35 50 L 50 65 L 65 50 L 90 50"
                       stroke="yellow" stroke-width="3" fill="none"
@@ -26,30 +28,34 @@
             </svg>
         </div>
 
-        <div class="hud-top-bar">
-            <div class="heading-box">
-                <span class="heading-val">@Drone.State.Yaw.ToString("0")°</span>
-                <span class="heading-label">@GetCardinal(Drone.State.Yaw)</span>
+        @* TOP BAR *@
+        <div class="absolute top-[10px] left-0 w-full flex justify-center z-10">
+            <div class="bg-[rgba(0,0,0,0.6)] px-[15px] py-[5px] rounded-[20px] border border-[#555] flex gap-[8px] items-center">
+                <span class="font-bold text-[#00f2ff]">@Drone.State.Yaw.ToString("0")°</span>
+                <span>@GetCardinal(Drone.State.Yaw)</span>
             </div>
         </div>
 
-        <div class="hud-tape left-tape">
-            <div class="tape-label">SPD m/s</div>
-            <div class="tape-window">
+        @* LEFT TAPE (SPEED) *@
+        <div class="absolute top-[20px] bottom-[60px] left-0 w-[60px] bg-[rgba(0,0,0,0.4)] backdrop-blur-[2px] flex flex-col items-center justify-center border border-[rgba(255,255,255,0.2)] border-r-0 rounded-[0_8px_8px_0] z-10">
+            <div class="text-[0.7rem] text-[#aaa] mb-[5px]">SPD m/s</div>
+            <div class="text-[1.4rem] font-bold text-white drop-shadow-[0_0_5px_rgba(0,0,0,1)]">
                 @Drone.State.GroundSpeed.ToString("0.0")
             </div>
         </div>
 
-        <div class="hud-tape right-tape">
-            <div class="tape-label">ALT m</div>
-            <div class="tape-window">
+        @* RIGHT TAPE (ALTITUDE) *@
+        <div class="absolute top-[20px] bottom-[60px] right-0 w-[60px] bg-[rgba(0,0,0,0.4)] backdrop-blur-[2px] flex flex-col items-center justify-center border border-[rgba(255,255,255,0.2)] border-l-0 rounded-[8px_0_0_8px] z-10">
+            <div class="text-[0.7rem] text-[#aaa] mb-[5px]">ALT m</div>
+            <div class="text-[1.4rem] font-bold text-white drop-shadow-[0_0_5px_rgba(0,0,0,1)]">
                 @Drone.State.Altitude.ToString("0.0")
             </div>
         </div>
 
-        <div class="hud-container">
-            <div class='rc-indicator-wrapper' title='@(Drone.State.IsRcConnected ? "RC Connected" : "RC Disconnected")'>
-                <svg class='rc-icon @(Drone.State.IsRcConnected ? "rc-on" : "rc-off")'
+        @* RC INDICATOR *@
+        <div>
+            <div class="absolute top-[5px] right-[5px] z-10 flex items-center justify-center bg-[rgba(13,17,23,0.7)] p-[6px] rounded-[8px] border border-[#30363d] backdrop-blur-[4px] shadow-[0_4px_10px_rgba(0,0,0,0.5)]" title='@(Drone.State.IsRcConnected ? "RC Connected" : "RC Disconnected")'>
+                <svg class='w-[30px] h-[30px] transition-all duration-300 ease-in-out @(Drone.State.IsRcConnected ? "fill-[#8abe4e] drop-shadow-[0_0_5px_rgba(138,190,78,0.7)]" : "fill-[#4a4a4a] opacity-75")'
                      xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
                     <path d="m 26,25 c -9.94,0 -18,10.06 -18,20 0,9.94 2.06,30 12,30
                              5.32,0 16.11,-12.33 19.41,-16 l 21.19,0
@@ -72,303 +78,41 @@
             </div>
         </div>
 
-        <div class="hud-bottom-panel">
-            <div class="status-msg @(Drone.State.IsArmed ? "armed" : "disarmed")">
+        @* BOTTOM PANEL *@
+        <div class="absolute bottom-0 left-0 w-full bg-[rgba(0,0,0,0.85)] p-[8px] z-20 flex flex-col gap-[5px] border-t border-[#444]">
+            <div class="text-center font-black tracking-[2px] text-[1rem] @(Drone.State.IsArmed ? "text-[#00ff00] drop-shadow-[0_0_10px_#00ff00]" : "text-[#ff3a3a] drop-shadow-[0_0_10px_#ff3a3a]")">
                 @(Drone.State.IsArmed ? "ARMED" : "DISARMED")
             </div>
 
-            <div class="info-row">
-                <div class="info-item">
+            <div class="flex justify-around text-[0.9rem] text-[#ddd]">
+                <div class="flex items-center gap-[5px]">
                     <span class="icon">🔋</span> @Drone.State.BatteryPercent%
                 </div>
-                <div class="info-item">
+                <div class="flex items-center gap-[5px]">
                     <span class="icon">📡</span> @Drone.State.SatCount
                 </div>
-                <div class="info-item">
+                <div class="flex items-center gap-[5px]">
                     <span class="icon">⚡</span> @Drone.State.Voltage.ToString("0.0")V
                 </div>
             </div>
         </div>
     </div>
 </div>
-
-<style>
-    /* COMPONENT WRAPPER */
-    .hud-component-container {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        justify-content: center;
-    }
-
-    .hud-frame {
-        position: relative;
-        width: 100%;
-        height: 100%; /* Fills the parent container */
-        min-height: 280px; /* Minimum height safety */
-        background: #000;
-        border-radius: 12px;
-        overflow: hidden;
-        border: 2px solid #333;
-        box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
-        font-family: 'Consolas', 'Courier New', monospace;
-        color: white;
-    }
-
-    /* HORIZON */
-    .horizon-layer {
-        position: absolute;
-        top: -50%;
-        left: -50%;
-        width: 200%;
-        height: 200%;
-        transition: transform 0.1s linear; /* Smooth 60fps feel */
-        z-index: 1;
-    }
-
-    .sky {
-        height: 50%;
-        background: linear-gradient(to bottom, #3a86ff 0%, #87ceeb 100%);
-        border-bottom: 2px solid white;
-    }
-
-    .ground {
-        height: 50%;
-        background: linear-gradient(to bottom, #8b4513 0%, #cd853f 100%);
-    }
-
-    /* PITCH LADDER */
-    .pitch-ladder {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-    }
-
-    .line {
-        width: 100px;
-        height: 1px;
-        background: rgba(255,255,255,0.7);
-        position: absolute;
-    }
-
-    .pos-20 {
-        top: 30%;
-        width: 60px;
-    }
-
-    .pos-10 {
-        top: 40%;
-        width: 80px;
-    }
-
-    .zero {
-        top: 50%;
-        width: 120px;
-        height: 2px;
-        background: #00f2ff;
-        box-shadow: 0 0 5px #00f2ff;
-    }
-
-    .neg-10 {
-        top: 60%;
-        width: 80px;
-        border-top: 1px dashed white;
-        background: transparent;
-    }
-
-    .neg-20 {
-        top: 70%;
-        width: 60px;
-        border-top: 1px dashed white;
-        background: transparent;
-    }
-
-    /* CROSSHAIR */
-    .crosshair-svg {
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        z-index: 5;
-    }
-
-    /* TAPES */
-    .hud-tape {
-        position: absolute;
-        top: 20px;
-        bottom: 60px;
-        width: 60px;
-        background: rgba(0, 0, 0, 0.4);
-        backdrop-filter: blur(2px);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid rgba(255,255,255,0.2);
-        z-index: 10;
-    }
-
-    .left-tape {
-        left: 0;
-        border-right: none;
-        border-radius: 0 8px 8px 0;
-    }
-
-    .right-tape {
-        right: 0;
-        border-left: none;
-        border-radius: 8px 0 0 8px;
-    }
-
-    .tape-label {
-        font-size: 0.7rem;
-        color: #aaa;
-        margin-bottom: 5px;
-    }
-
-    .tape-window {
-        font-size: 1.4rem;
-        font-weight: bold;
-        color: white;
-        text-shadow: 0 0 5px black;
-    }
-
-    /* TOP BAR */
-    .hud-top-bar {
-        position: absolute;
-        top: 10px;
-        left: 0;
-        width: 100%;
-        display: flex;
-        justify-content: center;
-        z-index: 10;
-    }
-
-    .heading-box {
-        background: rgba(0,0,0,0.6);
-        padding: 5px 15px;
-        border-radius: 20px;
-        border: 1px solid #555;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-    }
-
-    .heading-val {
-        font-weight: bold;
-        color: #00f2ff;
-    }
-
-    /* BOTTOM PANEL */
-    .hud-bottom-panel {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        width: 100%;
-        background: rgba(0,0,0,0.85);
-        padding: 8px;
-        z-index: 20;
-        display: flex;
-        flex-direction: column;
-        gap: 5px;
-        border-top: 1px solid #444;
-    }
-
-    .status-msg {
-        text-align: center;
-        font-weight: 900;
-        letter-spacing: 2px;
-        font-size: 1rem;
-    }
-
-        .status-msg.disarmed {
-            color: #ff3a3a;
-            text-shadow: 0 0 10px #ff3a3a;
-        }
-
-        .status-msg.armed {
-            color: #00ff00;
-            text-shadow: 0 0 10px #00ff00;
-        }
-
-    .info-row {
-        display: flex;
-        justify-content: space-around;
-        font-size: 0.9rem;
-        color: #ddd;
-    }
-
-    .info-item {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-    }
-
-    .rc-indicator-wrapper {
-        position: absolute;
-        top: 5px;
-        right: 5px;
-        z-index: 10;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(13, 17, 23, 0.7);
-        padding: 6px;
-        border-radius: 8px;
-        border: 1px solid #30363d;
-        backdrop-filter: blur(4px);
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
-    }
-
-    .rc-icon {
-        width: 30px;
-        height: 30px;
-        transition: fill 0.4s ease, filter 0.4s ease;
-    }
-
-        /* RC connected — green fill with glow */
-        .rc-icon.rc-on {
-            fill: #8abe4e;
-            filter: drop-shadow(0 0 5px rgba(138, 190, 78, 0.7));
-        }
-
-        /* RC disconnected — grey, no glow */
-        .rc-icon.rc-off {
-            fill: #4a4a4a;
-            filter: none;
-            opacity: 0.75;
-        }
-</style>
-
 @code {
-    private PeriodicTimer _timer;
-    private CancellationTokenSource _cts = new();
-
     protected override void OnInitialized()
     {
-        // Smooth 60FPS update for Horizon
-        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
-        _ = RunTimer();
+        // Simple, reliable Blazor rendering
+        Drone.OnTelemetryUpdated += RefreshUi;
     }
 
-    private async Task RunTimer()
+    private void RefreshUi()
     {
-        while (await _timer.WaitForNextTickAsync(_cts.Token))
-        {
-            await InvokeAsync(StateHasChanged);
-        }
+        InvokeAsync(StateHasChanged);
     }
 
     public void Dispose()
     {
-        _cts.Cancel();
-        _timer?.Dispose();
+        Drone.OnTelemetryUpdated -= RefreshUi;
     }
 
     private string GetCardinal(double heading)
