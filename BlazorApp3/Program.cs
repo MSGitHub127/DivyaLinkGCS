@@ -18,13 +18,23 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 // 3. Register MavlinkService as a Singleton first [cite: 137]
-// This ensures the UI and Background worker share the EXACT same memory instance.
+// MavlinkService needs IConfiguration
 builder.Services.AddSingleton<MavlinkService>();
-
-// 4. Start the Singleton as a Background Service [cite: 137]
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MavlinkService>());
 
-builder.Services.AddHostedService<MediaServerService>();
+// Log TCP configuration on startup
+var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Startup");
+logger.LogInformation("═══════════════════════════════════════");
+logger.LogInformation("  DIVYALINK GROUND CONTROL STATION");
+logger.LogInformation("═══════════════════════════════════════");
+logger.LogInformation("TCP: {Host}:{Port}",
+    builder.Configuration["TcpConnection:DefaultHost"],
+    builder.Configuration["TcpConnection:DefaultPort"]);
+logger.LogInformation("Video: {Enabled}",
+    builder.Configuration["VideoStreaming:Enabled"]);
+logger.LogInformation("═══════════════════════════════════════");
+
+//builder.Services.AddHostedService<MediaServerService>();
 
 // 5. Increase Circuit Options (Optional: helps with high-frequency telemetry)
 builder.Services.Configure<CircuitOptions>(options => {
