@@ -17,6 +17,10 @@ public class MavlinkService : BackgroundService
     private readonly ILogger<MavlinkService> _logger;
     private readonly object _sync = new();
     private readonly MAVLink.MavlinkParse _parser = new();
+
+    // ADD THESE NEW FIELDS after line ~18 (after _parser declaration):
+    private readonly IConfiguration _config;
+    private int _tcpReconnectAttempts = 0;
     private System.Threading.Timer _uiTickTimer;
 
     // UI Notification Throttle (10Hz is standard for GCS stability)
@@ -75,7 +79,6 @@ public class MavlinkService : BackgroundService
     // Thread-safe Status Messages
     public List<string> StatusMessages { get; private set; } = new();
     public int StatusMessageCount { get { lock (StatusMessages) return StatusMessages.Count; } }
-
     private void ReportConn(string msg) => OnConnectionStatus?.Invoke(msg);
     private void ShowConnDialog(bool show) => OnConnectionDialog?.Invoke(show);
 
@@ -180,9 +183,10 @@ public class MavlinkService : BackgroundService
     private double _battAmpOffset = 0.0;
     private int _battNumCells = 3;
 
-    public MavlinkService(ILogger<MavlinkService> logger)
+    public MavlinkService(ILogger<MavlinkService> logger, IConfiguration config)
     {
         _logger = logger;
+        _config = config;
     }
 
     public bool IsConnected
@@ -660,113 +664,178 @@ public class MavlinkService : BackgroundService
         {
             CloseConnections();
 
-            // 1. Strict Parsing: No hardcoded SITL fallbacks.
-            if (string.IsNullOrWhiteSpace(target))
+            // Get settings from configuration
+            string ip = _config["TcpConnection:DefaultHost"] ?? "192.168.45.1";
+            int port = int.Parse(_config["TcpConnection:DefaultPort"] ?? "5760");
+            int timeoutSeconds = int.Parse(_config["TcpConnection:ConnectTimeoutSeconds"] ?? "5");
+            bool enableKeepAlive = bool.Parse(_config["TcpConnection:EnableKeepAlive"] ?? "true");
+            int keepAliveInterval = int.Parse(_config["TcpConnection:KeepAliveIntervalSeconds"] ?? "10");
+
+            // Parse user input if provided
+            if (!string.IsNullOrWhiteSpace(target))
             {
-                throw new ArgumentException("TCP connection target cannot be empty.");
+                if (target.Contains(':'))
+                {
+                    var parts = target.Split(':', 2);
+                    ip = parts[0].Trim();
+                    if (int.TryParse(parts[1], out int p)) port = p;
+                }
+                else
+                {
+                    ip = target.Trim();
+                }
             }
 
-            var parts = target.Split(':');
-            if (parts.Length != 2 || !int.TryParse(parts[1], out int port))
+            _logger.LogInformation("[TCP] Connecting to {IP}:{Port} (timeout: {Timeout}s)",
+                ip, port, timeoutSeconds);
+
+            _tcpClient = new TcpClient { NoDelay = true }; // Disable Nagle for low latency
+
+            // Async connect with timeout
+            var connectTask = _tcpClient.ConnectAsync(ip, port);
+            if (!connectTask.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
             {
-                throw new ArgumentException($"Invalid TCP target format: '{target}'. Expected 'IP:Port'.");
+                _tcpClient?.Close();
+                throw new TimeoutException($"Connection timeout after {timeoutSeconds}s");
             }
 
-            string ip = parts[0];
-
-            _tcpClient = new TcpClient();
-
-            // 2. High-Performance Socket Tuning
-            // Disable Nagle's Algorithm for zero-latency streaming
-            _tcpClient.NoDelay = true;
-
-            // Expand receive buffer for bulk C12 data payloads
-            _tcpClient.ReceiveBufferSize = 65536;
-
-            // 3. Hardware-Level Keep-Alives (Fails fast if C12 Wi-Fi bridge drops)
-            _tcpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-
-            if (OperatingSystem.IsWindows())
+            if (!_tcpClient.Connected)
             {
-                int size = sizeof(uint);
-                byte[] keepAlive = new byte[size * 3];
-                Buffer.BlockCopy(BitConverter.GetBytes(1u), 0, keepAlive, 0, size); // Enable
-                Buffer.BlockCopy(BitConverter.GetBytes(2000u), 0, keepAlive, size, size); // Time (2s)
-                Buffer.BlockCopy(BitConverter.GetBytes(1000u), 0, keepAlive, size * 2, size); // Interval (1s)
-                _tcpClient.Client.IOControl(IOControlCode.KeepAliveValues, keepAlive, null);
+                throw new Exception($"Failed to connect to {ip}:{port}");
             }
 
-            // 4. Bounded Connection Attempt
-            var result = _tcpClient.BeginConnect(ip, port, null, null);
-            var success = result.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(2));
-
-            if (!success || !_tcpClient.Connected)
-            {
-                throw new TimeoutException($"Connection to {ip}:{port} timed out.");
-            }
-
-            _tcpClient.EndConnect(result);
             _tcpStream = _tcpClient.GetStream();
 
+            // Configure socket options
+            var socket = _tcpClient.Client;
+            if (enableKeepAlive)
+            {
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    int keepAliveMs = keepAliveInterval * 1000;
+                    socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, keepAliveMs);
+                    socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, keepAliveMs);
+                    socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
+                }
+            }
+
+            _tcpStream.ReadTimeout = int.Parse(_config["TcpConnection:ReadTimeoutSeconds"] ?? "30") * 1000;
+            _tcpReconnectAttempts = 0;
+
             UpdateState(s => s.ConnectionStatus = $"Connected to TCP {ip}:{port}");
-            ReportConn($"TCP Connected to {ip}:{port}. Awaiting C12 data...");
+            ReportConn($"✓ TCP Connected to {ip}:{port}");
             NotifyUi(force: true);
+
+            _logger.LogInformation("[TCP] Connection established");
+            Toast($"TCP connected to {ip}:{port}", ToastLevel.Success, "🔌");
 
             return true;
         }
         catch (Exception ex)
         {
-            ReportConn($"TCP Connection Failed: {ex.Message}");
+            _logger.LogError(ex, "[TCP] Connection failed");
+
+            string errorMsg = ex is TimeoutException
+                ? $"TCP timeout: {ex.Message}"
+                : $"TCP failed: {ex.Message}";
+
+            ReportConn($"✗ {errorMsg}");
+            Toast(errorMsg, ToastLevel.Error, "🔌");
             CloseConnections();
             NotifyUi(force: true);
+
             return false;
         }
     }
 
     private async Task TcpReadLoopAsync(TcpClient client, NetworkStream stream, CancellationToken ct)
     {
-        _logger.LogInformation("[MAVLink] TCP Reader started");
-        const int CHUNK = 512;
+        _logger.LogInformation("[TCP] Read loop started");
+
+        const int CHUNK = 1024;
         var chunk = new byte[CHUNK];
         var accum = new byte[512];
         int accumLen = 0;
+        int consecutiveErrors = 0;
+        const int MAX_ERRORS = 5;
 
         try
         {
             while (!ct.IsCancellationRequested && client.Connected)
             {
-                int read = 0;
                 try
                 {
-                    read = await stream.ReadAsync(chunk, 0, CHUNK, ct).ConfigureAwait(false);
+                    int bytesRead = await stream.ReadAsync(chunk, 0, CHUNK, ct).ConfigureAwait(false);
+
+                    if (bytesRead > 0)
+                    {
+                        consecutiveErrors = 0;
+
+                        for (int i = 0; i < bytesRead; i++)
+                        {
+                            var pkt = ParseMavlinkByte(chunk[i], accum, ref accumLen);
+                            if (pkt != null) HandlePacket(pkt);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("[TCP] Server closed connection");
+                        Toast("TCP connection closed by server", ToastLevel.Warning, "🔌");
+                        break;
+                    }
                 }
                 catch (OperationCanceledException) { break; }
-                catch (Exception ex) when (ex is System.IO.IOException || ex is ObjectDisposedException)
+                catch (IOException ioEx)
                 {
-                    _logger.LogWarning("[MAVLink] TCP read error: {msg}", ex.Message);
-                    break;
-                }
+                    consecutiveErrors++;
+                    _logger.LogWarning("[TCP] I/O error ({Count}/{Max}): {Msg}",
+                        consecutiveErrors, MAX_ERRORS, ioEx.Message);
 
-                if (read == 0)
-                {
-                    await Task.Delay(10, ct);
-                    continue;
+                    if (consecutiveErrors >= MAX_ERRORS)
+                    {
+                        _logger.LogError("[TCP] Too many errors, disconnecting");
+                        break;
+                    }
+                    await Task.Delay(100, ct);
                 }
-
-                for (int i = 0; i < read; i++)
+                catch (ObjectDisposedException) { break; }
+                catch (Exception ex)
                 {
-                    var pkt = ParseMavlinkByte(chunk[i], accum, ref accumLen);
-                    if (pkt != null) HandlePacket(pkt);
+                    consecutiveErrors++;
+                    _logger.LogError(ex, "[TCP] Error ({Count}/{Max})", consecutiveErrors, MAX_ERRORS);
+                    if (consecutiveErrors >= MAX_ERRORS) break;
+                    await Task.Delay(500, ct);
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[MAVLink] TCP Reader exited unexpectedly");
+            _logger.LogError(ex, "[TCP] Read loop exception");
         }
 
+        // Auto-reconnect if configured
         if (_shouldBeConnected)
         {
+            int maxAttempts = int.Parse(_config["TcpConnection:MaxReconnectAttempts"] ?? "5");
+            _tcpReconnectAttempts++;
+
+            if (_tcpReconnectAttempts <= maxAttempts)
+            {
+                _logger.LogInformation("[TCP] Reconnect attempt {Attempt}/{Max}",
+                    _tcpReconnectAttempts, maxAttempts);
+
+                Toast($"TCP disconnected. Reconnecting... ({_tcpReconnectAttempts}/{maxAttempts})",
+                    ToastLevel.Warning, "🔌");
+            }
+            else
+            {
+                _logger.LogError("[TCP] Max reconnect attempts reached");
+                Toast("TCP connection failed after multiple attempts", ToastLevel.Error, "🔌");
+                lock (_sync) { _shouldBeConnected = false; }
+            }
+
             CloseConnections();
             WipeDataToBlankSlate();
             NotifyUi(force: true);

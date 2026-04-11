@@ -116,6 +116,7 @@
 
     <script src="_framework/blazor.web.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 
     <script>
         // Minimal, robust Leaflet engine for the GCS map.
@@ -128,6 +129,7 @@
         window._trailEnabled = true;
         window._accuracyCircle = null;
         window._MAX_TRAIL_PTS = 400;
+        window._pc = null;
 
         function _validGps(lat, lng) {
             return typeof lat === 'number' && typeof lng === 'number'
@@ -360,13 +362,12 @@
                 await pc.setLocalDescription(offer);
 
                 // Connect to the local MediaMTX server we are about to spin up in C#
-                const response = await fetch('http://localhost:8889/skydroid/webrtc', {
+                const response = await fetch(webrtcUrl, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        sdp: pc.localDescription.sdp,
-                        type: pc.localDescription.type
-                    })
+                    headers: {
+                        'Content-Type': 'application/sdp'
+                    },
+                    body: offer.sdp
                 });
 
                 if (!response.ok) throw new Error("MediaMTX server not responding");
@@ -379,6 +380,289 @@
                 console.error("Failed to connect to video stream. Is MediaMTX running?", err);
             }
         };
+
+        // ═══════════════════════════════════════════════════════════
+        // HLS VIDEO STREAMING WITH AUTOMATIC FALLBACK
+        // ═══════════════════════════════════════════════════════════
+
+        window.initHLSStreamWithFallback = async (urls) => {
+            console.log('[HLS] Initializing with fallback strategy');
+            console.log('[HLS] Will try', urls.length, 'URLs');
+
+            const video = document.getElementById('hls-video');
+            if (!video) {
+                console.error('[HLS] Video element not found');
+                return;
+            }
+
+            // Try each URL in sequence until one works
+            for (let i = 0; i < urls.length; i++) {
+                const url = urls[i];
+                console.log(`[HLS] Trying URL ${i + 1}/${urls.length}: ${url}`);
+
+                const success = await tryHLSUrl(url, video);
+                if (success) {
+                    console.log(`[HLS] ✓ Success with URL: ${url}`);
+                    if (typeof DotNet !== 'undefined') {
+                        // Ensure 'BlazorApp3' perfectly matches your project's DLL name!
+                        DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Connected')
+                            .catch(e => console.log('[HLS] Blazor callback unavailable', e));
+                    }
+                    return;
+                }
+
+                console.log(`[HLS] ✗ Failed, trying next URL...`);
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s between attempts
+            }
+
+            console.error('[HLS] ✗ All URLs failed');
+            if (typeof DotNet !== 'undefined') {
+                DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Error')
+                    .catch(e => console.log('[HLS] Blazor callback unavailable'));
+            }
+
+            // Retry entire sequence after 10 seconds
+            console.log('[HLS] Retrying entire sequence in 10 seconds...');
+            setTimeout(() => window.initHLSStreamWithFallback(urls), 10000);
+        };
+
+        async function tryHLSUrl(hlsUrl, video) {
+            return new Promise((resolve) => {
+                console.log('[HLS] Attempting URL:', hlsUrl);
+
+                const timeout = setTimeout(() => {
+                    console.log('[HLS] Timeout - no response in 10s');
+                    cleanup();
+                    resolve(false);
+                }, 10000);  // Increased timeout
+
+                let resolved = false;
+                const cleanup = () => {
+                    if (!resolved) {
+                        resolved = true;
+                        clearTimeout(timeout);
+                    }
+                };
+
+                // Try native HLS first (Safari)
+                if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                    console.log('[HLS] Using native HLS');
+                    video.src = hlsUrl;
+                    video.load();
+
+                    video.onloadedmetadata = () => {
+                        console.log('[HLS] ✓ Native metadata loaded');
+                        video.play().then(() => {
+                            console.log('[HLS] ✓ Native playing');
+                            cleanup();
+                            resolve(true);
+                        });
+                    };
+
+                    video.onerror = (e) => {
+                        console.error('[HLS] ✗ Native error:', e);
+                        cleanup();
+                        resolve(false);
+                    };
+
+                    return;
+                }
+
+                // Use hls.js for Chrome/Firefox
+                if (typeof Hls === 'undefined' || !Hls.isSupported()) {
+                    console.error('[HLS] hls.js not supported');
+                    cleanup();
+                    resolve(false);
+                    return;
+                }
+
+                console.log('[HLS] Using hls.js');
+
+                // Destroy existing instance
+                if (window.hls) {
+                    console.log('[HLS] Destroying previous instance');
+                    window.hls.destroy();
+                }
+
+                // Create new HLS instance with FIXED settings for continuous streaming
+                window.hls = new Hls({
+                    debug: true,
+                    autoStartLoad: true,
+                    startPosition: -1,
+
+                    // CRITICAL FIX: Proper buffer sizes for continuous streaming
+                    backBufferLength: 90,        // Keep 90s of back buffer
+                    maxBufferLength: 30,          // Target 30s ahead
+                    maxMaxBufferLength: 60,       // Maximum 60s buffer
+                    
+                    // Low latency mode ENABLED
+                    lowLatencyMode: true,
+                    
+                    // Live sync settings - stay close to live edge
+                    liveSyncDurationCount: 3,      // Stay 3 segments from live
+                    liveMaxLatencyDurationCount: 10,
+                    
+                    // Fragment loading
+                    maxFragLookUpTolerance: 0.25,
+                    enableWorker: true,
+                    
+                    // CRITICAL: Aggressive loading to prevent stalls
+                    progressive: true,
+                    
+                    // Manifest settings
+                    manifestLoadingTimeOut: 10000,
+                    manifestLoadingMaxRetry: 3,
+                    manifestLoadingRetryDelay: 500,
+                    
+                    // Fragment settings  
+                    fragLoadingTimeOut: 20000,
+                    fragLoadingMaxRetry: 6,
+                    fragLoadingRetryDelay: 500,
+                    
+                    // Level settings
+                    levelLoadingTimeOut: 10000,
+                    levelLoadingMaxRetry: 3,
+                    levelLoadingRetryDelay: 500
+                });
+
+                // Event: Manifest parsed
+                window.hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    console.log('[HLS] ✓ Manifest parsed - stream is ready');
+
+                    video.play()
+                        .then(() => {
+                            console.log('[HLS] ✓✓✓ PLAYING STARTED ✓✓✓');
+                            cleanup();
+                            resolve(true);
+                        })
+                        .catch(err => {
+                            console.warn('[HLS] Autoplay blocked - user interaction needed:', err);
+                            // Still resolve true - user can click to play
+                            cleanup();
+                            resolve(true);
+                        });
+                });
+                
+                // Event: Level loaded - new playlist
+                window.hls.on(Hls.Events.LEVEL_LOADED, (evt, data) => {
+                    console.log(`[HLS] Level loaded - ${data.details.fragments.length} fragments available`);
+                });
+
+                // Event: Fragment loading (when it starts loading a chunk)
+                window.hls.on(Hls.Events.FRAG_LOADING, (evt, data) => {
+                    console.log(`[HLS] Loading fragment ${data.frag.sn}`);
+                });
+
+                // Event: Fragment loaded (continuous - THIS SHOULD KEEP HAPPENING)
+                window.hls.on(Hls.Events.FRAG_LOADED, (evt, data) => {
+                    console.log(`[HLS] ✓ Fragment ${data.frag.sn} loaded (${data.frag.duration.toFixed(2)}s)`);
+                });
+                
+                // Event: Fragment parsed (video decoded)
+                window.hls.on(Hls.Events.FRAG_PARSED, (evt, data) => {
+                    console.log(`[HLS] ✓ Fragment ${data.frag.sn} parsed and ready to play`);
+                });
+                
+                // Event: Buffer appending (data going to video buffer)
+                window.hls.on(Hls.Events.BUFFER_APPENDING, (evt, data) => {
+                    console.log(`[HLS] Appending ${data.type} buffer`);
+                });
+                
+                // Event: Buffer appended successfully
+                window.hls.on(Hls.Events.BUFFER_APPENDED, (evt, data) => {
+                    console.log(`[HLS] ✓ Buffer appended - playback should continue`);
+                });
+                
+                // CRITICAL: Monitor if loading stops
+                let lastFragTime = Date.now();
+                window.hls.on(Hls.Events.FRAG_LOADED, () => {
+                    lastFragTime = Date.now();
+                });
+                
+                // Check every 5 seconds if we're still loading fragments
+                const healthCheck = setInterval(() => {
+                    const timeSinceLastFrag = Date.now() - lastFragTime;
+                    if (timeSinceLastFrag > 5000 && window.hls) {
+                        console.warn(`[HLS] ⚠ No fragments loaded for ${(timeSinceLastFrag/1000).toFixed(1)}s - stream may be stuck`);
+                        console.log('[HLS] Attempting recovery...');
+                        window.hls.startLoad();
+                    }
+                }, 5000);
+
+                // Event: Error handling
+                window.hls.on(Hls.Events.ERROR, (evt, data) => {
+                    console.error('[HLS] Error:', data.type, data.details, data.fatal);
+
+                    if (data.fatal) {
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log('[HLS] Network error - retrying...');
+                                setTimeout(() => window.hls.startLoad(), 1000);
+                                break;
+
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log('[HLS] Media error - recovering...');
+                                window.hls.recoverMediaError();
+                                break;
+
+                            default:
+                                console.error('[HLS] Fatal error - giving up');
+                                window.hls.destroy();
+                                cleanup();
+                                resolve(false);
+                                break;
+                        }
+                    }
+                });
+
+                // Load and attach
+                console.log('[HLS] Loading source...');
+                window.hls.loadSource(hlsUrl);
+                window.hls.attachMedia(video);
+
+                console.log('[HLS] Attached to video element, waiting for manifest...');
+                
+                // Add video element event listeners to diagnose freezing
+                video.addEventListener('playing', () => {
+                    console.log('[VIDEO] ▶ Playing event fired');
+                });
+                
+                video.addEventListener('waiting', () => {
+                    console.warn('[VIDEO] ⏸ Waiting for data (buffering)');
+                });
+                
+                video.addEventListener('stalled', () => {
+                    console.error('[VIDEO] ⚠ STALLED - network issue');
+                });
+                
+                video.addEventListener('suspend', () => {
+                    console.warn('[VIDEO] ⏸ Suspended - paused data loading');
+                });
+                
+                video.addEventListener('progress', () => {
+                    console.log('[VIDEO] Downloading data...');
+                });
+                
+                video.addEventListener('timeupdate', function logTime() {
+                    // Log every 2 seconds to confirm playback is advancing
+                    if (this.currentTime % 2 < 0.1) {
+                        console.log(`[VIDEO] Playing at ${this.currentTime.toFixed(1)}s`);
+                    }
+                });
+            });
+        }
+
+        // Keep old function for compatibility
+        window.initHLSStream = async (hlsUrl) => {
+            await window.initHLSStreamWithFallback([hlsUrl]);
+        };
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (window.hls) {
+                window.hls.destroy();
+            }
+        });
     </script>
 </body>
 </html>
