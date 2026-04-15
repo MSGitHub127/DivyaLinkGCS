@@ -4,7 +4,7 @@
 
 @if (_toasts.Count > 0)
 {
-    <div class="fixed bottom-[70px] right-[16px] left-auto z-[9999] flex flex-col gap-[8px] pointer-events-none max-w-[360px]">
+    <div class="fixed bottom-1/4 right-[16px] left-auto z-[9999] flex flex-col gap-[8px] pointer-events-none max-w-[360px]">
         @foreach (var t in _toasts.Values.OrderBy(x => x.CreatedAt))
         {
             <div class="flex items-start gap-[9px] p-[10px_13px] rounded-[7px] border-l-[3px] backdrop-blur-[8px] text-[0.68rem] font-semibold leading-[1.4] pointer-events-auto shadow-[0_4px_18px_rgba(0,0,0,0.5)] min-w-[260px] relative overflow-hidden @GetColorClasses(t.Level) @(t.Exiting ? "toast-exit" : "toast-enter")">

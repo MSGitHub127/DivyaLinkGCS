@@ -21,6 +21,19 @@
 		<PackageReference Include="MavSdk.Net" Version="1.1.3" />
 		<PackageReference Include="System.Management" Version="10.0.3" />
 	</ItemGroup>
+
+	<ItemGroup>
+	  <Folder Include="MediaServer\" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <None Update="MediaServer\mediamtx.exe">
+	    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	  </None>
+	  <None Update="MediaServer\mediamtx.yml">
+	    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	  </None>
+	</ItemGroup>
 	
 	<Target Name="Tailwind" BeforeTargets="Build">
 		<Exec Command="npx @tailwindcss/cli -i ./wwwroot/app.tailwind.css -o ./wwwroot/app.css" />
