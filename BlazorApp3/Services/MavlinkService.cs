@@ -1,14 +1,15 @@
+using Asv.IO;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using System.Collections.Concurrent;
 using System.IO.Ports;
 using System.Linq;
 using System.Management;
-using System.Threading;
-using System.Text;
-using static MAVLink;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using static MAVLink;
 
 public enum ConnectionType { Serial, UDP, TCP }
 
@@ -33,8 +34,10 @@ public class MavlinkService : BackgroundService
     private TcpClient? _tcpClient;
     private NetworkStream? _tcpStream;
     private readonly ConcurrentDictionary<byte, IPEndPoint> _droneEndpoints = new();
-    private ConnectionType _connectionType = ConnectionType.Serial;
-    private string _portName = "COM7";
+    //private ConnectionType _connectionType = ConnectionType.Serial;
+    //private string _portName = "COM7";
+    private ConnectionType _connectionType = ConnectionType.TCP;
+    private string _portName = "192.168.45.1:5760";
     private int _baudRate = 115200;
     private bool _shouldBeConnected = false;
 
@@ -187,6 +190,15 @@ public class MavlinkService : BackgroundService
     {
         _logger = logger;
         _config = config;
+
+        // Auto-Start the TCP Connection silently in the background
+        string host = _config["TcpConnection:DefaultHost"] ?? "192.168.45.1";
+        string port = _config["TcpConnection:DefaultPort"] ?? "5760";
+
+        _ = Task.Run(async () => {
+            await Task.Delay(1500); // Give Blazor a second to load UI
+            Connect(ConnectionType.TCP, $"{host}:{port}", 0, showDialog: false);
+        });
     }
 
     public bool IsConnected
@@ -244,7 +256,8 @@ public class MavlinkService : BackgroundService
 
     // ---------------- CONNECT / DISCONNECT ----------------
 
-    public void Connect(ConnectionType type, string portName, int speed)
+    // Added 'showDialog' parameter so background booting doesn't hijack the screen
+    public void Connect(ConnectionType type, string portName, int speed, bool showDialog = true)
     {
         StopConnection();
 
@@ -265,16 +278,20 @@ public class MavlinkService : BackgroundService
         _fsRecv = 0; _battRecv = 0;
         _battVoltMult = 10.1; _battAmpPerVlt = 17.0; _battAmpOffset = 0.0; _battNumCells = 3;
         _uiTickTimer = new System.Threading.Timer(_ => OnTelemetryUpdated?.Invoke(), null, 0, 33);
-    
-    CloseConnections();
 
-        _connDialogOpen = true;
-        ShowConnDialog(true);
-        ReportConn($"Opening {_portName} @ {_baudRate} ...");
+        CloseConnections();
+
+        if (showDialog)
+        {
+            _connDialogOpen = true;
+            ShowConnDialog(true);
+        }
+
+        ReportConn($"Opening {_portName} ...");
 
         UpdateState(s =>
         {
-            s.ConnectionStatus = $"Connecting to {_portName}...";
+            s.ConnectionStatus = "Standby (Searching for Drone...)"; // Sleeker Standby message
             s.HasVehicleId = false;
             s.SystemId = 0;
             s.ComponentId = 0;
@@ -735,14 +752,12 @@ public class MavlinkService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[TCP] Connection failed");
+            // Only log it to the console, don't spam the user's UI with red Toasts
+            //_logger.LogWarning($"[TCP] Waiting for drone on {ip}:{port}...");
 
-            string errorMsg = ex is TimeoutException
-                ? $"TCP timeout: {ex.Message}"
-                : $"TCP failed: {ex.Message}";
+            // Just elegantly update the status text in the UI
+            UpdateState(s => s.ConnectionStatus = "Standby (Waiting for Drone...)");
 
-            ReportConn($"✗ {errorMsg}");
-            Toast(errorMsg, ToastLevel.Error, "🔌");
             CloseConnections();
             NotifyUi(force: true);
 
@@ -815,29 +830,16 @@ public class MavlinkService : BackgroundService
             _logger.LogError(ex, "[TCP] Read loop exception");
         }
 
-        // Auto-reconnect if configured
+        // Auto-reconnect infinitely for Skydroid C12
         if (_shouldBeConnected)
         {
-            int maxAttempts = int.Parse(_config["TcpConnection:MaxReconnectAttempts"] ?? "5");
-            _tcpReconnectAttempts++;
+            _logger.LogInformation("[TCP] Connection dropped. Returning to standby...");
 
-            if (_tcpReconnectAttempts <= maxAttempts)
-            {
-                _logger.LogInformation("[TCP] Reconnect attempt {Attempt}/{Max}",
-                    _tcpReconnectAttempts, maxAttempts);
-
-                Toast($"TCP disconnected. Reconnecting... ({_tcpReconnectAttempts}/{maxAttempts})",
-                    ToastLevel.Warning, "🔌");
-            }
-            else
-            {
-                _logger.LogError("[TCP] Max reconnect attempts reached");
-                Toast("TCP connection failed after multiple attempts", ToastLevel.Error, "🔌");
-                lock (_sync) { _shouldBeConnected = false; }
-            }
-
+            // Silently clean up. The main ExecuteAsync loop will automatically 
+            // try to reconnect in 3 seconds, forever, until the drone comes back online!
             CloseConnections();
             WipeDataToBlankSlate();
+            UpdateState(s => s.ConnectionStatus = "Standby (Waiting for Drone...)");
             NotifyUi(force: true);
         }
     }
