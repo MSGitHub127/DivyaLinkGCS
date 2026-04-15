@@ -4,8 +4,10 @@
 @inject IConfiguration Config
 @implements IDisposable
 
-@* 1. The map is now PERMANENTLY full-screen in the background. No resizing = no black screens! *@
-<div id="map-element" class="fixed inset-0 w-full h-screen bg-[#0a0b0d] z-[0] pointer-events-auto"></div>
+@* 1. The Dynamic Map Container *@
+<div class="@GetMapClasses()" @onclick="HandleMapClick">
+    <div id="map-element" class="w-full h-full bg-[#0a0b0d]"></div>
+</div>
 
 @* Only keep the Coordinate Log and Fullscreen toggle *@
 <div id="map-coord-log" class="fixed bottom-[30px] left-[12px] z-[10] bg-[rgba(10,11,13,0.85)] backdrop-blur-md border border-[#30363d] rounded-[5px] px-[10px] py-[5px] text-[0.62rem] font-mono text-[#00f2ff] pointer-events-none leading-[1.6]">
@@ -18,7 +20,7 @@
 </button>
 
 @* Right Side Telemetry Overlay (Transparent Clean Glass) *@
-<div class="fixed top-1/2 right-[16px] -translate-y-1/2 flex flex-col gap-[10px] z-[10] pointer-events-none">
+<div class="fixed top-1/4  right-[16px] -translate-y-1/2 flex flex-col gap-[10px] z-[10] pointer-events-none">
     @{
         // High transparency (0.3 opacity) with a subtle blur and a faint white edge
         var statBoxBase = "pointer-events-auto bg-[rgba(10,11,13,0.3)] border border-[rgba(255,255,255,0.15)] rounded-[12px] px-[14px] py-[10px] flex items-center gap-[12px] w-[170px] backdrop-blur-sm shadow-lg transition-all duration-300";
@@ -62,8 +64,9 @@
 @* Floating Camera Overlay - Stable HLS *@
 @if (_videoEnabled)
 {
-    <div class="fixed @GetVideoPosition() z-[50] w-[320px] aspect-video bg-black border @GetVideoBorderColor() rounded-[8px] overflow-hidden shadow-2xl pointer-events-auto">
-        <video id="hls-video"
+    <div class="@GetVideoClasses()" @onclick="HandleVideoClick">
+        @* <video id="hls-video" *@
+        <video id="webrtc-video"
                autoplay
                muted
                playsinline
@@ -71,9 +74,24 @@
                style="background: #000;">
         </video>
 
-        <div class="absolute top-[8px] left-[8px] flex items-center gap-2 bg-black/70 px-3 py-1 rounded text-white text-[0.65rem] font-bold">
+        @* NEW: "No Signal" Placeholder for Development *@
+        @if (_videoStatus != "Connected")
+        {
+            <div class="absolute inset-0 flex flex-col items-center justify-center bg-[#0a0b0d] z-[10]">
+                <i class="bi bi-camera-video-off text-[#30363d] text-4xl mb-2"></i>
+                <span class="text-[#555] font-mono text-sm tracking-widest font-bold">STANDBY</span>
+            </div>
+        }
+
+        @* Connection Status Badge *@
+        <div class="absolute top-[8px] left-[8px] flex items-center gap-2 bg-black/70 px-3 py-1 rounded text-white text-[0.65rem] font-bold z-[60]">
             <span class="w-2 h-2 rounded-full @(_videoStatus == "Connected" ? "bg-green-500 animate-pulse" : "bg-yellow-500")"></span>
             @_videoStatus
+        </div>
+
+        @* Expand/Collapse Icon *@
+        <div class="absolute top-[8px] right-[8px] text-white bg-black/60 hover:bg-black p-2 rounded cursor-pointer z-[60] transition-colors">
+            <i class="bi @(_videoExpanded ? "bi-fullscreen-exit" : "bi-fullscreen") text-lg"></i>
         </div>
     </div>
 }
@@ -82,6 +100,7 @@
     private bool _jumpedToDrone = false;
     private bool _mapExpanded = false;
     private bool _videoEnabled = false;
+    private bool _videoExpanded = false;
     private string _videoStatus = "Disconnected";
     private bool _trailEnabled = true;
     public static event Action<string>? VideoStatusUpdated;
@@ -93,6 +112,7 @@
     {
         Drone.OnTelemetryUpdated += HandleTelemetryUpdated;
         VideoStatusUpdated += HandleVideoStatusUpdate;
+        _videoEnabled = Config.GetValue<bool>("VideoStreaming:Enabled", true);
     }
 
     private void HandleVideoStatusUpdate(string status)
@@ -161,6 +181,41 @@
         catch (Exception ex) { Console.WriteLine($"Map Error: {ex.Message}"); }
     }
 
+    // Add these methods to handle the layout swapping
+    private void ToggleVideoExpand()
+    {
+        _videoExpanded = !_videoExpanded;
+        StateHasChanged();
+
+        // CRITICAL: Leaflet maps "break" if their container changes size dynamically.
+        // We call the animateMapResize JS function you already have in App.razor to fix it!
+        _ = JS.InvokeVoidAsync("animateMapResize");
+    }
+
+    private string GetMapClasses()
+    {
+        if (_videoExpanded)
+        {
+            // Map becomes the small floating box
+            return $"fixed {GetVideoPosition()} z-[50] w-[320px] aspect-video bg-[#0a0b0d] border border-[#30363d] rounded-[8px] overflow-hidden shadow-2xl pointer-events-auto transition-all duration-300 cursor-pointer";
+        }
+
+        // Map is full screen
+        return "fixed inset-0 w-full h-screen bg-[#0a0b0d] z-[0] pointer-events-auto transition-all duration-300";
+    }
+
+    private string GetVideoClasses()
+    {
+        if (_videoExpanded)
+        {
+            // Video becomes full screen (z-[0] means it goes behind the telemetry HUD)
+            return "fixed inset-0 w-full h-screen bg-black z-[0] pointer-events-auto transition-all duration-300";
+        }
+
+        // Video is the small floating box
+        return $"fixed {GetVideoPosition()} z-[50] w-[320px] aspect-video bg-black border {GetVideoBorderColor()} rounded-[8px] overflow-hidden shadow-2xl pointer-events-auto transition-all duration-300 cursor-pointer hover:border-[#58a6ff]";
+    }
+
     private async Task ToggleExpand()
     {
         _mapExpanded = !_mapExpanded;
@@ -171,22 +226,33 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender) return;
-
         await JS.InvokeVoidAsync("initMap", 0.0, 0.0);
         _mapInitialized = true;
+        await Task.Delay(300); // Give Blazor a split second to apply the CSS
+        await JS.InvokeVoidAsync("eval", "if (window._gcsMap) window._gcsMap.invalidateSize();");
 
-        _videoEnabled = bool.Parse(Config["VideoStreaming:Enabled"] ?? "false");
+        // if (_videoEnabled)
+        // {
+        //     string hlsUrl = Config["VideoStreaming:HLSUrl"] ?? "http:127.0.0.1:8888/live/index.m3u8";
+        //     Console.WriteLine($"[HLS] Starting stable stream: {hlsUrl}");
 
+        //     _videoStatus = "Connecting";
+        //     StateHasChanged();
+
+        //     await Task.Delay(500);
+        //     await JS.InvokeVoidAsync("initHLSStream", hlsUrl);
+        // }
         if (_videoEnabled)
         {
-            string hlsUrl = Config["VideoStreaming:HLSUrl"] ?? "http://127.0.0.1:8888/live/index.m3u8";
-            Console.WriteLine($"[HLS] Starting stable stream: {hlsUrl}");
+            // WebRTC uses port 8889 and requires the /whep endpoint for the handshake
+            string webrtcUrl = Config["VideoStreaming:WebRTCUrl"] ?? "http://127.0.0.1:8889/live/whep";
+            Console.WriteLine($"[WebRTC] Starting low-latency stream: {webrtcUrl}");
 
             _videoStatus = "Connecting";
             StateHasChanged();
 
             await Task.Delay(500);
-            await JS.InvokeVoidAsync("initHLSStream", hlsUrl);
+            await JS.InvokeVoidAsync("initWebRTCStream", webrtcUrl);
         }
     }
 
@@ -215,9 +281,27 @@
         {
             "Connected" => "border-[#2ea043]",
             "Connecting" => "border-[#58a6ff]",
+            "Standby" => "border-[#f0b429]", // Yellow border for dev mode
             "Error" => "border-[#ff3a3a]",
             _ => "border-[#30363d]"
         };
     }
 
+    private void HandleMapClick()
+    {
+        // Only swap if the map is currently shrunk to the mini-player
+        if (_videoExpanded)
+        {
+            ToggleVideoExpand();
+        }
+    }
+
+    private void HandleVideoClick()
+    {
+        // Only swap if the video is currently shrunk to the mini-player
+        if (!_videoExpanded)
+        {
+            ToggleVideoExpand();
+        }
+    }
 }

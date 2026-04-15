@@ -663,6 +663,82 @@
                 window.hls.destroy();
             }
         });
+
+        // ═══════════════════════════════════════════════════════════
+        // ULTRA-LOW LATENCY WEBRTC (WHEP) STREAMING
+        // ═══════════════════════════════════════════════════════════
+
+        window.initWebRTCStream = async (webrtcUrl) => {
+            console.log('[WebRTC] Initiating handshake with:', webrtcUrl);
+
+            const video = document.getElementById('webrtc-video');
+            if (!video) return;
+
+            // Clean up existing peer connection if reconnecting
+            if (window._pc) {
+                window._pc.close();
+            }
+
+            window._pc = new RTCPeerConnection();
+
+            // Bind the incoming video track directly to the HTML video element
+            // Bind the incoming video track directly to the HTML video element
+            window._pc.ontrack = (event) => {
+                console.log('[WebRTC] ✓ Video track received!');
+                
+                // BULLETPROOF FIX: If streams array is empty, wrap the track manually
+                if (event.streams && event.streams[0]) {
+                    video.srcObject = event.streams[0];
+                } else {
+                    video.srcObject = new MediaStream([event.track]);
+                }
+                
+                // Force the browser to play it
+                video.play().catch(e => console.warn('[WebRTC] Autoplay blocked:', e));
+            };
+
+            // We only want to receive video, not send it
+            window._pc.addTransceiver('video', { direction: 'recvonly' });
+
+            try {
+                // 1. Browser creates an SDP Offer
+                const offer = await window._pc.createOffer();
+                await window._pc.setLocalDescription(offer);
+
+                // 2. Send the Offer to MediaMTX
+                const response = await fetch(webrtcUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/sdp' },
+                    body: offer.sdp
+                });
+
+                if (!response.ok) {
+                    throw new Error(`MediaMTX Error: ${response.status} ${response.statusText}`);
+                }
+
+                // 3. Receive the SDP Answer from MediaMTX and apply it
+                const answerSdp = await response.text();
+                await window._pc.setRemoteDescription(
+                    new RTCSessionDescription({ type: 'answer', sdp: answerSdp })
+                );
+
+                console.log("[WebRTC] ✓ Handshake complete. Zero-latency stream live.");
+
+                // Tell Blazor UI to show "Connected"
+                if (typeof DotNet !== 'undefined') {
+                    DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Connected')
+                        .catch(e => console.warn('Blazor callback failed', e));
+                }
+
+            } catch (err) {
+                // Fails gracefully so you can develop UI without the camera turned on!
+                console.warn("[WebRTC] Camera not detected. Entering Standby mode.");
+                if (typeof DotNet !== 'undefined') {
+                    DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Standby')
+                    .catch(e => console.warn('Blazor callback failed', e));
+                }
+            }
+        };
     </script>
 </body>
 </html>
