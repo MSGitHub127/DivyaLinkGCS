@@ -21,9 +21,27 @@
             }
         }
 
+        /* 1. Default: Sit perfectly in the top right for smaller maps (like FlightPlan) */
         .leaflet-top.leaflet-right {
+            top: 10px !important;
+            right: 10px !important;
+        }
+
+        /* 2. Override: Only push down when the map is full-screen and sitting behind the main header */
+        .fixed.inset-0 .leaflet-top.leaflet-right {
             top: calc(var(--header-height) + 10px) !important;
         }
+
+        /* 1. Hide scrollbar for IE, Edge, and Firefox */
+        .leaflet-control-layers-list {
+            -ms-overflow-style: none !important;
+            scrollbar-width: none !important;
+        }
+
+            /* 2. Hide scrollbar for Chrome, Safari, and newer Edge */
+            .leaflet-control-layers-list::-webkit-scrollbar {
+                display: none !important;
+            }
 
         .leaflet-container {
             background: #0a0b0d;
@@ -64,6 +82,17 @@
         .leaflet-bottom.leaflet-right .leaflet-control-scale {
             margin-right: 54px;
             margin-bottom: 4px;
+        }
+
+        /* Position the layer control in the vertical center of the left side */
+        .leaflet-left.leaflet-top {
+            top: 50% !important;
+            left: !important;
+            transform: translateY(-50%);
+            margin-top: 0 !important;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
         }
 
         .leaflet-control-zoom {
@@ -215,7 +244,7 @@
                 '🛰️ Esri Hybrid': esriHybrid,
                 '🗺️ Street (OSM)': osm,
                 '🏔️ Terrain (Esri)': esriTopo
-            }, {}, { position: 'topright', collapsed: true }).addTo(window._gcsMap);
+            }, {}, { position: 'topleft', collapsed: true }).addTo(window._gcsMap);
 
             try {
                 window._gcsMap.on('click', function (e) {
@@ -253,14 +282,26 @@
             }
         }
 
+        // Minimum distance (degrees) before a new trail point is added.
+        // ~1.1m at the equator — prevents setLatLngs from rebuilding the
+        // polyline SVG on every GPS packet when the drone is stationary.
+        const _TRAIL_MIN_DIST_DEG = 0.00001;
+
         function _appendTrail(lat, lng) {
             if (!window._trailEnabled || !window._gcsMap) return;
-            window._trailPoints.push([lat, lng]);
-            if (window._trailPoints.length > window._MAX_TRAIL_PTS) window._trailPoints.shift();
+            const pts = window._trailPoints;
+            if (pts.length > 0) {
+                const last = pts[pts.length - 1];
+                const dLat = lat - last[0], dLng = lng - last[1];
+                // Skip if moved less than ~1m — avoids redundant polyline redraws.
+                if (dLat * dLat + dLng * dLng < _TRAIL_MIN_DIST_DEG * _TRAIL_MIN_DIST_DEG) return;
+            }
+            pts.push([lat, lng]);
+            if (pts.length > window._MAX_TRAIL_PTS) pts.shift();
             if (!window._trailLine) {
-                window._trailLine = L.polyline(window._trailPoints, { color: '#f0b429', weight: 2, opacity: 0.7, smoothFactor: 1, interactive: false }).addTo(window._gcsMap);
+                window._trailLine = L.polyline(pts, { color: '#f0b429', weight: 2, opacity: 0.7, smoothFactor: 1, interactive: false }).addTo(window._gcsMap);
             } else {
-                window._trailLine.setLatLngs(window._trailPoints);
+                window._trailLine.setLatLngs(pts);
             }
         }
 
@@ -304,7 +345,7 @@
             const coords = [];
             waypoints.forEach(wp => {
                 const lat = wp.lat ?? wp.Lat, lng = wp.lng ?? wp.Lng, idx = wp.index ?? wp.Index;
-                const home = wp.IsHome || wp.isHome;
+                const home = wp.IsHome || wp.isHome || idx === 0;
                 if (lat === undefined || lng === undefined) return;
                 coords.push([lat, lng]);
                 const sz = home ? 22 : 18, bg = home ? '#ff9900' : '#00f2ff';
@@ -494,31 +535,31 @@
                     backBufferLength: 90,        // Keep 90s of back buffer
                     maxBufferLength: 30,          // Target 30s ahead
                     maxMaxBufferLength: 60,       // Maximum 60s buffer
-                    
+
                     // Low latency mode ENABLED
                     lowLatencyMode: true,
-                    
+
                     // Live sync settings - stay close to live edge
                     liveSyncDurationCount: 3,      // Stay 3 segments from live
                     liveMaxLatencyDurationCount: 10,
-                    
+
                     // Fragment loading
                     maxFragLookUpTolerance: 0.25,
                     enableWorker: true,
-                    
+
                     // CRITICAL: Aggressive loading to prevent stalls
                     progressive: true,
-                    
+
                     // Manifest settings
                     manifestLoadingTimeOut: 10000,
                     manifestLoadingMaxRetry: 3,
                     manifestLoadingRetryDelay: 500,
-                    
-                    // Fragment settings  
+
+                    // Fragment settings
                     fragLoadingTimeOut: 20000,
                     fragLoadingMaxRetry: 6,
                     fragLoadingRetryDelay: 500,
-                    
+
                     // Level settings
                     levelLoadingTimeOut: 10000,
                     levelLoadingMaxRetry: 3,
@@ -542,7 +583,7 @@
                             resolve(true);
                         });
                 });
-                
+
                 // Event: Level loaded - new playlist
                 window.hls.on(Hls.Events.LEVEL_LOADED, (evt, data) => {
                     console.log(`[HLS] Level loaded - ${data.details.fragments.length} fragments available`);
@@ -557,28 +598,28 @@
                 window.hls.on(Hls.Events.FRAG_LOADED, (evt, data) => {
                     console.log(`[HLS] ✓ Fragment ${data.frag.sn} loaded (${data.frag.duration.toFixed(2)}s)`);
                 });
-                
+
                 // Event: Fragment parsed (video decoded)
                 window.hls.on(Hls.Events.FRAG_PARSED, (evt, data) => {
                     console.log(`[HLS] ✓ Fragment ${data.frag.sn} parsed and ready to play`);
                 });
-                
+
                 // Event: Buffer appending (data going to video buffer)
                 window.hls.on(Hls.Events.BUFFER_APPENDING, (evt, data) => {
                     console.log(`[HLS] Appending ${data.type} buffer`);
                 });
-                
+
                 // Event: Buffer appended successfully
                 window.hls.on(Hls.Events.BUFFER_APPENDED, (evt, data) => {
                     console.log(`[HLS] ✓ Buffer appended - playback should continue`);
                 });
-                
+
                 // CRITICAL: Monitor if loading stops
                 let lastFragTime = Date.now();
                 window.hls.on(Hls.Events.FRAG_LOADED, () => {
                     lastFragTime = Date.now();
                 });
-                
+
                 // Check every 5 seconds if we're still loading fragments
                 const healthCheck = setInterval(() => {
                     const timeSinceLastFrag = Date.now() - lastFragTime;
@@ -621,28 +662,28 @@
                 window.hls.attachMedia(video);
 
                 console.log('[HLS] Attached to video element, waiting for manifest...');
-                
+
                 // Add video element event listeners to diagnose freezing
                 video.addEventListener('playing', () => {
                     console.log('[VIDEO] ▶ Playing event fired');
                 });
-                
+
                 video.addEventListener('waiting', () => {
                     console.warn('[VIDEO] ⏸ Waiting for data (buffering)');
                 });
-                
+
                 video.addEventListener('stalled', () => {
                     console.error('[VIDEO] ⚠ STALLED - network issue');
                 });
-                
+
                 video.addEventListener('suspend', () => {
                     console.warn('[VIDEO] ⏸ Suspended - paused data loading');
                 });
-                
+
                 video.addEventListener('progress', () => {
                     console.log('[VIDEO] Downloading data...');
                 });
-                
+
                 video.addEventListener('timeupdate', function logTime() {
                     // Log every 2 seconds to confirm playback is advancing
                     if (this.currentTime % 2 < 0.1) {
@@ -685,14 +726,14 @@
             // Bind the incoming video track directly to the HTML video element
             window._pc.ontrack = (event) => {
                 console.log('[WebRTC] ✓ Video track received!');
-                
+
                 // BULLETPROOF FIX: If streams array is empty, wrap the track manually
                 if (event.streams && event.streams[0]) {
                     video.srcObject = event.streams[0];
                 } else {
                     video.srcObject = new MediaStream([event.track]);
                 }
-                
+
                 // Force the browser to play it
                 video.play().catch(e => console.warn('[WebRTC] Autoplay blocked:', e));
             };
@@ -739,6 +780,51 @@
                 }
             }
         };
+
+        // ═══════════════════════════════════════════════════════════
+        // TIME-DELTA SPRING INTERPOLATION ENGINE (Flawless HUD)
+        // ═══════════════════════════════════════════════════════════
+        window._hudTarget  = { roll: 0, pitch: 0 };
+        window._hudCurrent = { roll: 0, pitch: 0 };
+        window._lastFrameTime = performance.now();
+        // Cache the element once — getElementById inside rAF forces a style
+        // recalculation on every frame (60x/sec). Look it up lazily on first use.
+        window._hudEl = null;
+
+        window.updateHudTarget = (roll, pitch) => {
+            window._hudTarget.roll  = roll;
+            window._hudTarget.pitch = pitch;
+        };
+
+        const animateHud = (currentTime) => {
+            const dt = currentTime - window._lastFrameTime;
+            window._lastFrameTime = currentTime;
+
+            if (dt > 100) {
+                // Tab was hidden — snap to target instead of animating a huge jump.
+                window._hudCurrent.roll  = window._hudTarget.roll;
+                window._hudCurrent.pitch = window._hudTarget.pitch;
+            } else {
+                const tension   = 0.015;
+                const lerpFactor = 1 - Math.exp(-tension * dt);
+                window._hudCurrent.roll  += (window._hudTarget.roll  - window._hudCurrent.roll)  * lerpFactor;
+                window._hudCurrent.pitch += (window._hudTarget.pitch - window._hudCurrent.pitch) * lerpFactor;
+            }
+
+            // Resolve the element once and cache it — never query the DOM inside rAF.
+            if (!window._hudEl) window._hudEl = document.getElementById('hud-horizon');
+            if (window._hudEl) {
+                // Round to 3 decimal places — sub-0.001° precision is invisible but
+                // forces the compositor to recalculate a unique matrix every frame.
+                const r = Math.round(window._hudCurrent.roll  * 1000) / 1000;
+                const p = Math.round(window._hudCurrent.pitch * 1000) / 1000;
+                window._hudEl.style.transform = `rotate(${-r}deg) translateY(${p * 4}px)`;
+            }
+
+            requestAnimationFrame(animateHud);
+        };
+
+        requestAnimationFrame(animateHud);
     </script>
 </body>
 </html>

@@ -25,9 +25,10 @@ public class MavlinkService : BackgroundService
     private System.Threading.Timer _uiTickTimer;
 
     // UI Notification Throttle (10Hz is standard for GCS stability)
-    private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(55);
+    private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(66);
     private DateTime _lastUiNotifyUtc = DateTime.MinValue;
     private DateTime _lastRcEventUtc = DateTime.MinValue;
+    private DateTime _lastAttitudeEventUtc = DateTime.MinValue; // throttles OnAttitudeUpdated to 50 Hz
 
     private SerialPort? _serialPort;
     private UdpClient? _udpClient;
@@ -36,9 +37,9 @@ public class MavlinkService : BackgroundService
     private readonly ConcurrentDictionary<byte, IPEndPoint> _droneEndpoints = new();
     //private ConnectionType _connectionType = ConnectionType.Serial;
     //private string _portName = "COM7";
-    private ConnectionType _connectionType = ConnectionType.TCP;
-    private string _portName = "192.168.45.1:5760";
-    private int _baudRate = 115200;
+    private ConnectionType _connectionType;
+    private string _portName;
+    private int _baudRate;
     private bool _shouldBeConnected = false;
 
     public event Action<string>? OnConnectionStatus;
@@ -141,6 +142,9 @@ public class MavlinkService : BackgroundService
     public DroneState State => _state;
     private List<WaypointModel> _uploadQueue = new();
 
+    public event Action<string>? OnVideoStatusChanged;
+    public void ReportVideoStatus(string status) => OnVideoStatusChanged?.Invoke(status);
+
     public class PortProfile
     {
         public string PortId { get; set; } = "";
@@ -191,21 +195,43 @@ public class MavlinkService : BackgroundService
         _logger = logger;
         _config = config;
 
-        // Auto-Start the TCP Connection silently in the background
-        string host = _config["TcpConnection:DefaultHost"] ?? "192.168.45.1";
-        string port = _config["TcpConnection:DefaultPort"] ?? "5760";
+        // Load defaults from configuration
+        var defaultType = _config["TcpConnection:DefaultConnectionType"] ?? "Serial";
+        _connectionType = Enum.TryParse<ConnectionType>(defaultType, out var type)
+            ? type
+            : ConnectionType.Serial;
 
-        _ = Task.Run(async () => {
-            await Task.Delay(1500); // Give Blazor a second to load UI
-            Connect(ConnectionType.TCP, $"{host}:{port}", 0, showDialog: false);
-        });
+        _portName = _config["TcpConnection:DefaultHost"] ?? "COM7";
+        _baudRate = int.Parse(_config["TcpConnection:DefaultBaudRate"] ?? "115200");
+
+        _logger.LogInformation("[MAVLink] Default connection: {Type} on {Port} @ {Baud}",
+            _connectionType, _portName, _baudRate);
     }
+
+    //public bool IsConnected
+    //{
+    //    get
+    //    {
+    //        if (_serialPort?.IsOpen != true) return false;
+    //        var hb = State.LastHeartbeat;
+    //        if (hb == DateTime.MinValue) return false;
+    //        return (DateTime.UtcNow - hb).TotalSeconds < HeartbeatTimeoutSeconds;
+    //    }
+    //}
 
     public bool IsConnected
     {
         get
         {
-            if (_serialPort?.IsOpen != true) return false;
+            // Check transport layer is alive for each connection type
+            bool transportAlive = _connectionType switch
+            {
+                ConnectionType.Serial => _serialPort?.IsOpen == true,
+                ConnectionType.TCP => _tcpClient?.Connected == true,
+                ConnectionType.UDP => _udpClient != null,
+                _ => false
+            };
+            if (!transportAlive) return false;
             var hb = State.LastHeartbeat;
             if (hb == DateTime.MinValue) return false;
             return (DateTime.UtcNow - hb).TotalSeconds < HeartbeatTimeoutSeconds;
@@ -277,7 +303,11 @@ public class MavlinkService : BackgroundService
         Array.Clear(_fltModeValues, 0, 6);
         _fsRecv = 0; _battRecv = 0;
         _battVoltMult = 10.1; _battAmpPerVlt = 17.0; _battAmpOffset = 0.0; _battNumCells = 3;
-        _uiTickTimer = new System.Threading.Timer(_ => OnTelemetryUpdated?.Invoke(), null, 0, 33);
+        // 15 Hz telemetry tick — enough for all text readouts.
+        // The HUD horizon animation runs independently in JS at 60fps and
+        // does not depend on this timer. Dropping from 30 Hz saves ~15
+        // SignalR roundtrips/sec across every mounted component.
+        _uiTickTimer?.Dispose(); _uiTickTimer = new System.Threading.Timer(_ => OnTelemetryUpdated?.Invoke(), null, 0, 66);
 
         CloseConnections();
 
@@ -311,6 +341,8 @@ public class MavlinkService : BackgroundService
         }
 
         lock (_sync) { _shouldBeConnected = false; }
+        _uiTickTimer?.Dispose();
+        _uiTickTimer = null;
         CloseConnections();
 
         WipeDataToBlankSlate();
@@ -388,7 +420,7 @@ public class MavlinkService : BackgroundService
             else if (_connectionType == ConnectionType.TCP && _tcpClient == null)
             {
                 StopReadLoop();
-                if (!TryOpenTcpClient(_portName))
+                if (!await TryOpenTcpClientAsync(_portName))
                 {
                     await Task.Delay(3000, stoppingToken);
                     continue;
@@ -432,7 +464,7 @@ public class MavlinkService : BackgroundService
     {
         const int CHUNK = 512;
         var chunk = new byte[CHUNK];
-        var accum = new byte[512];
+        var accum = new byte[300]; // MAVLink2 max = 10 + 255 payload + 2 CRC + 13 sig = 280
         int accumLen = 0;
 
         _logger.LogInformation("[MAVLink] Reader started on {port}", port.PortName);
@@ -638,7 +670,7 @@ public class MavlinkService : BackgroundService
     private async Task UdpReadLoopAsync(UdpClient client, CancellationToken ct)
     {
         _logger.LogInformation("[MAVLink] UDP Swarm Reader started");
-        byte[] accum = new byte[512];
+        byte[] accum = new byte[300];
         int accumLen = 0;
 
         try
@@ -675,7 +707,7 @@ public class MavlinkService : BackgroundService
         }
     }
 
-    private bool TryOpenTcpClient(string target)
+    private async Task<bool> TryOpenTcpClientAsync(string target)
     {
         try
         {
@@ -708,9 +740,12 @@ public class MavlinkService : BackgroundService
 
             _tcpClient = new TcpClient { NoDelay = true }; // Disable Nagle for low latency
 
-            // Async connect with timeout
-            var connectTask = _tcpClient.ConnectAsync(ip, port);
-            if (!connectTask.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+            try
+            {
+                await _tcpClient.ConnectAsync(ip, port, cts.Token);
+            }
+            catch (OperationCanceledException)
             {
                 _tcpClient?.Close();
                 throw new TimeoutException($"Connection timeout after {timeoutSeconds}s");
@@ -771,7 +806,7 @@ public class MavlinkService : BackgroundService
 
         const int CHUNK = 1024;
         var chunk = new byte[CHUNK];
-        var accum = new byte[512];
+        var accum = new byte[300];
         int accumLen = 0;
         int consecutiveErrors = 0;
         const int MAX_ERRORS = 5;
@@ -1063,7 +1098,16 @@ public class MavlinkService : BackgroundService
                     s.Yaw = s.HeadingDeg;
                 }
             });
-            OnAttitudeUpdated?.Invoke();
+            // Throttle attitude events at the source: cap at 50 Hz.
+            // ArduPilot IMU can stream at 100+ Hz; subscribers (HUD JS interop)
+            // already have their own guards, but firing the event itself
+            // allocates a delegate invocation per packet on the thread pool.
+            var _attNow = DateTime.UtcNow;
+            if ((_attNow - _lastAttitudeEventUtc).TotalMilliseconds >= 20)
+            {
+                _lastAttitudeEventUtc = _attNow;
+                OnAttitudeUpdated?.Invoke();
+            }
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.GLOBAL_POSITION_INT)
         {
@@ -1858,11 +1902,11 @@ public class MavlinkService : BackgroundService
             {
                 // ── WIRED profile — full rate, all at once (no gap needed) ───
                 SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.HEARTBEAT, 1);
-                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.ATTITUDE, 20);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.ATTITUDE, 50);
                 SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.GLOBAL_POSITION_INT, 10);
                 SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.GPS_RAW_INT, 1);
                 SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS, 1);
-                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.VFR_HUD, 5);
+                SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.VFR_HUD, 15);
                 SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.STATUSTEXT, 10);
                 SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS, 50);
                 SetMessageInterval((uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS_RAW, 50);
@@ -1930,7 +1974,7 @@ public class MavlinkService : BackgroundService
 
         // Route this through SendPacket instead of locking the UI thread with _serialPort.Write
         SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
-        Console.WriteLine($"CMD Sent: {command}");
+        _logger.LogDebug("[MAVLink] CMD Sent: {Command}", command);
     }
     // For accel calibration: ArduPilot expects a COMMAND_ACK back from the GCS
     // (not a COMMAND_LONG). This is the original MAVProxy/QGC protocol.
@@ -1945,6 +1989,7 @@ public class MavlinkService : BackgroundService
         };
         SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_ACK, ack);
         Console.WriteLine($"ACK Sent: cmd={command} result={result}");
+        _logger.LogDebug("[MAVLink] CMD Sent: {Command}", command);
     }
 
     public void RequestParamRead(string paramId)
@@ -2324,7 +2369,7 @@ public class MavlinkService : BackgroundService
             confirmation = 0
         };
         SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
-        Console.WriteLine($"[SWARM] Broadcast CMD Sent: {command}");
+        _logger.LogDebug("[SWARM] Broadcast CMD Sent: {Command}", command);
     }
 
     public void BroadcastArmRequest(bool arm)

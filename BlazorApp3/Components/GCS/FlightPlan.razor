@@ -147,7 +147,17 @@
         public bool IsHome { get; set; } = false;
     }
 
-    private void RefreshUi() => InvokeAsync(StateHasChanged);
+    private bool _lastLinkHealthy = false;
+
+    private void RefreshUi()
+    {
+        // FlightPlan only uses link health for enabling the Upload button.
+        // Previously triggered a full Blazor diff on every 33 ms tick.
+        bool healthy = Drone.IsLinkHealthy;
+        if (healthy == _lastLinkHealthy) return;
+        _lastLinkHealthy = healthy;
+        InvokeAsync(StateHasChanged);
+    }
     protected override void OnInitialized()
     {
         OnMissionChanged += TriggerMapRedraw;
@@ -175,15 +185,33 @@
     [JSInvokable]
     public static void AddWaypointFromMap(double lat, double lng)
     {
-        if (MissionItems.Count == 1 && MissionItems[0].IsHome && MissionItems[0].Lat == 0)
+        if (MissionItems.Count == 0)
+        {
+            // Safety net: If list is totally empty, recreate Home
+            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = 0, IsHome = true });
+        }
+        // THE FIX: Only update Home if it hasn't been placed yet (Lat/Lng are 0)
+        else if (MissionItems.Count == 1 && MissionItems[0].Lat == 0 && MissionItems[0].Lng == 0)
         {
             MissionItems[0].Lat = lat;
             MissionItems[0].Lng = lng;
         }
         else
         {
-            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Index = MissionItems.Count, Alt = 50 });
-            for (int i = 0; i < MissionItems.Count; i++) MissionItems[i].Index = i;
+            // Home is already placed! Add a new waypoint.
+            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = 50, IsHome = false });
+        }
+
+        Resequence();
+    }
+
+    private static void Resequence()
+    {
+        for (int i = 0; i < MissionItems.Count; i++)
+        {
+            MissionItems[i].Index = i;
+            // FORCE Index 0 to be Home, everything else is false
+            MissionItems[i].IsHome = (i == 0);
         }
         OnMissionChanged?.Invoke();
     }
@@ -251,11 +279,6 @@
         OnMissionChanged?.Invoke();
     }
 
-    private void Resequence()
-    {
-        for (int i = 0; i < MissionItems.Count; i++) MissionItems[i].Index = i;
-        OnMissionChanged?.Invoke();
-    }
 
     private double CalculateTotalDistance()
     {

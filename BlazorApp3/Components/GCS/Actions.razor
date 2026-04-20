@@ -92,8 +92,8 @@
     private float RtlAlt = 30.0f;
     private float LandSpeed = 50.0f;
     private bool CanTakeoff => Drone.State.IsArmed;
-
-    private void HandleArmClick() => Drone.SendArmRequest(!Drone.State.IsArmed);
+    private bool _confirmArm = false;
+    private System.Threading.Timer? _armConfirmTimer;
 
     protected override void OnInitialized()
     {
@@ -108,6 +108,7 @@
         Drone.SetFlightMode("GUIDED");
         Drone.SendCommand(MAVLink.MAV_CMD.TAKEOFF, 0, 0, 0, 0, 0, 0, TakeoffAlt);
         Console.WriteLine($"Command Sent: Takeoff to {TakeoffAlt}m");
+        Drone.Toast($"Takeoff to {TakeoffAlt} m", MavlinkService.ToastLevel.Success, "🚀");
     }
 
     private void HandleRTL()
@@ -115,6 +116,7 @@
         Drone.SendParameter("RTL_ALT", RtlAlt * 100.0f);
         Drone.SetFlightMode("RTL");
         Console.WriteLine($"Command Sent: RTL with target clearance of {RtlAlt}m");
+        Drone.Toast($"RTL with target clearance of {RtlAlt} m", MavlinkService.ToastLevel.Success, "🚀");
     }
 
     private void HandleLand()
@@ -123,15 +125,42 @@
         Drone.SendParameter("LAND_SPEED", LandSpeed);
         Drone.SetFlightMode("LAND");
         Console.WriteLine($"Land command sent — descent speed: {LandSpeed} cm/s");
+        Drone.Toast($"Descent speed: {LandSpeed} m", MavlinkService.ToastLevel.Success, "🚀");
     }
 
     private void HandleEmergencyDisarm()
     {
         Drone.SendArmRequest(false, true);
+        Drone.Toast($"Disarmed", MavlinkService.ToastLevel.Success, "🚀");
+    }
+
+    private void HandleArmClick()
+    {
+        if (Drone.State.IsArmed)
+        {
+            Drone.SendArmRequest(false); // disarm is always immediate
+            return;
+        }
+        if (!_confirmArm)
+        {
+            _confirmArm = true;
+            _armConfirmTimer?.Dispose();
+            _armConfirmTimer = new System.Threading.Timer(_ =>
+            {
+                _confirmArm = false;
+                InvokeAsync(StateHasChanged);
+            }, null, 3000, Timeout.Infinite);
+            InvokeAsync(StateHasChanged);
+            return;
+        }
+        _armConfirmTimer?.Dispose();
+        _confirmArm = false;
+        Drone.SendArmRequest(true);
     }
 
     public void Dispose()
     {
+        _armConfirmTimer?.Dispose();
         Drone.OnTelemetryUpdated -= RefreshUi;
     }
 }

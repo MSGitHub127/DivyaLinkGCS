@@ -885,16 +885,19 @@
         transform-origin: center;
         animation: spinZ 8s linear infinite;
     }
+
     @@keyframes spinX {
         100% {
             transform: rotateX(360deg);
         }
     }
+
     @@keyframes spinY {
         100% {
             transform: rotateY(360deg);
         }
     }
+
     @@keyframes spinZ {
         100% {
             transform: rotateZ(360deg);
@@ -920,6 +923,7 @@
     .pulse-dot-fast {
         animation: pulseFast 0.8s infinite alternate;
     }
+
     @@keyframes wobbleX {
         0% {
             transform: rotateX(0deg) rotateZ(0deg);
@@ -929,6 +933,7 @@
             transform: rotateX(40deg) rotateZ(15deg);
         }
     }
+
     @@keyframes wobbleY {
         0% {
             transform: rotateY(0deg);
@@ -938,6 +943,7 @@
             transform: rotateY(60deg);
         }
     }
+
     @@keyframes pulseFast {
         from {
             opacity: 0.4;
@@ -985,6 +991,7 @@
         animation: moveStripes 1s linear infinite;
         box-shadow: 0 0 10px rgba(0, 242, 255, 0.3);
     }
+
     @@keyframes moveStripes {
         0% {
             background-position: 0 0;
@@ -1003,6 +1010,7 @@
         border-radius: 50%;
         animation: spin 1s linear infinite;
     }
+
     @@keyframes spin {
         100% {
             transform: rotate(360deg);
@@ -1020,6 +1028,7 @@
             transform: translateY(0);
         }
     }
+
     @@keyframes pip-pulse {
         0%, 100% {
             opacity: 1;
@@ -1029,6 +1038,7 @@
             opacity: 0.4;
         }
     }
+
     @@keyframes bpulse {
         0%, 100% {
             opacity: 1;
@@ -1141,21 +1151,42 @@
     }
 
     private bool _lastLink = false;
+    private int _lastFrameClass = -1;
+    private int _lastFrameType = -1;
+    private DateTime _lastSetupRender = DateTime.MinValue;
+
     private void RefreshUi()
     {
         bool linkNow = Drone.IsLinkHealthy;
-        // Sync frame dropdowns from actual FC values whenever we have a link
-        if (Drone.State.FrameClass > 0)
-            selectedFrameClass = Drone.State.FrameClass.ToString();
-        if (Drone.State.FrameType >= 0)
-            selectedFrameType = Drone.State.FrameType.ToString();
-        // Reset loaded flags on disconnect so they re-load on next connect
-        if (_lastLink && !linkNow)
+        int frameClass = Drone.State.FrameClass;
+        int frameType = Drone.State.FrameType;
+
+        bool linkChanged = linkNow != _lastLink;
+        bool frameChanged = frameClass != _lastFrameClass || frameType != _lastFrameType;
+
+        // Sync frame dropdowns only when values actually change — not every tick.
+        if (frameChanged)
+        {
+            if (frameClass > 0) selectedFrameClass = frameClass.ToString();
+            if (frameType >= 0) selectedFrameType = frameType.ToString();
+            _lastFrameClass = frameClass;
+            _lastFrameType = frameType;
+        }
+
+        // Reset loaded flags on disconnect so they re-load on next connect.
+        if (linkChanged && _lastLink && !linkNow)
         {
             _fsParamsLoaded = false;
             _battParamsLoaded = false;
         }
         _lastLink = linkNow;
+
+        if (!linkChanged && !frameChanged)
+        {
+            // No meaningful change — skip the Blazor diff entirely.
+            // Setup is a config page; it only needs to update when something real changes.
+            return;
+        }
 
         InvokeAsync(StateHasChanged);
     }

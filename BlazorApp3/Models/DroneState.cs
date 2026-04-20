@@ -81,6 +81,7 @@ public class DroneState
         // Speeds
         GroundSpeed = other.GroundSpeed;
         ClimbRate = other.ClimbRate;
+        ClimbRate = other.ClimbRate;
 
         // Battery (IMPORTANT)
         Voltage = other.Voltage;

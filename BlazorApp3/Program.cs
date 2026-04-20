@@ -20,11 +20,27 @@ var mtxProcess = new Process
     }
 };
 
-// 2. Start the server silently
 try
 {
     Console.WriteLine("[DivyaLink] Booting internal video server...");
-    mtxProcess.Start();
+    bool started = mtxProcess.Start();
+    if (started)
+    {
+        // Drain stdout/stderr asynchronously to prevent child process blocking
+        mtxProcess.BeginOutputReadLine();
+        mtxProcess.BeginErrorReadLine();
+        mtxProcess.OutputDataReceived += (sender, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+                Console.WriteLine($"[MediaMTX] {e.Data}");
+        };
+        mtxProcess.ErrorDataReceived += (sender, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+                Console.WriteLine($"[MediaMTX] {e.Data}");
+        };
+        Console.WriteLine("[DivyaLink] Video server started (PID {0})", mtxProcess.Id);
+    }
 }
 catch (Exception ex)
 {
