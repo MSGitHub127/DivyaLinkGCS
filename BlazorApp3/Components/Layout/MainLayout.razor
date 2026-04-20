@@ -8,18 +8,27 @@
 
     <header class="header fixed top-0 left-0 w-full h-[60px] z-[100] shrink-0 bg-[rgba(18,20,26,0.6)] backdrop-blur-md border-b border-[#242731] flex items-center justify-between px-2 md:px-5 transition-all duration-300">
         <div class="flex items-center gap-2 md:gap-[15px]">
-            <div class="leading-[0.8] hidden sm:block">
-                <span class="bg-gradient-to-r from-[#3a86ff] to-[#ff00c8] bg-clip-text text-transparent font-black text-lg md:text-[1.6rem] tracking-[-0.5px] inline-block">DIVYALINK</span>
-                <div class="text-[0.55rem] text-[#888] tracking-[1.2px] uppercase mt-1">by Vayunotics</div>
+            <div class="hidden sm:flex flex-col justify-center">
+                <span class="bg-gradient-to-r from-[#3a86ff] to-[#ff00c8] bg-clip-text text-transparent font-black text-lg md:text-[1.6rem] tracking-[-0.5px] leading-none">DIVYALINK</span>
+                <div class="text-[0.55rem] text-[#888] tracking-[1.5px] uppercase mt-[2px] font-bold">BY VAYUNOTICS</div>
             </div>
 
             <div class="flex items-center gap-1.5 flex-nowrap overflow-x-auto no-scrollbar pb-1 sm:pb-0">
                 @{
-                    var pillBase = "inline-flex items-center gap-1 px-2 py-1 rounded-[4px] text-[0.58rem] font-extrabold tracking-[0.8px] whitespace-nowrap transition-all duration-300 border";
+                    var pillBase = "inline-flex items-center justify-center gap-1.5 h-[28px] min-w-[95px] px-2 rounded-[4px] text-[0.58rem] font-extrabold tracking-[0.8px] whitespace-nowrap transition-all duration-300 border box-border";
                 }
                 <div class="@pillBase @(IsDroneActuallyTalking ? "bg-[rgba(0,200,80,0.12)] border-[#2ea043] text-[#3fb950]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
                     <i class="bi bi-router-fill"></i>
-                    <span class="hidden sm:inline">@(IsDroneActuallyTalking ? "TELEM" : "NO LINK")</span>
+                    <span class="hidden sm:inline">
+                        @if (IsDroneActuallyTalking)
+                        {
+                            @($"TELEM {Drone.State.RxPacketsPerSec:0}Hz")
+                        }
+                        else
+                        {
+                            @("NO LINK")
+                        }
+                    </span>
                 </div>
                 <div class="@pillBase @(Drone.State.GpsFixType >= 3 ? "bg-[rgba(0,200,80,0.10)] border-[#2ea043] text-[#3fb950]" : Drone.State.GpsFixType >= 2 ? "bg-[rgba(210,153,34,0.12)] border-[#d29922] text-[#e3a820]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
                     <i class="bi bi-reception-4"></i>
@@ -111,9 +120,12 @@
     </main>
 
     @* <div class="fixed top-[60px] w-full sm:w-[540px] h-[calc(100vh-60px)] bg-[#0b0c10] border-r-2 border-[#7e3ff2] z-[1500] transition-all duration-300 overflow-y-auto overflow-x-hidden @(string.IsNullOrEmpty(activeTab) ? "-left-full sm:-left-[580px]" : "left-0")"> *@
-    <div class="fixed top-[var(--header-height)] w-full sm:w-[540px] h-[calc(100vh-var(--header-height))] bg-[rgba(15,17,23,0.7)] backdrop-blur-xl border-r border-[rgba(255,255,255,0.1)] z-[1500] transition-all duration-300 shadow-[20px_0_50px_rgba(0,0,0,0.3)] overflow-y-auto overflow-x-hidden @(string.IsNullOrEmpty(activeTab) ? "-left-full sm:-left-[580px]" : "left-0")"> 
+    @* <div class="fixed top-[var(--header-height)] w-full sm:w-[540px] h-[calc(100vh-var(--header-height))] bg-[rgba(15,17,23,0.7)] backdrop-blur-xl border-r border-[rgba(255,255,255,0.1)] z-[1500] transition-all duration-300 shadow-[20px_0_50px_rgba(0,0,0,0.3)] overflow-y-auto overflow-x-hidden @(string.IsNullOrEmpty(activeTab) ? "-left-full sm:-left-[580px]" : "left-0")"> 
         <button class="absolute top-[5px] right-[5px] bg-transparent border-none text-[rgba(255,255,255,0.7)] text-[26px] font-bold p-0 cursor-pointer z-[2000] leading-none transition-all duration-200 hover:text-[#ff3a3a] hover:scale-125" @onclick='() => activeTab = ""'>&times;</button>
-        <div class="min-w-full sm:min-w-[480px] p-0 box-border">
+        <div class="min-w-full sm:min-w-[480px] p-0 box-border"> *@
+    <div class="fixed @GetDrawerPositionClasses() bg-[rgba(15,17,23,0.9)] backdrop-blur-xl border border-[rgba(255,255,255,0.1)] z-[1500] transition-all duration-300 shadow-[20px_0_50px_rgba(0,0,0,0.3)] overflow-hidden flex flex-col">
+        <button class="absolute top-[5px] right-[5px] bg-transparent border-none text-[rgba(255,255,255,0.7)] text-[26px] font-bold p-0 cursor-pointer z-[2000] leading-none transition-all duration-200 hover:text-[#ff3a3a] hover:scale-125" @onclick='() => activeTab = ""'>&times;</button>
+        <div class="w-full h-full p-0 box-border overflow-y-auto overflow-x-hidden">
             @if (activeTab == "Quick")
             {
                 <Quick />
@@ -212,6 +224,7 @@
     private string selectedType = "Serial";
     private string selectedPort = "";
     private int selectedBaud = 57600;
+    [Inject] private IConfiguration Config { get; set; } = default!;
 
     private List<string> availablePorts = new();
     private bool isManualConnected = false;
@@ -227,33 +240,47 @@
         _autoDetectTimer = new System.Threading.Timer(AutoDetectPorts, null, 0, 1000);
         Drone.OnTelemetryUpdated += RefreshUi;
         Drone.OnRcChannelsUpdated += OnRcUpdated;
+        // Pre-fill TCP/UDP address from appsettings so user just clicks CONNECT
+        var defaultType = Config["TcpConnection:DefaultConnectionType"] ?? "Serial";
+        if (Enum.TryParse<ConnectionType>(defaultType, out _))
+            selectedType = defaultType;
+
+        if (selectedType is "TCP" or "UDP")
+        {
+            var host = Config["TcpConnection:DefaultHost"] ?? "";
+            var port = Config["TcpConnection:DefaultPort"] ?? "";
+            selectedPort = string.IsNullOrEmpty(port) ? host : $"{host}:{port}";
+        }
     }
 
     private void AutoDetectPorts(object? state)
     {
         try
         {
-            var currentPhysicalPorts = SerialPort.GetPortNames().Distinct().OrderBy(x => x).ToList();
+            var current = SerialPort.GetPortNames().Distinct().OrderBy(x => x).ToList();
             InvokeAsync(() =>
             {
-                if (isManualConnected && !string.IsNullOrEmpty(selectedPort))
+                bool changed = false;
+
+                if (isManualConnected && !string.IsNullOrEmpty(selectedPort)
+                    && !current.Contains(selectedPort))
                 {
-                    if (!currentPhysicalPorts.Contains(selectedPort))
-                    {
-                        Drone.StopConnection();
-                        isManualConnected = false;
-                        selectedPort = "";
-                    }
+                    Drone.StopConnection();
+                    isManualConnected = false;
+                    selectedPort = "";
+                    changed = true;
                 }
-                if (!currentPhysicalPorts.SequenceEqual(availablePorts.OrderBy(x => x)))
+
+                if (!current.SequenceEqual(availablePorts.OrderBy(x => x)))
                 {
-                    availablePorts = currentPhysicalPorts;
-                    if (!isManualConnected && !string.IsNullOrEmpty(selectedPort) && !availablePorts.Contains(selectedPort))
-                    {
+                    availablePorts = current;
+                    if (!isManualConnected && !string.IsNullOrEmpty(selectedPort)
+                        && !availablePorts.Contains(selectedPort))
                         selectedPort = "";
-                    }
+                    changed = true;
                 }
-                StateHasChanged();
+
+                if (changed) StateHasChanged(); // ← only re-render when something actually changed
             });
         }
         catch { }
@@ -283,10 +310,9 @@
             else
             {
                 Drone.Connect(Enum.Parse<ConnectionType>(selectedType), selectedPort, selectedBaud);
-                for (int i = 0; i < 60; i++)
+                for (int i = 0; i < 30; i++)
                 {
-                    bool hasData = Drone.State.Roll != 0 || Drone.State.SatCount > 0 || Drone.State.Altitude != 0;
-                    if (IsDroneActuallyTalking && hasData) break;
+                    if (IsDroneActuallyTalking) break;
                     if (Drone.State.ConnectionStatus == "Disconnected") break;
                     await Task.Delay(500);
                 }
@@ -299,6 +325,7 @@
                 {
                     Drone.StopConnection();
                     isManualConnected = false;
+                    Drone.Toast("No response from vehicle. Check connection.", MavlinkService.ToastLevel.Warning, "⚠️");
                 }
             }
         }
@@ -334,6 +361,25 @@
         if (current == _lastRcState) return;
         _lastRcState = current;
         InvokeAsync(StateHasChanged);
+    }
+
+    private string GetDrawerPositionClasses()
+    {
+        if (string.IsNullOrEmpty(activeTab))
+        {
+            // 1. Hidden State (Slide off screen to the left)
+            return "top-[var(--header-height)] h-[calc(100vh-var(--header-height))] w-full sm:w-[540px] -left-full sm:-left-[580px]";
+        }
+        else if (activeTab == "Swarm")
+        {
+            // 2. SWARM COMMAND CENTER: Stretches across screen, stops at video (420px), stays above footer (70px)
+            return "top-[var(--header-height)] left-0 w-[calc(100vw-570px)] h-[calc(100vh-var(--header-height)-100px)] rounded-br-[12px] rounded-tr-[12px]";
+        }
+        else
+        {
+            // 3. STANDARD DRAWER: Used for FlightPlan, Setup, etc. (Locks to left edge)
+            return "top-[var(--header-height)] left-0 h-[calc(100vh-var(--header-height))] w-full sm:w-[540px]";
+        }
     }
 
     public void Dispose()

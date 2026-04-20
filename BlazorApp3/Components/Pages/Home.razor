@@ -20,7 +20,7 @@
 </button>
 
 @* Right Side Telemetry Overlay (Transparent Clean Glass) *@
-<div class="fixed top-1/4  right-[16px] -translate-y-1/2 flex flex-col gap-[10px] z-[10] pointer-events-none">
+<div class="fixed top-[calc(var(--header-height)+12px)] right-[16px] flex flex-col gap-[10px] z-[10] pointer-events-none">
     @{
         // High transparency (0.3 opacity) with a subtle blur and a faint white edge
         var statBoxBase = "pointer-events-auto bg-[rgba(10,11,13,0.3)] border border-[rgba(255,255,255,0.15)] rounded-[12px] px-[14px] py-[10px] flex items-center gap-[12px] w-[170px] backdrop-blur-sm shadow-lg transition-all duration-300";
@@ -129,11 +129,21 @@
         return Task.CompletedTask;
     }
 
+    private DateTime _lastHomeRender = DateTime.MinValue;
+
     private void HandleTelemetryUpdated()
     {
         _ = InvokeAsync(async () =>
         {
             await TryJumpOrUpdateAsync();
+
+            // Stat boxes (battery, speed, altitude) shown over the map only
+            // need ~5 Hz. The JS map position update already has its own
+            // 200 ms guard in TryJumpOrUpdateAsync — this guard covers the
+            // Blazor diff cost of re-rendering the overlay divs.
+            var now = DateTime.UtcNow;
+            if ((now - _lastHomeRender).TotalMilliseconds < 200) return;
+            _lastHomeRender = now;
             StateHasChanged();
         });
     }
