@@ -1,4 +1,5 @@
 using Asv.IO;
+using BlazorApp3.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using System.Collections.Concurrent;
@@ -22,7 +23,7 @@ public class MavlinkService : BackgroundService
     // ADD THESE NEW FIELDS after line ~18 (after _parser declaration):
     private readonly IConfiguration _config;
     private int _tcpReconnectAttempts = 0;
-    private System.Threading.Timer _uiTickTimer;
+    private System.Threading.Timer? _uiTickTimer;
 
     // UI Notification Throttle (10Hz is standard for GCS stability)
     private readonly TimeSpan _uiNotifyMinPeriod = TimeSpan.FromMilliseconds(66);
@@ -140,6 +141,35 @@ public class MavlinkService : BackgroundService
 
     private DroneState _state = new();
     public DroneState State => _state;
+    // ── ParameterManager hook ─────────────────────────────────────────────
+    public ParameterManager? ParameterManager { get; set; }
+    public bool HasVehicle => State.HasVehicleId;
+
+    public void SendParamRequestList()
+    {
+        if (!HasVehicle) return;
+        var packet = new MAVLink.mavlink_param_request_list_t
+        {
+            target_system = State.SystemId,
+            target_component = State.ComponentId
+        };
+        // FIXED: Using your exact SendPacket signature (msgid, data)
+        SendPacket(MAVLink.MAVLINK_MSG_ID.PARAM_REQUEST_LIST, packet);
+        _logger.LogInformation("Sent PARAM_REQUEST_LIST to sysid={Sys}", State.SystemId);
+    }
+
+    public void SendParamRequestRead(int paramIndex, byte targetSystem, byte targetComponent)
+    {
+        var packet = new MAVLink.mavlink_param_request_read_t
+        {
+            target_system = targetSystem,
+            target_component = targetComponent,
+            param_index = (short)paramIndex,
+            param_id = new byte[16] // Blank array for index-based fetch
+        };
+        // FIXED: Using your exact SendPacket signature
+        SendPacket(MAVLink.MAVLINK_MSG_ID.PARAM_REQUEST_READ, packet);
+    }
     private List<WaypointModel> _uploadQueue = new();
 
     public event Action<string>? OnVideoStatusChanged;
@@ -334,11 +364,11 @@ public class MavlinkService : BackgroundService
     public void StopConnection()
     {
         // Auto-restore Pixhawk LED lights on disconnect
-        if (IsConnected)
-        {
-            SendParameter("NTF_LED_BRIGHT", 3.0f);
-            Console.WriteLine("[SYSTEM] GCS Disconnecting. Re-enabling Pixhawk RGB LEDs.");
-        }
+        //if (IsConnected)
+        //{
+        //    SendParameter("NTF_LED_BRIGHT", 3.0f);
+        //    Console.WriteLine("[SYSTEM] GCS Disconnecting. Re-enabling Pixhawk RGB LEDs.");
+        //}
 
         lock (_sync) { _shouldBeConnected = false; }
         _uiTickTimer?.Dispose();
@@ -1032,7 +1062,7 @@ public class MavlinkService : BackgroundService
                 }
 
                 // Auto-disable Pixhawk LEDs on bench arrival
-                SendParameter("NTF_LED_BRIGHT", 0.0f);
+                //SendParameter("NTF_LED_BRIGHT", 0.0f);
 
                 // Request all params on connect — spaced to avoid radio FIFO overflow
                 _ = Task.Run(async () =>
@@ -1611,6 +1641,8 @@ public class MavlinkService : BackgroundService
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.PARAM_VALUE)
         {
             var param = (MAVLink.mavlink_param_value_t)packet.data;
+            // ── NEW: Route to ParameterManager FIRST ──
+            ParameterManager?.HandleParamValue(param);
             string paramName = System.Text.Encoding.ASCII.GetString(param.param_id).Trim('\0', ' ');
 
             if (paramName == "FRAME_CLASS")
@@ -2397,6 +2429,58 @@ public class MavlinkService : BackgroundService
             param2 = modeId
         };
         SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, req);
+    }
+
+    public void ArmNode(byte sysId, bool arm, bool force = false)
+    {
+        var req = new MAVLink.mavlink_command_long_t
+        {
+            target_system = sysId,
+            target_component = 0, // 0 = broadcast to all components on that system
+            command = (ushort)MAVLink.MAV_CMD.COMPONENT_ARM_DISARM,
+            param1 = arm ? 1 : 0,
+            param2 = (!arm && force) ? 21196 : 0
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, req);
+    }
+
+    public void SetFlightModeForNode(byte sysId, string modeName)
+    {
+        uint modeId = modeName.ToUpper() switch { "STABILIZE" => 0, "ALT_HOLD" => 2, "AUTO" => 3, "GUIDED" => 4, "LOITER" => 5, "RTL" => 6, "LAND" => 9, _ => 0 };
+        var req = new MAVLink.mavlink_command_long_t
+        {
+            target_system = sysId,
+            target_component = 0,
+            command = (ushort)MAVLink.MAV_CMD.DO_SET_MODE,
+            param1 = 1,
+            param2 = modeId
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, req);
+    }
+
+    public void SendCommandToNode(byte sysId, MAVLink.MAV_CMD command, float p1 = 0, float p2 = 0, float p3 = 0, float p4 = 0, float p5 = 0, float p6 = 0, float p7 = 0)
+    {
+        var cmd = new MAVLink.mavlink_command_long_t
+        {
+            command = (ushort)command,
+            param1 = p1,
+            param2 = p2,
+            param3 = p3,
+            param4 = p4,
+            param5 = p5,
+            param6 = p6,
+            param7 = p7,
+            target_system = sysId,
+            target_component = 0,
+            confirmation = 0
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.COMMAND_LONG, cmd);
+        _logger.LogDebug("[SWARM] CMD Sent to SYS {SysId}: {Command}", sysId, command);
+    }
+
+    public void RemoveSwarmNode(byte sysId)
+    {
+        ActiveSwarm.TryRemove(sysId, out _);
     }
 
     // ---------------- CLEANUP ----------------
