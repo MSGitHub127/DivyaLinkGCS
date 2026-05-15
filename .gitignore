@@ -368,3 +368,5 @@ FodyWeavers.xsd
 # Protects Google Maps API Key, Network IPs, and custom configurations
 appsettings.json
 appsettings.Development.json
+
+*.exe
