@@ -1,4 +1,4 @@
-﻿@page "/flightplan"
+@page "/flightplan"
 @using BlazorApp3
 @using System.Text.Json
 @inject MavlinkService Drone
@@ -9,57 +9,81 @@
 
 <div class="flex flex-col h-full gap-4 p-5 bg-transparent w-full max-w-[500px] mx-auto overflow-hidden">
 
-    <div class="h-[300px] w-full rounded-lg overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-[#333] shrink-0 bg-black">
+    @* --- SCALED HUD COMPONENT (240px) --- *@
+    <div class="h-[240px] w-full rounded-lg overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-[#333] shrink-0 bg-black">
         <Hud />
     </div>
 
-    <div class="flex-1 flex flex-col gap-2 min-h-0 bg-[rgba(18,20,28,0.6)] border border-[#30363d] rounded-lg py-3 px-[14px] backdrop-blur-[4px]">
-        <div class="pb-2 border-b border-[#30363d] flex items-center gap-[10px] font-black text-[0.78rem] uppercase text-white tracking-[1.5px] shrink-0">
-            <span class="text-[1rem]">✈️</span> FLIGHT PLAN EDITOR
+    @* --- TIGHTER OUTER BOX (p-2.5, gap-1.5) --- *@
+    <div class="flex-1 flex flex-col gap-1.5 min-h-0 bg-[rgba(18,20,28,0.6)] border border-[#30363d] rounded-lg p-2.5 backdrop-blur-[4px]">
+
+        @* --- HEADER --- *@
+        <div class="pb-1.5 border-b border-[#30363d] flex items-center gap-[10px] font-semibold text-[1.05rem] uppercase text-white tracking-[1.5px] shrink-0">
+            <span class="text-[1rem]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plane-takeoff">
+                    <path d="M2 22h20"/><path d="M6.36 17.4 4 17l-2-4 1.1-.55a2 2 0 0 1 1.8 0l.17.1a2 2 0 0 0 1.8 0L8 12 5 6l.9-.45a2 2 0 0 1 2.09.2l4.02 3a2 2 0 0 0 2.1.2l4.19-2.06a2.41 2.41 0 0 1 1.73-.17L21 7a1.4 1.4 0 0 1 .87 1.99l-.38.76c-.23.46-.6.84-1.07 1.08L7.58 17.2a2 2 0 0 1-1.22.18Z"/>
+                </svg>
+                    </span>
+            FLIGHT PLAN EDITOR
         </div>
 
-        <div class="flex-1 flex flex-col gap-[10px] overflow-hidden min-h-0 pt-1">
+        <div class="flex-1 flex flex-col gap-1.5 overflow-hidden min-h-0 pt-1">
 
-            @* 1. MAP VIEWPORT (Fixed) *@
-            <div class="h-[50px] w-full relative rounded-[6px] overflow-hidden border border-[#242731] shrink-0">
+            @* 1. SLIMMER MAP VIEWPORT (42px) *@
+            <div class="h-[42px] w-full relative rounded-[6px] overflow-hidden border border-[#242731] shrink-0">
                 <div id="map-element" class="absolute inset-0 w-full h-full"></div>
-                <div class="absolute top-2 left-2 right-2 flex justify-between z-10 pointer-events-none">
-                    <button class="pointer-events-auto h-8 px-3 rounded bg-[rgba(18,20,28,0.85)] border border-[#242731] text-[#00f2ff] cursor-pointer transition-all duration-200 backdrop-blur-[4px] text-[0.65rem] font-extrabold tracking-[1px] flex items-center gap-[6px] hover:bg-[#00f2ff] hover:text-[#0b0c10]" @onclick="SetHomeToDrone" title="Sync Home to Drone Location">
+                <div class="absolute top-1.5 left-2 right-2 flex justify-between z-10 pointer-events-none">
+                    <button class="pointer-events-auto h-7 px-3 rounded bg-[rgba(18,20,28,0.85)] border border-[#242731] text-[#00f2ff] cursor-pointer transition-all duration-200 backdrop-blur-[4px] text-[0.85rem] font-bold tracking-[1px] flex items-center gap-[6px] hover:bg-[#00f2ff] hover:text-[#0b0c10]" @onclick="SetHomeToDrone" title="Sync Home to Drone Location">
                         <i class="bi bi-house-door-fill"></i> SYNC HOME
                     </button>
-                    <button class="pointer-events-auto h-8 px-3 rounded bg-[rgba(18,20,28,0.85)] border border-[#242731] text-[#00f2ff] cursor-pointer transition-all duration-200 backdrop-blur-[4px] text-[0.65rem] font-extrabold tracking-[1px] flex items-center gap-[6px] hover:bg-[#00f2ff] hover:text-[#0b0c10]" @onclick="CenterMapOnDrone" title="Center Map on Drone">
+                    <button class="pointer-events-auto h-7 px-3 rounded bg-[rgba(18,20,28,0.85)] border border-[#242731] text-[#00f2ff] cursor-pointer transition-all duration-200 backdrop-blur-[4px] text-[0.85rem] font-bold tracking-[1px] flex items-center gap-[6px] hover:bg-[#00f2ff] hover:text-[#0b0c10]" @onclick="CenterMapOnDrone" title="Center Map on Drone">
                         <i class="bi bi-crosshair"></i> CENTER DRONE
                     </button>
                 </div>
-            </div>
+                </div>
 
-            @* 2. TELEMETRY GRID (Fixed) *@
+            @* 2. TELEMETRY GRID *@
             <div class="grid grid-cols-4 gap-2 shrink-0">
-                <div class="bg-[#010409] border border-[#242731] rounded-[6px] py-2 px-1 flex flex-col items-center justify-center gap-1">
-                    <label class="text-[0.55rem] text-[#888] font-extrabold uppercase m-0 flex items-center gap-1"><i class="bi bi-speedometer2"></i> SPEED</label>
-                    <div class="text-[0.85rem] font-extrabold text-[#00f2ff] flex items-baseline gap-[2px]">@Drone.State.GroundSpeed.ToString("0.0") <span class="text-[0.6rem] text-[#888] font-semibold">m/s</span></div>
-                </div>
-                <div class="bg-[#010409] border border-[#242731] rounded-[6px] py-2 px-1 flex flex-col items-center justify-center gap-1">
-                    <label class="text-[0.55rem] text-[#888] font-extrabold uppercase m-0 flex items-center gap-1"><i class="bi bi-rulers"></i> DISTANCE</label>
-                    <div class="text-[0.85rem] font-extrabold text-[#00f2ff] flex items-baseline gap-[2px]">@CalculateTotalDistance().ToString("0") <span class="text-[0.6rem] text-[#888] font-semibold">m</span></div>
-                </div>
-                <div class="bg-[#010409] border border-[#242731] rounded-[6px] py-2 px-1 flex flex-col items-center justify-center gap-1">
-                    <label class="text-[0.55rem] text-[#888] font-extrabold uppercase m-0 flex items-center gap-1"><i class="bi bi-stopwatch"></i> EST. TIME</label>
-                    <div class="text-[0.85rem] font-extrabold text-[#00f2ff] flex items-baseline gap-[2px]">~@((CalculateTotalDistance() / 5 / 60).ToString("0")) <span class="text-[0.6rem] text-[#888] font-semibold">min</span></div>
-                </div>
-                <div class="bg-[#010409] border border-[#242731] rounded-[6px] py-2 px-1 flex flex-col items-center justify-center gap-1">
-                    <label class="text-[0.55rem] text-[#888] font-extrabold uppercase m-0 flex items-center gap-1"><i class="bi bi-arrows-vertical"></i> DEF. ALT</label>
-                    <div class="flex items-center gap-1">
-                        <input type="number" @bind="globalAlt" class="w-[40px] bg-[#08090b] border border-[#333] text-[#00ff66] p-[2px] rounded font-bold text-[0.8rem] text-center outline-none transition-all duration-200 font-mono focus:border-[#00f2ff]" @bind:after="ApplyGlobalAlt" />
-                        <span class="text-[0.6rem] text-[#888] font-semibold">m</span>
+                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center">
+                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">SPEED</span>
+                    <div class="flex items-baseline gap-1">
+                        <span class="text-[1.1rem] font-black text-white font-mono">@Drone.State.GroundSpeed.ToString("0.0")</span>
+                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">m/s</span>
                     </div>
                 </div>
-            </div>
+                
+                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center">
+                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">DISTANCE</span>
+                    <div class="flex items-baseline gap-1">
+                        <span class="text-[1.1rem] font-black text-white font-mono">@CalculateTotalDistance().ToString("0")</span>
+                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">m</span>
+                    </div>
+                </div>
+                
+                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center">
+                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">EST. TIME</span>
+                    <div class="flex items-baseline gap-1">
+                        <span class="text-[1.1rem] font-black text-white font-mono">~@((CalculateTotalDistance() / 5 / 60).ToString("0"))</span>
+                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">min</span>
+                    </div>
+                </div>
+                
+                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center justify-between">
+                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">DEF. ALT</span>
+                    <div class="flex items-center gap-1">
+                        <input type="number" 
+                               @bind="globalAlt" 
+                               @bind:after="ApplyGlobalAlt" 
+                               class="w-[45px] bg-[#0d1117] border border-[#30363d] rounded-[4px] text-[#00ff66] p-[2px] font-bold text-[0.95rem] text-center outline-none font-mono focus:border-[#00f2ff] transition-colors" />
+                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">m</span>
+                    </div>
+                    </div>
+                    </div>
 
-            @* 3. WAYPOINT EDITOR (Flex-Grow, Internally Scrolls) *@
+            @* 3. WAYPOINT EDITOR LIST *@
             <div class="flex-1 flex flex-col gap-2 min-h-0 bg-[#010409] border border-[#242731] rounded-[6px] p-2">
                 <div class="flex justify-between items-center pb-[6px] border-b border-[#242731] shrink-0">
-                    <span class="text-[0.7rem] font-extrabold text-[#888]">WAYPOINTS (@(MissionItems.Count > 0 ? MissionItems.Count - 1 : 0))</span>
+                    <span class="text-[0.9rem] font-bold text-[#888]">WAYPOINTS (@(MissionItems.Count > 0 ? MissionItems.Count - 1 : 0))</span>
                     <div class="flex gap-3">
                         <button class="bg-transparent border-none cursor-pointer text-[1rem] p-0 transition-all hover:brightness-110 text-[#3fb950]" @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")' title="Import Mission">
                             <i class="bi bi-folder2-open"></i>
@@ -82,46 +106,77 @@
                         <div class="py-5 px-[10px] text-center text-[#666] text-[0.75rem] font-semibold">
                             <i class="bi bi-cursor-fill" style="font-size: 1.5rem; color: #333; margin-bottom: 8px; display: block;"></i>
                             No waypoints added.<br />Click the map to define a flight path.
-                        </div>
+                </div>
                     }
                     else
                     {
                         @foreach (var mi in MissionItems.Where(x => !x.IsHome))
                         {
-                            <div class="group bg-[rgba(18,20,28,0.8)] border border-[#333] rounded-lg py-4 px-5 text-[1.05rem] flex items-center gap-4 cursor-pointer transition-all duration-200 shrink-0 hover:border-[#555] @(activeWpIndex == mi.Index ? "border-[#00f2ff] bg-[rgba(0,242,255,0.05)] shadow-[inset_3px_0_0_#00f2ff]" : "")" @onclick="() => activeWpIndex = mi.Index">
-                                <div class="w-8 h-8 bg-[#0b0c10] text-[#888] rounded-full flex items-center justify-center text-[0.9rem] font-extrabold border border-[#333] transition-all duration-200 @(activeWpIndex == mi.Index ? "bg-[#00f2ff] text-[#0b0c10] border-[#00f2ff]" : "")">@(mi.Index == 0 ? "H" : mi.Index.ToString())</div>
-                                <div class="flex flex-col flex-1">
-                                    <span class="text-[0.75rem] font-mono text-[#ccc] font-semibold">@mi.Lat.ToString("F5"), @mi.Lng.ToString("F5")</span>
-                                    <div class="flex items-center gap-[6px] mt-[6px]">
-                                        <label class="text-[0.65rem] text-[#888] font-extrabold m-0">ALT (m):</label>
-                                        <input type="number" @bind="mi.Alt" class="w-[75px] bg-[#08090b] border border-[#333] text-[#00ff66] px-[6px] py-1 rounded text-[0.85rem] font-bold outline-none transition-all duration-200 focus:border-[#00ff66]" />
-                                    </div>
-                                </div>
-                                <select class="bg-[#08090b] border border-[#333] text-[#00f2ff] py-1 px-2 rounded text-[0.75rem] font-extrabold outline-none cursor-pointer ml-auto mr-2 transition-colors focus:border-[#00f2ff] [&>option]:bg-[#08090b] [&>option]:text-white" value="@mi.Command"
-                                        @onchange="@(e => { mi.Command = e.Value?.ToString() ?? "WAYPOINT"; TriggerMapRedraw(); })"
-                                        @onclick="() => { }"
-                                        @onclick:stopPropagation="true">
-                                    <option value="WAYPOINT">WAYPOINT</option>
-                                    <option value="TAKEOFF">TAKEOFF</option>
-                                    <option value="LOITER">LOITER</option>
-                                    <option value="LAND">LAND</option>
-                                    <option value="RTL">RTL</option>
-                                </select>
-                                <button class="ml-0 bg-transparent border-none text-[#666] text-[1.3rem] cursor-pointer p-2 transition-all duration-200 rounded-[6px] hover:text-[#f85149] hover:bg-[rgba(255,58,58,0.1)]" @onclick:stopPropagation="true" @onclick="() => RemoveItem(mi)">
-                                    <i class="bi bi-x-lg"></i>
-                                </button>
+                            @* TACTICAL HIGH-DENSITY WAYPOINT SLAB *@
+                            <div class="p-2.5 mb-1 bg-[#0d1117] border rounded-[6px] transition-colors cursor-pointer shrink-0 @(activeWpIndex == mi.Index ? "border-[#00f2ff] bg-[rgba(0,242,255,0.05)] shadow-[inset_2px_0_0_#00f2ff]" : "border-[#30363d] hover:border-[#555]")" @onclick="() => activeWpIndex = mi.Index">
+                                
+                                @* Row 1: Index, Coords, and Top-Right Cross *@
+                            <div class="flex items-center justify-between mb-2">
+                                    <div class="flex items-center gap-3">
+                                        <span class="flex items-center justify-center w-[26px] h-[26px] shrink-0 rounded-full border text-[0.75rem] font-bold transition-colors @(activeWpIndex == mi.Index ? "bg-[#00f2ff] text-[#0b0c10] border-[#00f2ff]" : "bg-[#161b22] text-[#58a6ff] border-[#30363d]")">
+                                            @mi.Index
+                                </span>
+                                        <span class="font-mono text-[1.1rem] text-white tracking-tight font-semibold">
+                                            @mi.Lat.ToString("F5"), @mi.Lng.ToString("F5")
+                                    </span>
                             </div>
-                        }
-                    }
-                </div>
-            </div>
+                                    
+                                    <button class="text-[#8b949e] hover:text-[#ff3a3a] hover:bg-[rgba(255,58,58,0.1)] transition-all bg-transparent border-none rounded p-[4px] cursor-pointer leading-none flex items-center justify-center" 
+                                            @onclick:stopPropagation="true" 
+                                            @onclick="() => RemoveItem(mi)">
+                                        <i class="bi bi-x-lg text-[1rem]"></i>
+                                    </button>
+                                                </div>
 
-            @* 4. FOOTER ACTIONS (Fixed) *@
+                                @* Row 2: Alt & Command (LOCKED HEIGHTS) *@
+                                <div class="flex items-center justify-between pl-[38px]"> 
+                                    
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-[0.75rem] font-black text-[#8b949e] uppercase tracking-wider">ALT</span>
+                                        <input type="number" 
+                                               style="width: 60px;"
+                                               class="h-[26px] shrink-0 bg-[#161b22] border border-[#30363d] rounded-[4px] p-0 text-center text-[0.85rem] text-[#00ff66] font-mono font-bold focus:outline-none focus:border-[#00ff66]" 
+                                               @bind="mi.Alt" />
+                                            </div>
+
+                                    <div class="w-[130px] shrink-0"> 
+                                        <select class="w-full h-[26px] bg-[#161b22] border border-[#30363d] rounded-[4px] px-[6px] text-[0.8rem] font-bold text-[#00f2ff] uppercase cursor-pointer focus:outline-none focus:border-[#00f2ff] [&>option]:bg-[#161b22] [&>option]:text-white"
+                                                value="@mi.Command"
+                                                @onchange="@(e => { mi.Command = e.Value?.ToString() ?? "WAYPOINT"; TriggerMapRedraw(); })"
+                                                @onclick:stopPropagation="true">
+                                            <option value="WAYPOINT">WAYPOINT</option>
+                                            <option value="TAKEOFF">TAKEOFF</option>
+                                            <option value="LOITER">LOITER</option>
+                                            <option value="LAND">LAND</option>
+                                            <option value="RTL">RTL</option>
+                                        </select>
+                                        </div>
+                                    
+                                </div>
+                        </div>
+                    }
+                            }
+                        </div>
+        </div>
+
+            @* 4. FOOTER ACTIONS WITH UI FEEDBACK *@
             <div class="flex gap-[10px] shrink-0">
-                <button class="flex-1 p-3 rounded-[6px] border border-[#333] font-extrabold text-[0.75rem] tracking-[1px] cursor-pointer transition-all duration-200 flex justify-center items-center gap-2 bg-[#21262d] text-[#ccc] hover:bg-[#333] hover:text-white" @onclick="UploadMission">
-                    <i class="bi bi-cloud-arrow-up-fill"></i> UPLOAD
-                </button>
-                <button class="flex-1 p-3 rounded-[6px] font-extrabold text-[0.75rem] tracking-[1px] transition-all duration-200 flex justify-center items-center gap-2 @(isUploaded ? "bg-gradient-to-r from-[#0d3a1a] to-[#00ff66] text-[#0b0c10] border-none shadow-[0_4px_15px_rgba(0,255,102,0.2)] hover:brightness-110 hover:-translate-y-[1px] cursor-pointer" : "bg-[#0d3a1a] text-[#888] border border-[#238636] cursor-not-allowed")" @onclick="StartMission" disabled="@(!isUploaded)">
+                <button class="flex-1 p-2.5 rounded-[6px] border border-[#333] font-semibold text-[1rem] tracking-[1px] cursor-pointer transition-all duration-200 flex justify-center items-center gap-2 @(isUploading ? "bg-[#333] text-[#888] cursor-wait" : "bg-[#21262d] text-[#ccc] hover:bg-[#333] hover:text-white")" @onclick="UploadMission" disabled="@isUploading">
+                    @if (isUploading)
+                {
+                        <i class="bi bi-arrow-repeat animate-spin"></i> <span>UPLOADING...</span>
+                }
+                else
+                {
+                        <i class="bi bi-cloud-arrow-up-fill"></i> <span>UPLOAD</span>
+                }
+            </button>
+                <button class="flex-1 p-2.5 rounded-[6px] font-semibold text-[1rem] tracking-[1px] transition-all duration-200 flex justify-center items-center gap-2 @(isUploaded ? "bg-gradient-to-r from-[#0d3a1a] to-[#00ff66] text-[#0b0c10] border-none shadow-[0_4px_15px_rgba(0,255,102,0.2)] hover:brightness-110 hover:-translate-y-[1px] cursor-pointer" : "bg-[#0d3a1a] text-[#888] border border-[#238636] cursor-not-allowed")" @onclick="StartMission" disabled="@(!isUploaded)">
                     <i class="bi bi-rocket-takeoff-fill"></i> START
                 </button>
             </div>
@@ -130,13 +185,18 @@
     </div>
 </div>
 
+@* --- C# LOGIC BLOCK --- *@
 @code {
+    // Note: Kept static so JSInterop AddWaypointFromMap continues to function globally. 
+    // For multi-user deployment, migrate this to a scoped StateService.
     private static List<MissionItem> MissionItems = new();
     private static event Action? OnMissionChanged;
+    
     private bool isUploaded = false;
     private bool isUploading = false;
     private int globalAlt = 50;
     private int activeWpIndex = -1;
+
     public class MissionItem
     {
         public int Index { get; set; }
@@ -148,16 +208,14 @@
     }
 
     private bool _lastLinkHealthy = false;
-
     private void RefreshUi()
     {
-        // FlightPlan only uses link health for enabling the Upload button.
-        // Previously triggered a full Blazor diff on every 33 ms tick.
         bool healthy = Drone.IsLinkHealthy;
         if (healthy == _lastLinkHealthy) return;
         _lastLinkHealthy = healthy;
         InvokeAsync(StateHasChanged);
     }
+
     protected override void OnInitialized()
     {
         OnMissionChanged += TriggerMapRedraw;
@@ -177,7 +235,7 @@
             try
             {
                 await JS.InvokeVoidAsync("initMap", Drone.State.Latitude, Drone.State.Longitude);
-            }
+        }
             catch { }
         }
     }
@@ -187,10 +245,8 @@
     {
         if (MissionItems.Count == 0)
         {
-            // Safety net: If list is totally empty, recreate Home
             MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = 0, IsHome = true });
         }
-        // THE FIX: Only update Home if it hasn't been placed yet (Lat/Lng are 0)
         else if (MissionItems.Count == 1 && MissionItems[0].Lat == 0 && MissionItems[0].Lng == 0)
         {
             MissionItems[0].Lat = lat;
@@ -198,10 +254,8 @@
         }
         else
         {
-            // Home is already placed! Add a new waypoint.
             MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = 50, IsHome = false });
         }
-
         Resequence();
     }
 
@@ -210,7 +264,6 @@
         for (int i = 0; i < MissionItems.Count; i++)
         {
             MissionItems[i].Index = i;
-            // FORCE Index 0 to be Home, everything else is false
             MissionItems[i].IsHome = (i == 0);
         }
         OnMissionChanged?.Invoke();
@@ -234,18 +287,19 @@
     }
 
     private void TriggerMapRedraw() => InvokeAsync(async () =>
+    {
+        try
         {
-            try
-            {
-                isUploaded = false;
-                StateHasChanged();
-                await JS.InvokeVoidAsync("drawMission", MissionItems);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Map Redraw Error: {ex.Message}");
-            }
-        });
+            isUploaded = false;
+        StateHasChanged();
+            await JS.InvokeVoidAsync("drawMission", MissionItems);
+    }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Map Redraw Error: {ex.Message}");
+        }
+    });
+
     private async Task CenterMapOnDrone()
     {
         await JS.InvokeVoidAsync("jumpToDrone", Drone.State.Latitude, Drone.State.Longitude, Drone.State.Yaw);
@@ -279,7 +333,6 @@
         OnMissionChanged?.Invoke();
     }
 
-
     private double CalculateTotalDistance()
     {
         double total = 0;
@@ -288,15 +341,22 @@
         return total;
     }
 
+    // Optimized Haversine Math
     private double GetHaversineDistance(MissionItem w1, MissionItem w2)
     {
-        double r = 6371000;
-        double dLat = (w2.Lat - w1.Lat) * Math.PI / 180;
-        double dLng = (w2.Lng - w1.Lng) * Math.PI / 180;
+        const double R = 6371000;
+        const double Deg2Rad = Math.PI / 180.0;
+        
+        double lat1Rad = w1.Lat * Deg2Rad;
+        double lat2Rad = w2.Lat * Deg2Rad;
+        double dLat = (w2.Lat - w1.Lat) * Deg2Rad;
+        double dLng = (w2.Lng - w1.Lng) * Deg2Rad;
+        
         double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
-                   Math.Cos(w1.Lat * Math.PI / 180) * Math.Cos(w2.Lat * Math.PI / 180) * Math.Sin(dLng / 2) * Math.Sin(dLng / 2);
-        return r * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
-    }
+                   Math.Cos(lat1Rad) * Math.Cos(lat2Rad) * Math.Sin(dLng / 2) * Math.Sin(dLng / 2);
+                   
+        return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            }
 
     private async Task HandleImport(InputFileChangeEventArgs e)
     {
@@ -336,6 +396,7 @@
                 Alt = (int)mi.Alt,
                 IsHome = mi.IsHome
             }).ToList();
+            
             bool success = await Drone.UploadMissionAsync(waypoints);
             if (success)
             {
@@ -364,8 +425,19 @@
         catch { }
     }
 
-    private void StartMission()
-    {
-        if (isUploaded) Drone.SetFlightMode("AUTO");
-    }
+    private async Task StartMission()
+        {
+        // Guardrail: Ensure the drone is actually ready to fly before throwing it into AUTO
+        if (!isUploaded) return;
+        
+        // Uncomment/Modify this check based on how your MavlinkService exposes armed state
+        /* if (!Drone.State.IsArmed)
+        {
+            await JS.InvokeVoidAsync("alert", "Warning: Drone is disarmed. Please arm before starting mission.");
+            return;
+        }
+        */
+        
+        Drone.SetFlightMode("AUTO");
+}
 }

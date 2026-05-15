@@ -10,9 +10,14 @@
     </div>
 
     <div class="flex flex-col flex-1 gap-[10px] min-h-0">
-        <div class="bg-[rgba(18,20,28,0.8)] border border-[rgba(0,242,255,0.2)] rounded-[6px] p-[8px] text-center text-[#00f2ff] font-extrabold text-[0.85rem] tracking-[1.5px] uppercase backdrop-blur-[4px] shrink-0">
-            <span class="mr-[8px]">📟</span> SYSTEM TERMINAL (@Drone.StatusMessages.Count)
-        </div>
+        <div class="bg-[rgba(18,20,28,0.8)] border border-[rgba(0,242,255,0.2)] rounded-[6px] p-[8px] flex items-center justify-center text-[#00f2ff] font-semibold text-[1.1rem] tracking-[1.5px] uppercase backdrop-blur-[4px] shrink-0">
+        <span class="flex items-center gap-[10px]">
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-monitor-cog">
+            <path d="M12 17v4"/><path d="m14.305 7.53.923-.382"/><path d="m15.228 4.852-.923-.383"/><path d="m16.852 3.228-.383-.924"/><path d="m16.852 8.772-.383.923"/><path d="m19.148 3.228.383-.924"/><path d="m19.53 9.696-.382-.924"/><path d="m20.772 4.852.924-.383"/><path d="m20.772 7.148.924.383"/><path d="M22 13v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><path d="M8 21h8"/><circle cx="18" cy="6" r="3"/>
+        </svg>
+        <span>SYSTEM TERMINAL (@Drone.StatusMessages.Count)</span>
+    </span>
+    </div>
 
         <div id="terminal-scroll" class="flex-1 bg-[rgba(5,5,10,0.9)] border border-[#222] rounded-[6px] p-[12px] overflow-y-auto font-mono shadow-[inset_0_0_15px_rgba(0,0,0,0.8)]" @ref="_consoleWindow">
             @if (Drone.StatusMessages.Count == 0)
@@ -36,7 +41,7 @@
             }
         </div>
 
-        <button class="bg-[rgba(255,255,255,0.05)] border border-[#333] text-[#888] p-[8px] rounded-[4px] text-[0.7rem] cursor-pointer shrink-0 transition-colors hover:bg-[rgba(255,255,255,0.1)] hover:text-white" @onclick="ClearLogs">
+        <button class="bg-[rgba(255,255,255,0.05)] border border-[#333] text-[#888] p-[8px] rounded-[4px] text-[1rem] cursor-pointer shrink-0 transition-colors hover:bg-[rgba(255,255,255,0.1)] hover:text-white" @onclick="ClearLogs">
             CLEAR SYSTEM LOGS
         </button>
     </div>

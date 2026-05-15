@@ -7,80 +7,77 @@
         <Hud />
     </div>
 
-    <div class="flex-1 flex flex-col gap-[8px] min-h-0 bg-[rgba(18,20,28,0.6)] border border-[#30363d] rounded-[8px] py-[10px] px-[14px] backdrop-blur-[4px]">
-        <div class="pb-[8px] border-b border-[#30363d] flex items-center gap-[10px] font-black text-[0.78rem] uppercase text-white tracking-[1.5px] shrink-0">
-            <span class="text-[1rem]">🕹️</span> MISSION CONTROL
+    <div class="flex-1 flex flex-col gap-[4px] min-h-0 bg-[rgba(18,20,28,0.6)] border border-[#30363d] rounded-[8px] py-[10px] px-[14px] backdrop-blur-[4px]">
+        <div class="pb-[8px] border-b border-[#30363d] flex items-center gap-[10px] font-semibold text-[1.1rem] uppercase text-white tracking-[1.5px] shrink-0">
+            <span class="text-[0.9rem]"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-joystick-icon lucide-joystick"><path d="M21 17a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2Z"/><path d="M6 15v-2"/><path d="M12 15V9"/><circle cx="12" cy="6" r="3"/></svg></span> MISSION CONTROL
         </div>
 
-        <div class="flex-1 flex flex-col gap-[10px] overflow-hidden min-h-0">
+        <div class="flex-1 flex flex-col gap-[8px] overflow-hidden min-h-0">
 
             @* ── ARM / DISARM ── *@
             <div class="w-full shrink-0">
-                <button class="w-full h-[46px] border-none rounded-[6px] flex items-center justify-center gap-[12px] cursor-pointer transition-all duration-200 font-bold tracking-[1px] uppercase text-[0.8rem] text-white hover:brightness-110 hover:-translate-y-[1px] @(Drone.State.IsArmed ? "bg-gradient-to-r from-[#3a0d0d] to-[#f85149] shadow-[0_4px_15px_rgba(248,81,73,0.2)]" : "bg-gradient-to-r from-[#0d3a1a] to-[#2ea043] shadow-[0_4px_15px_rgba(46,160,67,0.2)]")" @onclick="HandleArmClick">
-                    <div class="[&>svg]:w-[18px] [&>svg]:h-[18px]">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M12 2L3 7V11C3 16.55 6.84 21.74 12 23C17.16 21.74 21 16.55 21 11V7L12 2Z" />
-                            <path d="M12 7V15M9 11H15" stroke-linecap="round" />
-                        </svg>
+                <button class="w-full h-[42px] border-none rounded-[6px] flex items-center justify-center gap-[12px] cursor-pointer transition-all duration-200 font-semibold tracking-[1px] uppercase text-[0.9rem] text-white hover:brightness-110 hover:-translate-y-[1px] @(Drone.State.IsArmed ? "bg-gradient-to-r from-[#3a0d0d] to-[#f85149] shadow-[0_4px_15px_rgba(248,81,73,0.2)]" : "bg-gradient-to-r from-[#0d3a1a] to-[#2ea043] shadow-[0_4px_15px_rgba(46,160,67,0.2)]")" @onclick="HandleArmClick">
+                    <div>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shield-plus-icon lucide-shield-plus"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M9 12h6"/><path d="M12 9v6"/></svg>
                     </div>
                     <span>@(Drone.State.IsArmed ? "DISARM SYSTEM" : "ARM SYSTEM")</span>
                 </button>
             </div>
 
             @* ── Precision Takeoff ── *@
-            <div class="flex items-center justify-between gap-[10px] bg-[#010409] border border-[#30363d] rounded-[8px] py-[8px] px-[14px] shrink-0 transition-colors duration-200 hover:border-[#444]">
-                <div class="flex items-center gap-[10px] flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-[8x] bg-[#010409] border border-[#30363d] rounded-[8px] py-[8px] px-[14px] shrink-0 transition-colors duration-200 hover:border-[#444]">
+                <div class="flex items-center gap-[8px] flex-1 min-w-0">
                     <div class="flex flex-col gap-[2px] min-w-0">
-                        <span class="text-[0.76rem] font-bold text-white whitespace-nowrap">Precision Takeoff</span>
+                        <span class="text-[0.9rem] font-normal text-white whitespace-nowrap">Precision Takeoff</span>
                     </div>
                 </div>
                 <div class="flex items-center gap-[6px] shrink-0">
                     <div class="flex items-center justify-between w-[85px] bg-[#0a0b0e] border border-[#30363d] rounded-[4px] py-[4px] px-[6px]">
-                        <input type="number" @bind="TakeoffAlt" step="1" min="1" class="w-[46px] bg-transparent border-none text-[#58a6ff] font-mono font-bold text-[0.88rem] text-right outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span class="text-[0.55rem] text-[#555] font-semibold whitespace-nowrap">m</span>
+                        <input type="number" @bind="TakeoffAlt" step="1" min="1" class="w-[46px] bg-transparent border-none text-[#58a6ff] font-mono font-semibold text-[1.1rem] text-right outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span class="text-[0.9rem] text-[#555] font-semibold whitespace-nowrap">m</span>
                     </div>
-                    <button class="border-none rounded-[4px] text-white font-black cursor-pointer uppercase text-[0.65rem] transition-all duration-200 py-[6px] px-[10px] w-[60px] flex justify-center items-center whitespace-nowrap hover:brightness-120 disabled:opacity-25 disabled:cursor-not-allowed bg-[#2ea043] @(CanTakeoff ? "" : "opacity-25 cursor-not-allowed")" @onclick="HandleTakeoff">
+                    <button class="border-none rounded-[4px] text-white font-semibold cursor-pointer uppercase text-[1rem] transition-all duration-200 py-[6px] px-[10px] w-[60px] flex justify-center items-center whitespace-nowrap hover:brightness-120 disabled:opacity-25 disabled:cursor-not-allowed bg-[#2ea043] @(CanTakeoff ? "" : "opacity-25 cursor-not-allowed")" @onclick="HandleTakeoff">
                         @(Drone.State.IsArmed ? "GO" : "ARM")
                     </button>
                 </div>
             </div>
 
             @* ── Return to Home ── *@
-            <div class="flex items-center justify-between gap-[10px] bg-[#010409] border border-[#30363d] rounded-[8px] py-[8px] px-[14px] shrink-0 transition-colors duration-200 hover:border-[#444]">
-                <div class="flex items-center gap-[10px] flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-[8px] bg-[#010409] border border-[#30363d] rounded-[8px] py-[8px] px-[14px] shrink-0 transition-colors duration-200 hover:border-[#444]">
+                <div class="flex items-center gap-[8px] flex-1 min-w-0">
                     <div class="flex flex-col gap-[2px] min-w-0">
-                        <span class="text-[0.76rem] font-bold text-white whitespace-nowrap">Return to Home</span>
+                        <span class="text-[0.9rem] font-normal text-white whitespace-nowrap">Return to Home</span>
                     </div>
                 </div>
                 <div class="flex items-center gap-[6px] shrink-0">
                     <div class="flex items-center justify-between w-[85px] bg-[#0a0b0e] border border-[#30363d] rounded-[4px] py-[4px] px-[6px]">
-                        <input type="number" @bind="RtlAlt" step="1" min="5" class="w-[46px] bg-transparent border-none text-[#58a6ff] font-mono font-bold text-[0.88rem] text-right outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span class="text-[0.55rem] text-[#555] font-semibold whitespace-nowrap">m</span>
+                        <input type="number" @bind="RtlAlt" step="1" min="5" class="w-[46px] bg-transparent border-none text-[#58a6ff] font-mono font-semibold text-[1.1rem] text-right outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span class="text-[0.9rem] text-[#555] font-semibold whitespace-nowrap">m</span>
                     </div>
-                    <button class="border-none rounded-[4px] !text-black font-black cursor-pointer uppercase text-[0.65rem] transition-all duration-200 py-[6px] px-[10px] w-[60px] flex justify-center items-center whitespace-nowrap hover:brightness-120 bg-[#58a6ff]" @onclick="HandleRTL">RTL</button>
+                    <button class="border-none rounded-[4px] !text-black font-semibold cursor-pointer uppercase text-[1rem] transition-all duration-200 py-[6px] px-[10px] w-[60px] flex justify-center items-center whitespace-nowrap hover:brightness-120 bg-[#58a6ff]" @onclick="HandleRTL">RTL</button>
                 </div>
             </div>
 
             @* ── Precision Landing ── *@
-            <div class="flex items-center justify-between gap-[10px] bg-[#010409] border border-[#30363d] rounded-[8px] py-[8px] px-[14px] shrink-0 transition-colors duration-200 hover:border-[#444]">
-                <div class="flex items-center gap-[10px] flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-[8px] bg-[#010409] border border-[#30363d] rounded-[8px] py-[8px] px-[14px] shrink-0 transition-colors duration-200 hover:border-[#444]">
+                <div class="flex items-center gap-[8px] flex-1 min-w-0">
                     <div class="flex flex-col gap-[2px] min-w-0">
-                        <span class="text-[0.76rem] font-bold text-white whitespace-nowrap">Precision Landing</span>
+                        <span class="text-[0.9rem] font-normal text-white whitespace-nowrap">Precision Landing</span>
                     </div>
                 </div>
                 <div class="flex items-center gap-[6px] shrink-0">
                     <div class="flex items-center justify-between w-[85px] bg-[#0a0b0e] border border-[#30363d] rounded-[4px] py-[4px] px-[6px]">
-                        <input type="number" @bind="LandSpeed" step="1" min="10" max="200" class="w-[46px] bg-transparent border-none text-[#58a6ff] font-mono font-bold text-[0.88rem] text-right outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
-                        <span class="text-[0.55rem] text-[#555] font-semibold whitespace-nowrap">cm/s</span>
+                        <input type="number" @bind="LandSpeed" step="1" min="10" max="200" class="w-[46px] bg-transparent border-none text-[#58a6ff] font-mono font-semibold text-[1.1rem] text-right outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+                        <span class="text-[0.9rem] text-[#555] font-semibold whitespace-nowrap">cm/s</span>
                     </div>
-                    <button class="border-none rounded-[4px] text-white font-black cursor-pointer uppercase text-[0.65rem] transition-all duration-200 py-[6px] px-[10px] w-[60px] flex justify-center items-center whitespace-nowrap hover:brightness-120 disabled:opacity-25 disabled:cursor-not-allowed bg-[#f85149] @(Drone.IsConnected ? "" : "opacity-25 cursor-not-allowed")" @onclick="HandleLand">LAND</button>
+                    <button class="border-none rounded-[4px] !text-black font-semibold cursor-pointer uppercase text-[1rem] transition-all duration-200 py-[6px] px-[10px] w-[60px] flex justify-center items-center whitespace-nowrap hover:brightness-120 disabled:opacity-25 disabled:cursor-not-allowed bg-[#f85149] @(Drone.IsConnected ? "" : "opacity-25 cursor-not-allowed")" @onclick="HandleLand">LAND</button>
                 </div>
             </div>
 
             @* ── Emergency ── *@
-            <div class="pt-[8px] border-t border-dashed border-[#30363d] shrink-0 mt-auto">
-                <div class="text-[0.58rem] font-extrabold text-[#f85149] uppercase tracking-[0.5px] mb-[6px]">⚠️ CRITICAL OVERRIDES</div>
-                <button class="w-full h-[36px] border-none rounded-[4px] text-white font-black cursor-pointer uppercase text-[0.7rem] transition-all duration-200 hover:brightness-120 bg-[#d29922]" @onclick="HandleEmergencyDisarm">EMERGENCY DISARM</button>
+            <div class="pt-[8px] border-t border-dashed border-[#30363d] shrink-0 mt-auto flex items-center justify-between gap-[8px]">
+                <div class="text-[0.7rem] font-bold text-[#f85149] uppercase tracking-[0.5px]">⚠️ CRITICAL OVERRIDES</div>
+                <button class="h-[30px] px-[6px] border-none rounded-[4px] text-black font-bold cursor-pointer uppercase text-[1rem] transition-all duration-200 hover:brightness-120 bg-[#d29922]" @onclick="HandleEmergencyDisarm">EMERGENCY DISARM</button>
             </div>
 
         </div>
