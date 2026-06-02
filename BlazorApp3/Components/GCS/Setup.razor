@@ -4,13 +4,18 @@
 @using BlazorApp3.Models
 @using BlazorApp3.Services
 @implements IDisposable
+@inject VehicleProfileService Vehicle 
+@inject NtripService Ntrip 
+@using BlazorApp3.Components.UI
+@using BlazorApp3.Components.Shared
+@using BlazorApp3.Components.Tuning
+@inject BlazorApp3.Services.RtkBaseStationService RtkEngine
+@inject OverlayService Overlay
 
-<div class="flex flex-col h-full gap-[16px] p-[20px] bg-transparent text-[#c9d1d9] w-full max-w-[500px] mx-auto overflow-hidden @(AnyModuleExpanded ? "gap-[16px]" : "")">
-    <div class="h-[300px] w-full rounded-[8px] overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-[#333] shrink-0 transition-[height] duration-250 ease-in-out">
-        <Hud />
-    </div>
 
-    <div class="@(AnyModuleExpanded ? "flex flex-col gap-0 overflow-hidden" : "grid grid-cols-2 auto-rows-min gap-[10px] items-start overflow-hidden min-h-0") flex-1">
+<div class="flex flex-col h-[100dvh] overflow-hidden p-[20px] bg-transparent text-[#c9d1d9] w-full max-w-[500px] mx-auto gap-[16px] relative">
+
+    <div class="flex-1 min-h-0 overflow-y-auto no-scrollbar relative overflow-hidden @(AnyModuleExpanded ? "flex flex-col gap-[8px] pb-0" : "grid grid-cols-2 auto-rows-max content-start gap-[10px] pb-[40px]")">
 
         @* ── FRAME MODULE ── *@
         <div class="bg-[#161b22] border border-[#30363d] rounded-[8px] flex flex-col w-full transition-colors duration-200 min-w-0 hover:border-[#58a6ff] @(expandedModules["Frame"] ? (AnyModuleExpanded ? "flex-1 flex-col min-h-0 col-auto" : "col-span-full") : (AnyModuleExpanded ? "hidden" : "flex-col"))">
@@ -453,30 +458,10 @@
                                     }
                                 </div>
                                 <select class="bg-[#010409] text-white border border-[#30363d] rounded-[4px] p-[5px_8px] text-[0.68rem] w-full outline-none" @bind="flightModeSettings[idx]">
-                                    <option value="STABILIZE">STABILIZE</option>
-                                    <option value="ACRO">ACRO</option>
-                                    <option value="ALT_HOLD">ALT HOLD</option>
-                                    <option value="AUTO">AUTO</option>
-                                    <option value="GUIDED">GUIDED</option>
-                                    <option value="LOITER">LOITER</option>
-                                    <option value="RTL">RTL</option>
-                                    <option value="CIRCLE">CIRCLE</option>
-                                    <option value="LAND">LAND</option>
-                                    <option value="DRIFT">DRIFT</option>
-                                    <option value="SPORT">SPORT</option>
-                                    <option value="FLIP">FLIP</option>
-                                    <option value="AUTOTUNE">AUTOTUNE</option>
-                                    <option value="POSHOLD">POS HOLD</option>
-                                    <option value="BRAKE">BRAKE</option>
-                                    <option value="THROW">THROW</option>
-                                    <option value="SMART_RTL">SMART RTL</option>
-                                    <option value="FLOWHOLD">FLOW HOLD</option>
-                                    <option value="FOLLOW">FOLLOW</option>
-                                    <option value="ZIGZAG">ZIGZAG</option>
-                                    <option value="SYSTEMID">SYSTEM ID</option>
-                                    <option value="AUTOROTATE">AUTOROTATE</option>
-                                    <option value="AUTO_RTL">AUTO RTL</option>
-                                    <option value="TURTLE">TURTLE</option>
+                                    @foreach (var mode in Vehicle.GetAvailableModes())
+                                    {
+                                        <option value="@mode">@mode</option>
+                                    }
                                 </select>
                                 <div class="text-[0.56rem] text-[#8b949e] leading-[1.3] min-h-[24px]">@GetFlightModeDesc(flightModeSettings[idx])</div>
                             </div>
@@ -491,6 +476,69 @@
             }
         </div>
 
+
+@* ── TUNING button ────────────────────────────────────────────────── *@
+<div class="bg-[#161b22] border @(Overlay.ShowTuning ? "border-[#f0b429]" : "border-[#30363d]")
+            rounded-[8px] flex flex-col w-full transition-colors duration-200
+            min-w-0 hover:border-[#f0b429] cursor-pointer
+            @(AnyModuleExpanded ? "hidden" : "")"
+     @onclick="Overlay.OpenTuning">
+    <div class="p-[14px_16px] flex items-center gap-[8px]
+                font-bold text-[0.95rem] uppercase min-h-[58px]
+                hover:bg-[rgba(255,255,255,0.03)]
+                @(Overlay.ShowTuning ? "text-[#f0b429]" : "text-white")">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+             class="shrink-0">
+            <path d="M12 20h9"/>
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+        </svg>
+        <span>Tuning</span>
+        <div class="flex-1"></div>
+        @* Vehicle badge *@
+        <span class="text-[0.55rem] font-bold uppercase tracking-widest
+                     px-[6px] py-[1px] rounded-full border
+                     @(Vehicle.IsRover
+                         ? "bg-[#3fb950]/10 text-[#3fb950] border-[#3fb950]/30"
+                         : "bg-[#58a6ff]/10 text-[#58a6ff] border-[#58a6ff]/30")">
+            @Vehicle.ActiveProfileDisplayName
+        </span>
+    </div>
+</div>
+
+@* ── RTK / NTRIP button ──────────────────────────────────────────── *@
+<div class="bg-[#161b22] border @(Overlay.ShowRtk ? "border-[#3fb950]" : "border-[#30363d]")
+            rounded-[8px] flex flex-col w-full transition-colors duration-200
+            min-w-0 hover:border-[#3fb950] cursor-pointer
+            @(AnyModuleExpanded ? "hidden" : "")"
+     @onclick="Overlay.OpenRtk">
+    <div class="p-[14px_16px] flex items-center gap-[8px]
+                font-bold text-[0.95rem] uppercase min-h-[58px]
+                hover:bg-[rgba(255,255,255,0.03)]
+                @(Overlay.ShowRtk ? "text-[#3fb950]" : "text-white")">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+             class="shrink-0">
+            <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/>
+            <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/>
+            <circle cx="12" cy="12" r="2"/>
+            <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/>
+            <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>
+        </svg>
+        <span>RTK / NTRIP</span>
+        <div class="flex-1"></div>
+        @* Status badge *@
+        <span class="text-[0.55rem] font-bold uppercase tracking-widest
+                     px-[6px] py-[1px] rounded-full border
+                     @(Ntrip.IsConnected
+                         ? "bg-[#3fb950]/10 text-[#3fb950] border-[#3fb950]/30"
+                         : "bg-[#21262d] text-[#484f58] border-[#30363d]")">
+            @(Ntrip.IsConnected ? "Active" : "Idle")
+        </span>
+    </div>
+</div>
         @* ── MOTOR TEST MODULE ── *@
         <div class="bg-[#161b22] border border-[#30363d] rounded-[8px] flex flex-col w-full transition-colors duration-200 min-w-0 hover:border-[#58a6ff] @(expandedModules["MotorTest"] ? (AnyModuleExpanded ? "flex-1 flex-col min-h-0 col-auto" : "col-span-full") : (AnyModuleExpanded ? "hidden" : "flex-col"))">
             <div class="p-[14px_16px] flex items-center gap-[8px] font-bold text-[0.95rem] uppercase cursor-pointer select-none transition-all duration-200 min-h-[58px] hover:bg-[rgba(255,255,255,0.03)] @(expandedModules["MotorTest"] ? "border-b border-[#30363d] rounded-t-[8px]" : "rounded-[8px]")" @onclick='() => ToggleModule("MotorTest")'>
@@ -1131,6 +1179,7 @@
             </div>
         </dialog>
     }
+    
 
 <style>
     /* COMPASS WIZARD ANIMATIONS */
@@ -1357,6 +1406,12 @@
 </style>
 
 @code {
+    private string _flightMode1 = "";
+    private string _flightMode2 = "";
+    private string _flightMode3 = "";
+    private string _flightMode4 = "";
+    private string _flightMode5 = "";
+    private string _flightMode6 = "";
     private string selectedFrameClass = "1";
     // FRAME_CLASS: 1=Quad,2=Hexa,3=Octa,5=Y6,7=Tri
     private string selectedFrameType = "1";
@@ -1392,6 +1447,7 @@
     private string flightModeChannel = "5";   // FLTMODE_CH parameter
     private string battMonitorType = "4";
     private int battCapacity = 3300;
+
     // Mission Planner Motor Test Settings
     private int motorTestThrottle = 5;
     private int motorTestDuration = 2;
@@ -1404,6 +1460,7 @@
         Drone.OnFlightModeParams += OnFlightModeParamsReceived;
         Drone.OnFailsafeParams += HandleFailsafeParams;
         Drone.OnBatteryParams += HandleBatteryParams;
+        Vehicle.OnProfileChanged += HandleVehicleProfileChanged;
 
         // Wire up Claude's ParameterManager events
         if (Drone.ParameterManager != null)
@@ -1880,6 +1937,7 @@
         Drone.OnFlightModeParams -= OnFlightModeParamsReceived;
         Drone.OnFailsafeParams -= HandleFailsafeParams;
         Drone.OnBatteryParams -= HandleBatteryParams;
+        Vehicle.OnProfileChanged -= HandleVehicleProfileChanged;
 
         if (Drone.ParameterManager != null)
         {
@@ -1887,6 +1945,44 @@
             Drone.ParameterManager.OnDownloadComplete -= OnComplete;
             Drone.ParameterManager.OnWriteConfirmed -= OnConfirmed;
             Drone.ParameterManager.OnWriteFailed -= OnFailed;
+        }
+    }
+
+    private void HandleVehicleProfileChanged(VehicleProfile newProfile)
+    {
+        try
+        {
+            _ = InvokeAsync(() =>
+            {
+                string safeDefault = newProfile == VehicleProfile.ArduRover
+                    ? "MANUAL"
+                    : "STABILIZE";
+                for (int i = 1; i <= 6; i++)
+                    SetFlightModeField(i, safeDefault);
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException) { }
+    }
+
+
+
+
+
+
+    // ── Helper: set flight mode field by index ────────────────────────────────
+    // ADD this or integrate with your existing flight mode field assignment pattern.
+    private void SetFlightModeField(int index, string mode)
+    {
+        // Map index → your existing _flightMode1.._flightMode6 fields
+        switch (index)
+        {
+            case 1: _flightMode1 = mode; break;
+            case 2: _flightMode2 = mode; break;
+            case 3: _flightMode3 = mode; break;
+            case 4: _flightMode4 = mode; break;
+            case 5: _flightMode5 = mode; break;
+            case 6: _flightMode6 = mode; break;
         }
     }
 
@@ -1899,14 +1995,12 @@
         InvokeAsync(StateHasChanged);
     }
 
-    // Add inside @code { ... }
     private Dictionary<string, bool> expandedModules = new()
     {
         { "Frame", false },
         { "Sensors", false },
         { "RC", false },
         { "FlightModes", false },
-
         { "MotorTest", false },
         { "ESC", false },
         { "Failsafe", false },

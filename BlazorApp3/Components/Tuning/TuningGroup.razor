@@ -1,0 +1,188 @@
+@* Components/Tuning/TuningGroup.razor
+   Reusable parameter group card.
+   Supports Numeric, Select, and Checkbox via ParameterDefinition.ControlType.
+   Dirty tracking is fully caller-owned — this component fires OnParamChanged
+   and the parent (TuningDrawer) maintains _editedValues and _dirtyParams.
+*@
+
+@using BlazorApp3.Models
+
+<div class="bg-[#161b22] border border-[#21262d] rounded-[8px] overflow-hidden h-fit">
+
+    @* ── Group header ─────────────────────────────────────────────────────── *@
+    <div class="px-[12px] py-[8px] border-b border-[#21262d]
+                flex items-center gap-[8px]">
+        <div class="w-[3px] h-[14px] rounded-full shrink-0"
+             style="background:@AccentColor"></div>
+        <span class="text-[0.65rem] font-bold text-[#8b949e]
+                     uppercase tracking-widest">
+            @Title
+        </span>
+    </div>
+
+    @* ── Parameter rows ───────────────────────────────────────────────────── *@
+    <div class="divide-y divide-[#21262d]">
+        @foreach (var p in Params)
+        {
+            float  currentVal = GetDisplayValue(p);
+            bool   isDirty    = IsDirty(p);
+            string activeKey  = GetActiveKey(p);
+
+            <div class="flex items-center px-[12px] py-[7px] gap-[8px]
+                        hover:bg-[#1c2128] transition-colors group">
+
+                @* Label column (fixed width) *@
+                <div class="w-[72px] shrink-0">
+                    <div class="text-[0.72rem] text-white font-medium truncate"
+                         title="@(p.Tooltip ?? activeKey)">
+                        @p.Label
+                    </div>
+                    @if (p.Unit is not null)
+                    {
+                        <div class="text-[0.55rem] text-[#484f58]">@p.Unit</div>
+                    }
+                </div>
+
+                @* Control column *@
+                <div class="flex-1 min-w-0">
+
+                    @* ── Numeric ─────────────────────────────────────────── *@
+                    @if (p.ControlType == ParameterControlType.Numeric)
+                    {
+                        <input type="number"
+                               step="@p.Step.ToString("G6", System.Globalization.CultureInfo.InvariantCulture)"
+                               min="@p.Min.ToString("G6", System.Globalization.CultureInfo.InvariantCulture)"
+                               max="@p.Max.ToString("G6", System.Globalization.CultureInfo.InvariantCulture)"
+                               value="@currentVal.ToString("G6", System.Globalization.CultureInfo.InvariantCulture)"
+                               class="w-full bg-[#0d1117] border text-right font-mono
+                                      rounded-[4px] px-[6px] py-[4px] text-[0.75rem] text-white
+                                      focus:outline-none focus:border-[#58a6ff]
+                                      @(isDirty ? "border-[#f0b429]" : "border-[#30363d]")"
+                               @onchange="@(e => OnNumericChange(p, e.Value?.ToString()))" />
+                    }
+
+                    @* ── Select ──────────────────────────────────────────── *@
+                    else if (p.ControlType == ParameterControlType.Select
+                             && p.Options is not null)
+                    {
+                        <select class="w-full bg-[#0d1117] border rounded-[4px]
+                                       px-[6px] py-[4px] text-[0.75rem] text-white
+                                       focus:outline-none focus:border-[#58a6ff] cursor-pointer
+                                       @(isDirty ? "border-[#f0b429]" : "border-[#30363d]")"
+                                @onchange="@(e => OnSelectChange(p, e.Value?.ToString()))">
+                            @foreach (var opt in p.Options)
+                            {
+                                <option value="@opt.Key"
+                                        selected="@(Math.Abs(currentVal - opt.Key) < 0.5f)">
+                                    @opt.Value
+                                </option>
+                            }
+                        </select>
+                    }
+
+                    @* ── Checkbox ─────────────────────────────────────────── *@
+                    else if (p.ControlType == ParameterControlType.Checkbox)
+                    {
+                        <label class="flex items-center gap-[8px] cursor-pointer">
+                            <div class="relative w-[36px] h-[20px]">
+                                <input type="checkbox"
+                                       class="sr-only peer"
+                                       checked="@(currentVal > 0.5f)"
+                                       @onchange="@(e => OnCheckboxChange(p, (bool)(e.Value ?? false)))" />
+                                <div class="w-full h-full rounded-full transition-colors duration-200
+                                            peer-checked:bg-[#3fb950] bg-[#30363d]"></div>
+                                <div class="absolute top-[2px] left-[2px] w-[16px] h-[16px]
+                                            rounded-full bg-white shadow transition-transform duration-200
+                                            peer-checked:translate-x-[16px]"></div>
+                            </div>
+                            <span class="text-[0.72rem] @(currentVal > 0.5f ? "text-[#3fb950]" : "text-[#8b949e]")">
+                                @(currentVal > 0.5f ? "Enabled" : "Disabled")
+                            </span>
+                        </label>
+                    }
+                </div>
+
+                @* Per-row write button — visible on hover *@
+                <button class="opacity-0 group-hover:opacity-100 transition-opacity
+                               text-[0.6rem] px-[6px] py-[3px] rounded-[3px]
+                               bg-[#238636] hover:bg-[#2ea043] text-white
+                               border-none cursor-pointer font-bold shrink-0"
+                        title="Write @activeKey"
+                        @onclick="() => OnWriteSingle.InvokeAsync((activeKey, GetDisplayValue(p)))">
+                    W
+                </button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string                           Title        { get; set; } = "";
+    [Parameter] public string                           AccentColor  { get; set; } = "#58a6ff";
+    [Parameter] public IReadOnlyList<ParameterDefinition> Params    { get; set; } = [];
+    [Parameter] public Dictionary<string, float>        EditedValues { get; set; } = [];
+    [Parameter] public HashSet<string>                  DirtyParams  { get; set; } = [];
+
+    /// <summary>
+    /// Called by parent to resolve the current value for a parameter.
+    /// Falls back to ParameterDefinition.Default if null returned.
+    /// </summary>
+    [Parameter] public Func<ParameterDefinition, float>? ReadValue { get; set; }
+
+    /// <summary>Fired when any value changes. Parent owns dirty tracking.</summary>
+    [Parameter] public EventCallback<(string Name, float Value)> OnParamChanged { get; set; }
+
+    /// <summary>Fired by per-row W button for immediate single-param write.</summary>
+    [Parameter] public EventCallback<(string Name, float Value)> OnWriteSingle { get; set; }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Resolves the active parameter name — modern name if present in FC,
+    /// legacy name as fallback. Returns modern name as default.
+    /// </summary>
+    private string GetActiveKey(ParameterDefinition p)
+    {
+        if (ReadValue == null) return p.Name;
+        // If ReadValue returns the default and LegacyName exists, we can't distinguish
+        // missing vs zero — the parent handles this via ParameterManager directly.
+        return p.Name;
+    }
+
+    private float GetDisplayValue(ParameterDefinition p)
+    {
+        // Check locally edited values first
+        if (EditedValues.TryGetValue(p.Name, out var edited)) return edited;
+        if (p.LegacyName != null && EditedValues.TryGetValue(p.LegacyName, out var legEdited)) return legEdited;
+
+        // Then ask parent for FC value
+        return ReadValue?.Invoke(p) ?? p.Default;
+    }
+
+    private bool IsDirty(ParameterDefinition p) =>
+        DirtyParams.Contains(p.Name) ||
+        (p.LegacyName != null && DirtyParams.Contains(p.LegacyName));
+
+    private Task OnNumericChange(ParameterDefinition p, string? raw)
+    {
+        if (float.TryParse(raw,
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out float v))
+        {
+            v = Math.Clamp(v, p.Min, p.Max);
+            return OnParamChanged.InvokeAsync((p.Name, v));
+        }
+        return Task.CompletedTask;
+    }
+
+    private Task OnSelectChange(ParameterDefinition p, string? raw)
+    {
+        if (int.TryParse(raw, out int v))
+            return OnParamChanged.InvokeAsync((p.Name, (float)v));
+        return Task.CompletedTask;
+    }
+
+    private Task OnCheckboxChange(ParameterDefinition p, bool value) =>
+        OnParamChanged.InvokeAsync((p.Name, value ? 1f : 0f));
+}

@@ -1,0 +1,83 @@
+@* Components/Shared/MapOverlayHost.razor
+   Renders TuningDrawer and RtkDrawer as absolute overlays that cleanly sit 
+   below the main header, covering the map and footer tab bar completely. *@
+
+@using BlazorApp3.Services
+@using BlazorApp3.Components.Tuning
+@using BlazorApp3.Components.RTK
+@inject OverlayService Overlay
+@implements IDisposable
+
+@* ── Tuning overlay ────────────────────────────────────────────────────────── *@
+<div class="absolute top-[60px] bottom-0 left-0 right-0 z-[2000] flex flex-col overflow-hidden
+            transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
+            bg-[#0a0b0d]
+            @(Overlay.ShowTuning ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none invisible")">
+
+    @* Header Row *@
+    <div class="flex items-center gap-[10px] px-[20px] py-[14px]
+                border-b border-[#21262d] shrink-0 bg-[#0d1117]">
+        <span class="font-bold text-[0.9rem] uppercase tracking-widest text-white">
+           Tuning Parameters
+        </span>
+        <div class="flex-1"></div>
+        
+        @* Visible Top-Right Corner Close Cross Button *@
+        <button class="text-[#8b949e] hover:text-[#ff3a3a] transition-colors
+                       p-0 border-none bg-transparent cursor-pointer text-[1.2rem] flex items-center justify-center"
+                @onclick="Overlay.CloseTuning" title="Close Panel">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    </div>
+
+    @* Content *@
+    <div class="flex-1 min-h-0 overflow-y-auto no-scrollbar">
+        <TuningDrawer />
+    </div>
+</div>
+
+@* ── RTK / GPS Inject overlay ─────────────────────────────────────────────── *@
+<div class="absolute top-[60px] bottom-0 left-0 right-0 z-[2000] flex flex-col overflow-hidden
+            transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
+            bg-[#0a0b0d]
+            @(Overlay.ShowRtk ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none invisible")">
+
+    @* Header Row *@
+    <div class="flex items-center gap-[10px] px-[20px] py-[14px]
+                border-b border-[#21262d] shrink-0 bg-[#0d1117]">
+        <span class="font-bold text-[0.9rem] uppercase tracking-widest text-white">
+            RTK / GPS Inject
+        </span>
+        <div class="flex-1"></div>
+        
+        @* Visible Top-Right Corner Close Cross Button *@
+        <button class="text-[#8b949e] hover:text-[#ff3a3a] transition-colors
+                       p-0 border-none bg-transparent cursor-pointer text-[1.2rem] flex items-center justify-center"
+                @onclick="Overlay.CloseRtk" title="Close Panel">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    </div>
+
+    @* Content *@
+    <div class="flex-1 min-h-0 overflow-y-auto no-scrollbar">
+        <RtkDrawer />
+    </div>
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        Overlay.OnChanged += HandleOverlayChanged;
+    }
+
+    private void HandleOverlayChanged()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+    }
+
+    public void Dispose()
+    {
+        Overlay.OnChanged -= HandleOverlayChanged;
+    }
+}

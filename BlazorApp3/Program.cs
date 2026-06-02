@@ -59,6 +59,11 @@ builder.Services.AddRazorComponents()
 builder.Services.AddControllers();
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Vehicle profile service
+builder.Services.AddSingleton<VehicleProfileService>();
+
+builder.Services.AddSingleton<OverlayService>();
+
 // MAVLink
 builder.Services.AddSingleton<MavlinkService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MavlinkService>());
@@ -85,6 +90,9 @@ builder.Services.AddSingleton<ParameterManager>(sp =>
     mavlink.ParameterManager = manager;
     return manager;
 });
+
+builder.Services.AddSingleton<NtripService>();
+builder.Services.AddSingleton<RtkBaseStationService>();
 
 // ── DGCA Airspace services ────────────────────────────────────────────────────
 builder.Services.AddMemoryCache();
@@ -129,6 +137,10 @@ builder.Services.AddServerSideBlazor().AddHubOptions(options =>
 
 var app = builder.Build();
 _ = app.Services.GetRequiredService<ParameterManager>();
+_ = app.Services.GetRequiredService<VehicleProfileService>();
+_ = app.Services.GetRequiredService<NtripService>();
+_ = app.Services.GetRequiredService<RtkBaseStationService>();
+
 
 if (!app.Environment.IsDevelopment())
 {

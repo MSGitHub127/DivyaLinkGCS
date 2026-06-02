@@ -19,6 +19,7 @@ public class MavlinkService : BackgroundService
     private readonly ILogger<MavlinkService> _logger;
     private readonly object _sync = new();
     private readonly MAVLink.MavlinkParse _parser = new();
+    private readonly VehicleProfileService _vehicleProfile;
 
     // ADD THESE NEW FIELDS after line ~18 (after _parser declaration):
     private readonly IConfiguration _config;
@@ -41,6 +42,8 @@ public class MavlinkService : BackgroundService
     private ConnectionType _connectionType;
     private string _portName;
     private int _baudRate;
+    // Tracks the rolling sequence number for RTK injections (0-31)
+    private int _rtcmSeqNo = 0;
     private bool _shouldBeConnected = false;
 
     public event Action<string>? OnConnectionStatus;
@@ -51,6 +54,7 @@ public class MavlinkService : BackgroundService
     public event Action<string[], string>? OnFlightModeParams;  // modes[6], channel
     public event Action<FailsafeParams>? OnFailsafeParams;
     public event Action<BatteryParams>? OnBatteryParams;
+    public event Action<AutoSnapEventArgs>? OnVehicleAutoSnap;
 
     private bool _connDialogOpen = false;
     private bool _gotFirstHeartbeatThisSession = false;
@@ -220,10 +224,17 @@ public class MavlinkService : BackgroundService
     private double _battAmpOffset = 0.0;
     private int _battNumCells = 3;
 
-    public MavlinkService(ILogger<MavlinkService> logger, IConfiguration config)
+    public MavlinkService(ILogger<MavlinkService> logger, IConfiguration config, VehicleProfileService vehicleProfile)
     {
         _logger = logger;
         _config = config;
+        _vehicleProfile = vehicleProfile;
+
+        _vehicleProfile.OnAutoSnap += args =>
+        {
+            OnVehicleAutoSnap?.Invoke(args);
+            _logger.LogInformation("[VEHICLE] {Message}", args.LogMessage);
+        };
 
         // Load defaults from configuration
         var defaultType = _config["TcpConnection:DefaultConnectionType"] ?? "Serial";
@@ -237,17 +248,6 @@ public class MavlinkService : BackgroundService
         _logger.LogInformation("[MAVLink] Default connection: {Type} on {Port} @ {Baud}",
             _connectionType, _portName, _baudRate);
     }
-
-    //public bool IsConnected
-    //{
-    //    get
-    //    {
-    //        if (_serialPort?.IsOpen != true) return false;
-    //        var hb = State.LastHeartbeat;
-    //        if (hb == DateTime.MinValue) return false;
-    //        return (DateTime.UtcNow - hb).TotalSeconds < HeartbeatTimeoutSeconds;
-    //    }
-    //}
 
     public bool IsConnected
     {
@@ -976,6 +976,7 @@ public class MavlinkService : BackgroundService
                 if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.HEARTBEAT)
                 {
                     var hb = (MAVLink.mavlink_heartbeat_t)packet.data;
+                    _vehicleProfile.UpdateFromHeartbeat(hb.type);
                     swarmNode.FlightMode = GetFlightModeString(hb.custom_mode);
                     swarmNode.IsArmed = (((MAVLink.MAV_MODE_FLAG)hb.base_mode) & MAVLink.MAV_MODE_FLAG.SAFETY_ARMED) != 0;
                 }
@@ -1005,6 +1006,7 @@ public class MavlinkService : BackgroundService
         if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.HEARTBEAT)
         {
             var hb = (MAVLink.mavlink_heartbeat_t)packet.data;
+            _vehicleProfile.UpdateFromHeartbeat(hb.type);
 
             UpdateState(s =>
             {
@@ -1572,10 +1574,11 @@ public class MavlinkService : BackgroundService
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST || packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT)
         {
+            #pragma warning disable 0612
             var req = packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST
                 ? new MAVLink.mavlink_mission_request_int_t { seq = ((MAVLink.mavlink_mission_request_t)packet.data).seq }
                 : (MAVLink.mavlink_mission_request_int_t)packet.data;
-
+            #pragma warning restore 0612
             HandleMissionRequest(req);
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ACK)
@@ -1883,6 +1886,12 @@ public class MavlinkService : BackgroundService
             routeTarget = (byte)targetField.GetValue(data);
         }
 
+        _logger.LogInformation(
+    "[RTCM TX] msg={Msg} target_sysid={SysId} routeTarget={Route}",
+    msgid,
+    target_sysid,
+    routeTarget);
+
         SendBuffer(buffer, routeTarget);
     }
 
@@ -2055,6 +2064,115 @@ public class MavlinkService : BackgroundService
         SendPacket(MAVLink.MAVLINK_MSG_ID.PARAM_SET, req);
     }
 
+    /// <summary>
+    /// Injects a complete RTCM3 correction frame into the connected vehicle's GPS
+    /// via MAVLink GPS_RTCM_DATA messages (message ID 233).
+    ///
+    /// Called by NtripService for each parsed RTCM3 frame received from the caster.
+    /// Runs on the NtripService background thread — SendPacket() is thread-safe.
+    ///
+    /// Fragmentation protocol (verified against Mission Planner MAVLinkInterface.cs):
+    ///   Max 180 bytes per GPS_RTCM_DATA payload.
+    ///   Max 4 fragments = 720 bytes total. Frames larger than 720 bytes are rejected.
+    ///   flags byte: bit0=isfrag | bits1-2=fragmentId | bits3-7=sequenceId (0-31)
+    ///   For messages whose length is a multiple of 180, a zero-length terminating
+    ///   fragment is appended so the FC knows the buffer is complete.
+    /// </summary>
+    public void InjectGpsData(byte[] data, ushort length)
+{
+    if (data == null || data.Length == 0)
+        return;
+
+    const int msglen = 180;
+
+    int dataLength = data.Length;
+
+    if (length > msglen * 4)
+    {
+        _logger.LogWarning(
+            "[RTK] Oversized RTCM frame dropped ({Bytes})",
+            length);
+
+        return;
+    }
+
+    int seq =
+        Interlocked.Increment(ref _rtcmSeqNo) & 0x1F;
+
+    // Ceiling: how many 180-byte chunks to carry the data
+int dataPackets = (length + msglen - 1) / msglen;
+
+// For exact multiples of 180, append a zero-length terminator so ArduPilot
+// knows the reassembly buffer is complete. For non-exact, the final short
+// packet itself serves as the implicit terminator.
+bool needsTerminator = (length % msglen == 0);
+int nopackets = needsTerminator ? dataPackets + 1 : dataPackets;
+
+// Safety: frames > 720B are already rejected above. The only way nopackets
+// can be 5 is for exactly 720B (4 data + 1 terminator) — allow it.
+if (nopackets > 5)
+    nopackets = 5;
+
+    byte[] buffer = new byte[msglen];
+
+    for (int a = 0; a < nopackets; a++)
+    {
+        var gps =
+            new MAVLink.mavlink_gps_rtcm_data_t();
+
+        gps.flags = 0;
+
+        if (nopackets > 1)
+            gps.flags |= 0x01;
+
+        gps.flags |=
+            (byte)((a & 0x03) << 1);
+
+        gps.flags |=
+            (byte)(seq << 3);
+
+        Array.Clear(buffer);
+
+        int copy =
+            Math.Min(
+            dataLength - a * msglen,
+            msglen);
+
+        gps.data = buffer;
+
+        if (copy > 0)
+        {
+            Array.Copy(
+                data,
+                a * msglen,
+                gps.data,
+                0,
+                copy);
+        }
+
+        gps.len = (byte)copy;
+
+        SendPacket(
+            MAVLink.MAVLINK_MSG_ID.GPS_RTCM_DATA,
+            gps);
+    }
+
+    _logger.LogTrace(
+        "[RTK] Injected RTCM {Bytes}B as {Packets} packets seq={Seq}",
+        length,
+        nopackets,
+        seq);
+
+    _logger.LogInformation(
+    "[RTCM] data.Length={DataLen} length={Length}",
+    data.Length,
+    length);
+
+    _logger.LogWarning(
+    "[RTCM-INJECT] len={Len}",
+    length);
+}
+
     public void StartCalibration(string type)
     {
         switch (type.ToUpper())
@@ -2211,34 +2329,7 @@ public class MavlinkService : BackgroundService
     public void SaveFlightMode(int position, string modeName)
     {
         // ArduCopter FLTMODE numeric values (matches custom_mode in HEARTBEAT)
-        float modeValue = modeName.ToUpper() switch
-        {
-            "STABILIZE" => 0,
-            "ACRO" => 1,
-            "ALT_HOLD" => 2,
-            "AUTO" => 3,
-            "GUIDED" => 4,
-            "LOITER" => 5,
-            "RTL" => 6,
-            "CIRCLE" => 7,
-            "LAND" => 9,
-            "DRIFT" => 11,
-            "SPORT" => 13,
-            "FLIP" => 14,
-            "AUTOTUNE" => 15,
-            "POSHOLD" => 16,
-            "BRAKE" => 17,
-            "THROW" => 18,
-            "SMART_RTL" => 21,
-            "FLOWHOLD" => 22,
-            "FOLLOW" => 23,
-            "ZIGZAG" => 24,
-            "SYSTEMID" => 25,
-            "AUTOROTATE" => 26,
-            "AUTO_RTL" => 27,
-            "TURTLE" => 29,
-            _ => 0
-        };
+        float modeValue = _vehicleProfile.GetModeValue(modeName);
         SendParameter($"FLTMODE{position}", modeValue);
     }
 
@@ -2599,36 +2690,13 @@ public class MavlinkService : BackgroundService
         }
     }
 
-    private static string GetFlightModeString(uint customMode) => customMode switch
+    private string GetFlightModeString(uint customMode)
     {
-        0 => "STABILIZE",
-        1 => "ACRO",
-        2 => "ALT_HOLD",
-        3 => "AUTO",
-        4 => "GUIDED",
-        5 => "LOITER",
-        6 => "RTL",
-        7 => "CIRCLE",
-        9 => "LAND",
-        11 => "DRIFT",
-        13 => "SPORT",
-        14 => "FLIP",
-        15 => "AUTOTUNE",
-        16 => "POSHOLD",
-        17 => "BRAKE",
-        18 => "THROW",
-        19 => "AVOID_ADSB",
-        20 => "GUIDED_NOGPS",
-        21 => "SMART_RTL",
-        22 => "FLOWHOLD",
-        23 => "FOLLOW",
-        24 => "ZIGZAG",
-        25 => "SYSTEMID",
-        26 => "AUTOROTATE",
-        27 => "AUTO_RTL",
-        29 => "TURTLE",
-        _ => "UNKNOWN"
-    };
+        // VehicleProfileService owns the mode tables for both profiles.
+        // This method now correctly returns Rover or Copter mode names
+        // based on the currently active vehicle context.
+        return _vehicleProfile.GetFlightModeString(customMode);
+    }
 
     private void CloseConnections()
     {

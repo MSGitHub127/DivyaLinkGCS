@@ -1,10 +1,12 @@
 @inherits LayoutComponentBase
+@using BlazorApp3.Components.GCS
 @inject MavlinkService Drone
 @inject IJSRuntime JS
 @inject DgcaAirspaceService AirspaceSvc
 @implements IDisposable
 @using System.IO.Ports
 @using System.Linq
+@inject VehicleProfileService Vehicle
 
 @* REMOVED 'flex flex-col' so elements can overlap properly to restore frosted glass *@
 <div class="gcs-wrapper block h-screen w-full bg-[#0a0b0d] overflow-hidden relative">
@@ -186,11 +188,13 @@
                     }
                 </div>
             </footer>
+            <MapOverlayHost />
         </main>
     </div>
     
     <ConnectionDialog />
     <ToastContainer />
+
 </div>
 
 <style>
@@ -346,6 +350,21 @@
             var port = Config["TcpConnection:DefaultPort"] ?? "";
             selectedPort = string.IsNullOrEmpty(port) ? host : $"{host}:{port}";
         }
+        Vehicle.OnAutoSnap += HandleVehicleAutoSnap;
+    }
+
+    private void HandleVehicleAutoSnap(AutoSnapEventArgs args)
+    {
+        try
+        {
+            _ = InvokeAsync(() =>
+            {
+                // ── Now on the Blazor circuit thread ──────────────────────────
+                Drone.Toast(args.ToastMessage, MavlinkService.ToastLevel.Warning, "⚠️");
+                // StateHasChanged not needed here — toast library manages its own render
+            });
+        }
+        catch (ObjectDisposedException) { }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -545,5 +564,6 @@
         Drone.OnTelemetryUpdated -= RefreshUi;
         Drone.OnRcChannelsUpdated -= OnRcUpdated;
         _dotnetRef?.Dispose();
+        Vehicle.OnAutoSnap -= HandleVehicleAutoSnap;
     }
 }
