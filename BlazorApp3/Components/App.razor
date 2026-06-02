@@ -147,9 +147,7 @@
     <HeadOutlet />
 </head>
 <body>
-    <Routes @rendermode="InteractiveServer" />
-
-    <script src="_framework/blazor.web.js"></script>
+    <Routes @rendermode="InteractiveServer" />   
     <script>
         window.setToastUplift = function (heightPx) {
             document.documentElement.style.setProperty('--toast-pip-uplift', heightPx + 'px');
@@ -158,6 +156,9 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script src="js/airspace.js"></script>
+    <script src="js/flightplan.js"></script>
+    <script src="js/rtk.js"></script>
+    <script src="_framework/blazor.web.js"></script>
 
     <script>
         // Minimal, robust Leaflet engine for the GCS map.
