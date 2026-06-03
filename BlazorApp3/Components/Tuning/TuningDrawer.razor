@@ -269,11 +269,23 @@
     protected override void OnInitialized()
     {
         Vehicle.OnProfileChanged += HandleProfileChanged;
+        if (Drone.ParameterManager != null)
+        Drone.ParameterManager.OnParameterLiveUpdate += HandleParamLiveUpdate;
+    }
+
+    private void HandleParamLiveUpdate(ParameterEntry entry)
+    {
+        // Only re-render if this param isn't locally edited (don't stomp unsaved changes)
+        if (!_dirtyParams.Contains(entry.Id))
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (ObjectDisposedException) { }
     }
 
     public void Dispose()
     {
         Vehicle.OnProfileChanged -= HandleProfileChanged;
+        if (Drone.ParameterManager != null)
+        Drone.ParameterManager.OnParameterLiveUpdate -= HandleParamLiveUpdate;
     }
 
     private void HandleProfileChanged(VehicleProfile newProfile)
