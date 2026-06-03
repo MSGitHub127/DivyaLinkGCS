@@ -208,22 +208,119 @@
     }
 
     private bool _lastLinkHealthy = false;
-    private void RefreshUi()
+    private DateTime _lastJsUpdateUtc = DateTime.MinValue;
+    private readonly TimeSpan _jsMinPeriod = TimeSpan.FromMilliseconds(200);
+    private DateTime _lastFlightPlanRender = DateTime.MinValue;
+    private bool _jumpedToDrone = false;
+
+    private static bool HasValidGps(double lat, double lon)
     {
-        bool healthy = Drone.IsLinkHealthy;
-        if (healthy == _lastLinkHealthy) return;
-        _lastLinkHealthy = healthy;
-        InvokeAsync(StateHasChanged);
+        if (double.IsNaN(lat) || double.IsNaN(lon)) return false;
+        if (Math.Abs(lat) < 0.000001 && Math.Abs(lon) < 0.000001) return false;
+        if (lat < -90 || lat > 90) return false;
+        if (lon < -180 || lon > 180) return false;
+        return true;
+    }
+
+    private void HandleTelemetryUpdated()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            // 1. Update drone marker on the map
+            await TryUpdateDroneMarkerAsync();
+
+            // 2. Auto-initialize home waypoint if it is at (0,0) and we get a valid GPS lock
+            var home = MissionItems.FirstOrDefault(x => x.IsHome);
+            if (home != null && home.Lat == 0 && home.Lng == 0)
+            {
+                var lat = Drone.State.Latitude;
+                var lon = Drone.State.Longitude;
+                if (HasValidGps(lat, lon))
+                {
+                    home.Lat = lat;
+                    home.Lng = lon;
+                    TriggerMapRedraw();
+                }
+            }
+
+            // 3. Check for link health changes
+            bool healthy = Drone.IsLinkHealthy;
+            bool healthChanged = (healthy != _lastLinkHealthy);
+            if (healthChanged)
+            {
+                _lastLinkHealthy = healthy;
+            }
+
+            // 4. Rate-limit Blazor UI re-render for telemetry grid
+            var now = DateTime.UtcNow;
+            if (!healthChanged && (now - _lastFlightPlanRender).TotalMilliseconds < 250) return;
+            _lastFlightPlanRender = now;
+            StateHasChanged();
+        });
+    }
+
+    private async Task TryUpdateDroneMarkerAsync()
+    {
+        var lat = Drone.State.Latitude;
+        var lon = Drone.State.Longitude;
+        var heading = Drone.State.Yaw;
+        if (!HasValidGps(lat, lon)) return;
+
+        var now = DateTime.UtcNow;
+        if (now - _lastJsUpdateUtc < _jsMinPeriod) return;
+        _lastJsUpdateUtc = now;
+
+        var extra = new
+        {
+            alt = (double)Drone.State.Altitude,
+            spd = (double)Drone.State.GroundSpeed,
+            bat = (int)Drone.State.BatteryPercent,
+            hdop = Drone.State.SatCount > 0
+                ? Math.Max(0.5, 5.0 - Drone.State.SatCount * 0.3)
+                : 5.0
+        };
+
+        try
+        {
+            if (!_jumpedToDrone)
+            {
+                await JS.InvokeVoidAsync("jumpToDrone", lat, lon, heading, extra);
+                _jumpedToDrone = true;
+                return;
+            }
+            await JS.InvokeVoidAsync("updateMapPos", lat, lon, heading, extra);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Map telemetry update error: {ex.Message}");
+        }
     }
 
     protected override void OnInitialized()
     {
         OnMissionChanged += TriggerMapRedraw;
-        Drone.OnTelemetryUpdated += RefreshUi;
+        Drone.OnTelemetryUpdated += HandleTelemetryUpdated;
+
+        double initLat = 0;
+        double initLng = 0;
+        if (HasValidGps(Drone.State.Latitude, Drone.State.Longitude))
+        {
+            initLat = Drone.State.Latitude;
+            initLng = Drone.State.Longitude;
+        }
 
         if (!MissionItems.Any())
         {
-            MissionItems.Add(new MissionItem { IsHome = true, Index = 0, Command = "WAYPOINT", Alt = 0 });
+            MissionItems.Add(new MissionItem { IsHome = true, Index = 0, Command = "WAYPOINT", Lat = initLat, Lng = initLng, Alt = 0 });
+        }
+        else
+        {
+            var home = MissionItems.FirstOrDefault(x => x.IsHome);
+            if (home != null && home.Lat == 0 && home.Lng == 0 && initLat != 0)
+            {
+                home.Lat = initLat;
+                home.Lng = initLng;
+            }
         }
         TriggerMapRedraw();
     }
@@ -385,8 +482,10 @@
         if (MissionItems.Count > 1)
         {
             isUploading = true;
+            isUploaded = false; // Reset state tracking flags on new attempt
             StateHasChanged();
 
+            // 1. Map our front-end model items into the service transfer objects
             var waypoints = MissionItems.Select(mi => new WaypointModel
             {
                 Index = mi.Index,
@@ -397,26 +496,30 @@
                 IsHome = mi.IsHome
             }).ToList();
             
+            // 2. Await the full upload, download, and deep validation checking routine
             bool success = await Drone.UploadMissionAsync(waypoints);
+            
             if (success)
             {
                 isUploaded = true;
+                // Green success styling triggers natively on the 'START' button block now!
             }
             else
             {
                 isUploaded = false;
-                await JS.InvokeVoidAsync("alert", "Mission Upload Failed. Check telemetry connection.");
+                // No messy javascript alert calls here — the backend service automatically
+                // pushes specific red error toasts with descriptive tracking logs to the HUD hud panel
             }
 
             isUploading = false;
-            StateHasChanged();
+            StateHasChanged(); // Force immediate UI refresh pass to unlock action items
         }
     }
 
     public async ValueTask DisposeAsync()
     {
         OnMissionChanged -= TriggerMapRedraw;
-        Drone.OnTelemetryUpdated -= RefreshUi;
+        Drone.OnTelemetryUpdated -= HandleTelemetryUpdated;
 
         try
         {
