@@ -7,185 +7,233 @@
 
 <InputFile id="importFile" OnChange="HandleImport" style="display:none" accept=".json" />
 
-<div class="flex flex-col h-full gap-4 p-5 bg-transparent w-full max-w-[500px] mx-auto overflow-hidden">
+@* ─────────────────────────────────────────────────────────────────────────────
+   OUTER SHELL — unchanged from original so HUD + positioning are unaffected
+   ───────────────────────────────────────────────────────────────────────────── *@
+<div class="flex flex-col h-full gap-4 pt-5 px-5 pb-[10px] bg-transparent w-full max-w-[500px] mx-auto overflow-hidden">
 
-    @* --- SCALED HUD COMPONENT (240px) --- *@
+    @* ── HUD (240px) — DO NOT TOUCH ─────────────────────────────────────────── *@
     <div class="h-[240px] w-full rounded-lg overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-[#333] shrink-0 bg-black">
         <Hud />
     </div>
 
-    @* --- TIGHTER OUTER BOX (p-2.5, gap-1.5) --- *@
-    <div class="flex-1 flex flex-col gap-1.5 min-h-0 bg-[rgba(18,20,28,0.6)] border border-[#30363d] rounded-lg p-2.5 backdrop-blur-[4px]">
+    @* ── FLIGHT PLAN EDITOR PANEL ────────────────────────────────────────────── *@
+    <div class="flex-1 flex flex-col min-h-0 bg-[#0d1117] border border-[#30363d] rounded-[10px] overflow-hidden shadow-[0_8px_40px_rgba(0,0,0,0.6)]"
+         style="font-family:'JetBrains Mono','Courier New',monospace;">
 
-        @* --- HEADER --- *@
-        <div class="pb-1.5 border-b border-[#30363d] flex items-center gap-[10px] font-semibold text-[1.05rem] uppercase text-white tracking-[1.5px] shrink-0">
-            <span class="text-[1rem]">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plane-takeoff">
-                    <path d="M2 22h20"/><path d="M6.36 17.4 4 17l-2-4 1.1-.55a2 2 0 0 1 1.8 0l.17.1a2 2 0 0 0 1.8 0L8 12 5 6l.9-.45a2 2 0 0 1 2.09.2l4.02 3a2 2 0 0 0 2.1.2l4.19-2.06a2.41 2.41 0 0 1 1.73-.17L21 7a1.4 1.4 0 0 1 .87 1.99l-.38.76c-.23.46-.6.84-1.07 1.08L7.58 17.2a2 2 0 0 1-1.22.18Z"/>
-                </svg>
-                    </span>
-            FLIGHT PLAN EDITOR
+        @* ── PANEL HEADER ─────────────────────────────────────────────────────── *@
+        <div class="flex items-center gap-[6px] px-[10px] py-[6px] bg-[#161b22] border-b border-[#21262d] shrink-0">
+            <span class="text-[0.9rem] font-bold text-[#c9d1d9] tracking-[0.07em] flex-1 uppercase">
+                ≋ FLIGHT PLAN EDITOR
+            </span>
+            <button class="bg-transparent border border-[#21262d] rounded-[4px] px-[7px] py-[3px] text-[0.8rem] font-bold uppercase tracking-[0.2em] text-[#8b949e] cursor-pointer transition-all hover:border-[#58a6ff] hover:text-[#58a6ff]"
+                    @onclick="SetHomeToDrone">
+                SYNC HOME
+            </button>
+            <button class="bg-transparent border border-[#21262d] rounded-[4px] px-[7px] py-[3px] text-[0.8rem] font-bold uppercase tracking-[0.2em] text-[#8b949e] cursor-pointer transition-all hover:border-[#58a6ff] hover:text-[#58a6ff]"
+                    @onclick="CenterMapOnDrone">
+                CENTER
+            </button>
         </div>
 
-        <div class="flex-1 flex flex-col gap-1.5 overflow-hidden min-h-0 pt-1">
-
-            @* 1. SLIMMER MAP VIEWPORT (42px) *@
-            <div class="h-[42px] w-full relative rounded-[6px] overflow-hidden border border-[#242731] shrink-0">
-                <div id="map-element" class="absolute inset-0 w-full h-full"></div>
-                <div class="absolute top-1.5 left-2 right-2 flex justify-between z-10 pointer-events-none">
-                    <button class="pointer-events-auto h-7 px-3 rounded bg-[rgba(18,20,28,0.85)] border border-[#242731] text-[#00f2ff] cursor-pointer transition-all duration-200 backdrop-blur-[4px] text-[0.85rem] font-bold tracking-[1px] flex items-center gap-[6px] hover:bg-[#00f2ff] hover:text-[#0b0c10]" @onclick="SetHomeToDrone" title="Sync Home to Drone Location">
-                        <i class="bi bi-house-door-fill"></i> SYNC HOME
-                    </button>
-                    <button class="pointer-events-auto h-7 px-3 rounded bg-[rgba(18,20,28,0.85)] border border-[#242731] text-[#00f2ff] cursor-pointer transition-all duration-200 backdrop-blur-[4px] text-[0.85rem] font-bold tracking-[1px] flex items-center gap-[6px] hover:bg-[#00f2ff] hover:text-[#0b0c10]" @onclick="CenterMapOnDrone" title="Center Map on Drone">
-                        <i class="bi bi-crosshair"></i> CENTER DRONE
-                    </button>
+        @* ── MISSION METRICS TICKER — flat single row, no card padding waste ──── *@
+        <div class="grid grid-cols-4 border-b border-[#21262d] shrink-0">
+            @* Speed *@
+            <div class="py-[5px] text-center border-r border-[#21262d] bg-[#0d1117]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">SPEED</div>
+                <div class="text-[0.80rem] font-bold text-[#00f2ff]">
+                    @Drone.State.GroundSpeed.ToString("0.0")<span class="text-[0.7rem] text-[#484f58] ml-[2px]">m/s</span>
                 </div>
+            </div>
+            @* Distance *@
+            <div class="py-[5px] text-center border-r border-[#21262d] bg-[#161b22]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">DISTANCE</div>
+                <div class="text-[0.80rem] font-bold text-[#c9d1d9]">
+                    @CalculateTotalDistance().ToString("0")<span class="text-[0.7rem] text-[#484f58] ml-[2px]">m</span>
                 </div>
-
-            @* 2. TELEMETRY GRID *@
-            <div class="grid grid-cols-4 gap-2 shrink-0">
-                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center">
-                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">SPEED</span>
-                    <div class="flex items-baseline gap-1">
-                        <span class="text-[1.1rem] font-black text-white font-mono">@Drone.State.GroundSpeed.ToString("0.0")</span>
-                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">m/s</span>
-                    </div>
+            </div>
+            @* Est. Time *@
+            <div class="py-[5px] text-center border-r border-[#21262d] bg-[#0d1117]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">EST.TIME</div>
+                <div class="text-[0.80rem] font-bold text-[#f0b429]">
+                    ~@((CalculateTotalDistance() / 5 / 60).ToString("0"))<span class="text-[0.7rem] text-[#484f58] ml-[2px]">min</span>
                 </div>
-                
-                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center">
-                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">DISTANCE</span>
-                    <div class="flex items-baseline gap-1">
-                        <span class="text-[1.1rem] font-black text-white font-mono">@CalculateTotalDistance().ToString("0")</span>
-                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">m</span>
-                    </div>
+            </div>
+            @* Default Alt (editable) *@
+            <div class="py-[5px] text-center bg-[#161b22]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">DEF.ALT</div>
+                <div class="flex items-center justify-center gap-[2px]">
+                    <input type="number"
+                           @bind="globalAlt"
+                           @bind:after="ApplyGlobalAlt"
+                           class="bg-transparent border-none outline-none w-[44px] text-center font-bold text-[0.80rem] text-[#f0b429] p-0"
+                           style="font-family:inherit;" />
+                    <span class="text-[0.7rem] text-[#484f58]">m</span>
                 </div>
-                
-                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center">
-                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">EST. TIME</span>
-                    <div class="flex items-baseline gap-1">
-                        <span class="text-[1.1rem] font-black text-white font-mono">~@((CalculateTotalDistance() / 5 / 60).ToString("0"))</span>
-                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">min</span>
-                    </div>
-                </div>
-                
-                <div class="bg-[#161b22] border border-[#30363d] p-2 rounded-[4px] flex flex-col items-center justify-between">
-                    <span class="text-[0.8rem] font-semibold text-[#8b949e] uppercase tracking-wider mb-0.5">DEF. ALT</span>
-                    <div class="flex items-center gap-1">
-                        <input type="number" 
-                               @bind="globalAlt" 
-                               @bind:after="ApplyGlobalAlt" 
-                               class="w-[45px] bg-[#0d1117] border border-[#30363d] rounded-[4px] text-[#00ff66] p-[2px] font-bold text-[0.95rem] text-center outline-none font-mono focus:border-[#00f2ff] transition-colors" />
-                        <span class="text-[0.7rem] font-bold text-[#00f2ff]">m</span>
-                    </div>
-                    </div>
-                    </div>
-
-            @* 3. WAYPOINT EDITOR LIST *@
-            <div class="flex-1 flex flex-col gap-2 min-h-0 bg-[#010409] border border-[#242731] rounded-[6px] p-2">
-                <div class="flex justify-between items-center pb-[6px] border-b border-[#242731] shrink-0">
-                    <span class="text-[0.9rem] font-bold text-[#888]">WAYPOINTS (@(MissionItems.Count > 0 ? MissionItems.Count - 1 : 0))</span>
-                    <div class="flex gap-3">
-                        <button class="bg-transparent border-none cursor-pointer text-[1rem] p-0 transition-all hover:brightness-110 text-[#3fb950]" @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")' title="Import Mission">
-                            <i class="bi bi-folder2-open"></i>
-                        </button>
-                        <button class="bg-transparent border-none cursor-pointer text-[1rem] p-0 transition-all hover:brightness-110 text-[#00f2ff]" @onclick="ExportWaypoints" title="Export Mission">
-                            <i class="bi bi-download"></i>
-                        </button>
-                        @if (MissionItems.Count > 1)
-                        {
-                            <button class="bg-transparent border-none cursor-pointer text-[1rem] p-0 transition-all hover:brightness-110 text-[#f85149]" @onclick="ClearAllWaypoints" title="Clear All">
-                                <i class="bi bi-trash3"></i>
-                            </button>
-                        }
-                    </div>
-                </div>
-
-                <div class="flex-1 overflow-y-auto flex flex-col gap-2 pr-1 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:bg-[#333] [&::-webkit-scrollbar-thumb]:rounded-[3px]">
-                    @if (MissionItems.Count <= 1)
-                    {
-                        <div class="py-5 px-[10px] text-center text-[#666] text-[0.75rem] font-semibold">
-                            <i class="bi bi-cursor-fill" style="font-size: 1.5rem; color: #333; margin-bottom: 8px; display: block;"></i>
-                            No waypoints added.<br />Click the map to define a flight path.
-                </div>
-                    }
-                    else
-                    {
-                        @foreach (var mi in MissionItems.Where(x => !x.IsHome))
-                        {
-                            @* TACTICAL HIGH-DENSITY WAYPOINT SLAB *@
-                            <div class="p-2.5 mb-1 bg-[#0d1117] border rounded-[6px] transition-colors cursor-pointer shrink-0 @(activeWpIndex == mi.Index ? "border-[#00f2ff] bg-[rgba(0,242,255,0.05)] shadow-[inset_2px_0_0_#00f2ff]" : "border-[#30363d] hover:border-[#555]")" @onclick="() => activeWpIndex = mi.Index">
-                                
-                                @* Row 1: Index, Coords, and Top-Right Cross *@
-                            <div class="flex items-center justify-between mb-2">
-                                    <div class="flex items-center gap-3">
-                                        <span class="flex items-center justify-center w-[26px] h-[26px] shrink-0 rounded-full border text-[0.75rem] font-bold transition-colors @(activeWpIndex == mi.Index ? "bg-[#00f2ff] text-[#0b0c10] border-[#00f2ff]" : "bg-[#161b22] text-[#58a6ff] border-[#30363d]")">
-                                            @mi.Index
-                                </span>
-                                        <span class="font-mono text-[1.1rem] text-white tracking-tight font-semibold">
-                                            @mi.Lat.ToString("F5"), @mi.Lng.ToString("F5")
-                                    </span>
-                            </div>
-                                    
-                                    <button class="text-[#8b949e] hover:text-[#ff3a3a] hover:bg-[rgba(255,58,58,0.1)] transition-all bg-transparent border-none rounded p-[4px] cursor-pointer leading-none flex items-center justify-center" 
-                                            @onclick:stopPropagation="true" 
-                                            @onclick="() => RemoveItem(mi)">
-                                        <i class="bi bi-x-lg text-[1rem]"></i>
-                                    </button>
-                                                </div>
-
-                                @* Row 2: Alt & Command (LOCKED HEIGHTS) *@
-                                <div class="flex items-center justify-between pl-[38px]"> 
-                                    
-                                    <div class="flex items-center gap-2">
-                                        <span class="text-[0.75rem] font-black text-[#8b949e] uppercase tracking-wider">ALT</span>
-                                        <input type="number" 
-                                               style="width: 60px;"
-                                               class="h-[26px] shrink-0 bg-[#161b22] border border-[#30363d] rounded-[4px] p-0 text-center text-[0.85rem] text-[#00ff66] font-mono font-bold focus:outline-none focus:border-[#00ff66]" 
-                                               @bind="mi.Alt" />
-                                            </div>
-
-                                    <div class="w-[130px] shrink-0"> 
-                                        <select class="w-full h-[26px] bg-[#161b22] border border-[#30363d] rounded-[4px] px-[6px] text-[0.8rem] font-bold text-[#00f2ff] uppercase cursor-pointer focus:outline-none focus:border-[#00f2ff] [&>option]:bg-[#161b22] [&>option]:text-white"
-                                                value="@mi.Command"
-                                                @onchange="@(e => { mi.Command = e.Value?.ToString() ?? "WAYPOINT"; TriggerMapRedraw(); })"
-                                                @onclick:stopPropagation="true">
-                                            <option value="WAYPOINT">WAYPOINT</option>
-                                            <option value="TAKEOFF">TAKEOFF</option>
-                                            <option value="LOITER">LOITER</option>
-                                            <option value="LAND">LAND</option>
-                                            <option value="RTL">RTL</option>
-                                        </select>
-                                        </div>
-                                    
-                                </div>
-                        </div>
-                    }
-                            }
-                        </div>
+            </div>
         </div>
 
-            @* 4. FOOTER ACTIONS WITH UI FEEDBACK *@
-            <div class="flex gap-[10px] shrink-0">
-                <button class="flex-1 p-2.5 rounded-[6px] border border-[#333] font-semibold text-[1rem] tracking-[1px] cursor-pointer transition-all duration-200 flex justify-center items-center gap-2 @(isUploading ? "bg-[#333] text-[#888] cursor-wait" : "bg-[#21262d] text-[#ccc] hover:bg-[#333] hover:text-white")" @onclick="UploadMission" disabled="@isUploading">
-                    @if (isUploading)
+        @* ── WAYPOINTS SECTION — flex-1 so it fills space above footer ────────── *@
+        <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
+
+            @* Waypoint sub-header *@
+            <div class="flex items-center px-[10px] py-[5px] bg-[#161b22] border-b border-[#21262d] shrink-0">
+                <span class="text-[0.8rem] font-bold uppercase tracking-[0.2em] text-[#8b949e]">WAYPOINTS</span>
+                <span class="text-[0.8rem] font-bold text-[#58a6ff] bg-[rgba(88,166,255,0.10)] border border-[rgba(88,166,255,0.27)] rounded-[3px] px-[5px] py-0 ml-[5px]">
+                    @(MissionItems.Count > 0 ? MissionItems.Count - 1 : 0)
+                </span>
+                <div class="flex-1"></div>
+                @* Import *@
+                <button class="bg-transparent border border-[#21262d] rounded-[3px] w-[22px] h-[22px] flex items-center justify-center text-[#8b949e] text-[0.8rem] cursor-pointer transition-all hover:text-[#3fb950] hover:border-[#3fb950] ml-[4px]"
+                        @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")'
+                        title="Import Mission">
+                    <i class="bi bi-folder2-open"></i>
+                </button>
+                @* Export *@
+                <button class="bg-transparent border border-[#21262d] rounded-[3px] w-[22px] h-[22px] flex items-center justify-center text-[#8b949e] text-[0.8rem] cursor-pointer transition-all hover:text-[#58a6ff] hover:border-[#58a6ff] ml-[4px]"
+                        @onclick="ExportWaypoints"
+                        title="Export Mission">
+                    <i class="bi bi-download"></i>
+                </button>
+                @* Clear all — only shown when waypoints exist *@
+                @if (MissionItems.Count > 1)
                 {
-                        <i class="bi bi-arrow-repeat animate-spin"></i> <span>UPLOADING...</span>
+                    <button class="bg-transparent border border-[#21262d] rounded-[3px] w-[22px] h-[22px] flex items-center justify-center text-[#8b949e] text-[0.8rem] cursor-pointer transition-all hover:text-[#ff7b72] hover:border-[#ff7b72] ml-[4px]"
+                            @onclick="ClearAllWaypoints"
+                            title="Clear All">
+                        <i class="bi bi-trash3"></i>
+                    </button>
+                }
+            </div>
+
+            @* ── WAYPOINT ROWS — fixed-height 304px viewport (8 × 38px) ────────── *@
+            <div id="waypoint-list-container" class="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-[4px] [&::-webkit-scrollbar-thumb]:bg-[#30363d] [&::-webkit-scrollbar-thumb]:rounded-[3px]">
+
+                @if (MissionItems.Count <= 1)
+                {
+                    @* Empty state centred in the 304px zone *@
+                    <div class="h-full flex flex-col items-center justify-center gap-[6px]">
+                        <div class="text-[1.4rem] opacity-[0.2] text-[#c9d1d9]">◌</div>
+                        <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58]">
+                            Tap the map to add waypoints
+                        </div>
+                    </div>
                 }
                 else
                 {
-                        <i class="bi bi-cloud-arrow-up-fill"></i> <span>UPLOAD</span>
+                    @foreach (var mi in MissionItems.Where(x => !x.IsHome))
+{
+    @* Determine command badge colour inline *@
+    var cmdColor = mi.Command switch {
+        "TAKEOFF" => "#3fb950",
+        "LOITER"  => "#f0b429",
+        "RTL"     => "#ff7b72",
+        "LAND"    => "#a78bfa",
+        _         => "#58a6ff"   // WAYPOINT
+    };
+    var isActive = activeWpIndex == mi.Index;
+    var rowBg    = isActive
+        ? "rgba(88,166,255,0.05)"
+        : mi.Index % 2 == 0 ? "#0d1117" : "#161b22";
+
+    @* ── SINGLE-ROW HIGH-DENSITY WAYPOINT ENTRY (38px) ─────── *@
+    <div class="border-b border-[#21262d] cursor-default transition-colors"
+                             style="display:grid; grid-template-columns:26px 68px 1fr 52px 22px;
+                                    align-items:center; gap:4px;
+                                    padding:0 8px; height:38px;
+                                    background:@rowBg;"
+                             @onclick="() => activeWpIndex = mi.Index">
+
+                            @* Col 1: Index *@
+                            <span class="text-[0.9rem] font-bold text-[#484f58] text-right"
+                                  style="font-family:inherit;">
+                                @mi.Index.ToString("D2")
+                            </span>
+
+                           @* Col 2: Command badge — styled select so operator can change it *@
+                           <select class="w-full h-[22px] rounded-[3px] border text-[0.65rem] font-bold uppercase tracking-[0.06em] text-center cursor-pointer outline-none focus:outline-none appearance-none"
+                                style="background:@(cmdColor + "18"); border-color:@(cmdColor + "40"); color:@cmdColor; font-family:inherit; padding:0 2px;"
+                                value="@mi.Command"
+                                @onchange="@(e => { 
+                                mi.Command = e.Value?.ToString() ?? "WAYPOINT"; 
+                                if (mi.Command == "LAND") { mi.Alt = 0; } 
+                                TriggerMapRedraw(); 
+                                })"
+                                @onclick:stopPropagation="true">
+                                <option value="WAYPOINT">WAYPOINT</option>
+                                <option value="TAKEOFF">TAKEOFF</option>
+                                <option value="LOITER">LOITER</option>
+                                <option value="LAND">LAND</option>
+                                <option value="RTL">RTL</option>
+                            </select>
+
+                            @* Col 3: Lat / Lng coordinates *@
+                            <div class="overflow-hidden">
+                                <div class="text-[0.9rem] text-[#8b949e] font-mono whitespace-nowrap overflow-hidden text-ellipsis">
+                                    @mi.Lat.ToString("F5")° @mi.Lng.ToString("F5")°
+                                </div>
+                            </div>
+
+                            @* Col 4: Altitude *@
+                            <div class="flex items-center justify-end gap-[2px] pr-[2px]">
+                                <input type="number"
+                                       class="bg-transparent border-none outline-none text-right text-[0.78rem] font-bold text-[#c9d1d9] p-0 w-[36px]"
+                                       style="font-family:inherit;"
+                                       @bind="mi.Alt"
+                                       @bind:after="() => globalAlt = (int)mi.Alt"
+                                       @onclick:stopPropagation="true" />
+                                <span class="text-[0.58rem] text-[#484f58]">m</span>
+                            </div>
+
+                            @* Col 5: Delete button — visible on row active/hover via CSS *@
+                            <button class="bg-transparent border-none rounded-[3px] w-[18px] h-[18px] flex items-center justify-center text-[0.65rem] cursor-pointer transition-all text-[#484f58] hover:text-[#ff7b72]"
+                                    @onclick:stopPropagation="true"
+                                    @onclick="() => RemoveItem(mi)">
+                                ✕
+                            </button>
+
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+
+        @* ── PINNED FOOTER — UPLOAD + START ──────────────────────────────────── *@
+        <div class="grid grid-cols-2 border-t border-[#30363d] shrink-0">
+
+            @* UPLOAD *@
+            <button class="flex items-center justify-center gap-[6px] py-[11px] border-r border-[#30363d] text-[0.7rem] font-bold uppercase tracking-[0.2em] cursor-pointer transition-all
+                           @(isUploading ? "bg-[#161b22] text-[#484f58] cursor-wait" : "bg-[#161b22] text-[#8b949e] hover:bg-[#1e2430] hover:text-[#c9d1d9]")"
+                    style="font-family:inherit;"
+                    @onclick="UploadMission"
+                    disabled="@isUploading">
+                @if (isUploading)
+                {
+                    <i class="bi bi-arrow-repeat animate-spin text-[0.9rem]"></i>
+                    <span>UPLOADING…</span>
+                }
+                else
+                {
+                    <span class="text-[0.9rem]">⬆</span>
+                    <span>UPLOAD</span>
                 }
             </button>
-                <button class="flex-1 p-2.5 rounded-[6px] font-semibold text-[1rem] tracking-[1px] transition-all duration-200 flex justify-center items-center gap-2 @(isUploaded ? "bg-gradient-to-r from-[#0d3a1a] to-[#00ff66] text-[#0b0c10] border-none shadow-[0_4px_15px_rgba(0,255,102,0.2)] hover:brightness-110 hover:-translate-y-[1px] cursor-pointer" : "bg-[#0d3a1a] text-[#888] border border-[#238636] cursor-not-allowed")" @onclick="StartMission" disabled="@(!isUploaded)">
-                    <i class="bi bi-rocket-takeoff-fill"></i> START
-                </button>
-            </div>
+
+            @* START — locked until uploaded *@
+            <button class="flex items-center justify-center gap-[6px] py-[11px] text-[0.7rem] font-bold uppercase tracking-[0.2em] transition-all
+                           @(isUploaded ? "bg-[rgba(63,185,80,0.13)] text-[#3fb950] cursor-pointer hover:brightness-110" : "bg-[#0d1117] text-[#484f58] cursor-not-allowed")"
+                    style="font-family:inherit;"
+                    @onclick="StartMission"
+                    disabled="@(!isUploaded)">
+                <span class="text-[0.9rem]">@(isUploaded ? "▶" : "▶")</span>
+                <span>START</span>
+            </button>
 
         </div>
+
     </div>
 </div>
 
-@* --- C# LOGIC BLOCK --- *@
 @code {
     // Note: Kept static so JSInterop AddWaypointFromMap continues to function globally. 
     // For multi-user deployment, migrate this to a scoped StateService.
@@ -194,8 +242,8 @@
     
     private bool isUploaded = false;
     private bool isUploading = false;
-    private int globalAlt = 50;
-    private int activeWpIndex = -1;
+    private static int globalAlt = 50;
+    private static int activeWpIndex = -1;
 
     public class MissionItem
     {
@@ -332,7 +380,18 @@
             try
             {
                 await JS.InvokeVoidAsync("initMap", Drone.State.Latitude, Drone.State.Longitude);
-        }
+
+                // Registers a global browser event interceptor for Ctrl + Z
+                await JS.InvokeVoidAsync("eval", @"
+                    window._flightPlanUndoHandler = function(e) {
+                        if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+                            e.preventDefault();
+                            DotNet.invokeMethodAsync('BlazorApp3', 'TriggerUndoFromJS');
+                        }
+                    };
+                    window.addEventListener('keydown', window._flightPlanUndoHandler);
+                ");
+            }
             catch { }
         }
     }
@@ -351,9 +410,36 @@
         }
         else
         {
-            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = 50, IsHome = false });
+            // Dynamically uses the current globalAlt value instead of a hardcoded 50
+            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = globalAlt, IsHome = false });
         }
         Resequence();
+    }
+
+    [JSInvokable]
+    public static void TriggerUndoFromJS()
+    {
+        // Scenario A: If a specific waypoint row is currently selected, remove it
+        if (activeWpIndex > 0)
+        {
+            var selectedItem = MissionItems.FirstOrDefault(x => x.Index == activeWpIndex);
+            if (selectedItem != null && !selectedItem.IsHome)
+            {
+                MissionItems.Remove(selectedItem);
+                activeWpIndex = MissionItems.LastOrDefault(x => !x.IsHome)?.Index ?? -1;
+                Resequence();
+                return;
+            }
+        }
+
+        // Scenario B (Fallback): If no row is selected, delete the absolute last added waypoint
+        var lastItem = MissionItems.LastOrDefault(x => !x.IsHome);
+        if (lastItem != null)
+        {
+            MissionItems.Remove(lastItem);
+            activeWpIndex = MissionItems.LastOrDefault(x => !x.IsHome)?.Index ?? -1;
+            Resequence();
+        }
     }
 
     private static void Resequence()
@@ -388,9 +474,17 @@
         try
         {
             isUploaded = false;
-        StateHasChanged();
+            StateHasChanged();
             await JS.InvokeVoidAsync("drawMission", MissionItems);
-    }
+
+            // Snaps the viewport scrollbar to the bottom row after the new DOM element renders
+            await JS.InvokeVoidAsync("eval", @"
+                setTimeout(() => {
+                    var el = document.getElementById('waypoint-list-container');
+                    if (el) el.scrollTop = el.scrollHeight;
+                }, 30);
+            ");
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"Map Redraw Error: {ex.Message}");
@@ -524,6 +618,14 @@
         try
         {
             await JS.InvokeVoidAsync("preserveMap");
+
+            // Destroys the global event hook when changing pages
+            await JS.InvokeVoidAsync("eval", @"
+                if (window._flightPlanUndoHandler) {
+                    window.removeEventListener('keydown', window._flightPlanUndoHandler);
+                    delete window._flightPlanUndoHandler;
+                }
+            ");
         }
         catch { }
     }

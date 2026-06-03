@@ -76,9 +76,9 @@
             _shouldScroll = false;
             try
             {
-                // Instant jump — no animation, matches terminal/MAVLink log behaviour
+                // Instant jump to the very top of the scroll container
                 await JS.InvokeVoidAsync("eval",
-                    "var el=document.getElementById('terminal-scroll'); if(el) el.scrollTop=el.scrollHeight;");
+                    "var el=document.getElementById('terminal-scroll'); if(el) el.scrollTop=0;");
             }
             catch { }
         }
