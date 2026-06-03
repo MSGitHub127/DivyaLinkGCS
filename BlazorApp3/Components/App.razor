@@ -366,31 +366,53 @@
 
         window.drawMission = (waypoints) => {
     if (!window._gcsMap) return;
+    
+    // 1. Clear old markers
     window._missionMarkers.forEach(m => window._gcsMap.removeLayer(m));
     window._missionMarkers = [];
-    if (window._missionPath) { window._gcsMap.removeLayer(window._missionPath); window._missionPath = null; }
+    
+    // 2. Clean up old multi-segment flight line tracks
+    if (window._missionPaths && window._missionPaths.length) {
+        window._missionPaths.forEach(p => window._gcsMap.removeLayer(p));
+    }
+    window._missionPaths = [];
+
     if (!waypoints || !waypoints.length) return;
 
-    const coords = [];
-    let hasLandCommand = false;
+    // Multi-segment tracking engine: arrays containing coordinates and land flags
+    const segments = [{ coords: [], hasLand: false }];
+    let currentSegmentIndex = 0;
 
-    waypoints.forEach(wp => {
+    waypoints.forEach((wp, index) => {
         const lat = wp.lat ?? wp.Lat, lng = wp.lng ?? wp.Lng, idx = wp.index ?? wp.Index;
-        const home = wp.IsHome || wp.isHome || idx === 0;
         const cmd = wp.command ?? wp.Command;
 
-        if (lat === undefined || lng === undefined) return;
-        coords.push([lat, lng]);
+        // True absolute home position check (Index 0)
+        const isAbsoluteHome = wp.IsHome || wp.isHome || idx === 0;
+        
+        // Logical segment break condition (follows a LAND command)
+        const isAfterLand = index > 0 && (waypoints[index - 1].command ?? waypoints[index - 1].Command) === "LAND";
 
-        // Mission Planner rule: check if an active LAND event is registered
+        if (lat === undefined || lng === undefined) return;
+
+        // If the previous drone action was landing, break the polyline tracking array here
+        if (isAfterLand) {
+            currentSegmentIndex++;
+            segments[currentSegmentIndex] = { coords: [], hasLand: false };
+        }
+        
+        segments[currentSegmentIndex].coords.push([lat, lng]);
+        
         if (cmd === "LAND") {
-            hasLandCommand = true;
+            segments[currentSegmentIndex].hasLand = true;
         }
 
-        // Marker drawing configuration
-        const sz = home ? 22 : 18, bg = home ? '#ff9900' : '#00f2ff';
+        // Configure marker visual assets: Only the absolute home point gets 'H' and orange styling
+        const sz = isAbsoluteHome ? 22 : 18;
+        const bg = isAbsoluteHome ? '#ff9900' : '#00f2ff';
+        
         const icon = L.divIcon({ 
-            html: `<div style="width:${sz}px;height:${sz}px;background:${bg};border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;color:#000;">${home ? 'H' : idx}</div>`, 
+            html: `<div style="width:${sz}px;height:${sz}px;background:${bg};border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;color:#000;">${isAbsoluteHome ? 'H' : idx}</div>`, 
             className: '', 
             iconSize: [sz, sz], 
             iconAnchor: [sz / 2, sz / 2] 
@@ -407,13 +429,17 @@
         window._missionMarkers.push(m);
     });
 
-    if (coords.length > 1) {
-        // Mission Planner Workflow: Retract line path back to Home (coords[0]) if no LAND action exists
-        if (!hasLandCommand) {
-            coords.push(coords[0]);
+    // 3. Render multi-segment lines on the Leaflet map layer workspace
+    segments.forEach((seg) => {
+        if (seg.coords.length > 1) {
+            // Mission Planner Workflow: Retract line path back to its local segment start position if no LAND action exists
+            if (!seg.hasLand) {
+                seg.coords.push(seg.coords[0]);
+            }
+            const path = L.polyline(seg.coords, { color: '#2b58ff', weight: 3, opacity: .85 }).addTo(window._gcsMap);
+            window._missionPaths.push(path);
         }
-        window._missionPath = L.polyline(coords, { color: '#2b58ff', weight: 3, opacity: .85 }).addTo(window._gcsMap);
-    }
+    });
 };
         const animateMapResize = () => {
             let ticks = 0;
