@@ -107,7 +107,7 @@
             </div>
 
             @* ── WAYPOINT ROWS — fixed-height 304px viewport (8 × 38px) ────────── *@
-            <div class="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-[4px] [&::-webkit-scrollbar-thumb]:bg-[#30363d] [&::-webkit-scrollbar-thumb]:rounded-[3px]">
+            <div id="waypoint-list-container" class="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-[4px] [&::-webkit-scrollbar-thumb]:bg-[#30363d] [&::-webkit-scrollbar-thumb]:rounded-[3px]">
 
                 @if (MissionItems.Count <= 1)
                 {
@@ -150,12 +150,16 @@
                                 @mi.Index.ToString("D2")
                             </span>
 
-                            @* Col 2: Command badge — styled select so operator can change it *@
-                            <select class="w-full h-[22px] rounded-[3px] border text-[0.65rem] font-bold uppercase tracking-[0.06em] text-center cursor-pointer outline-none focus:outline-none appearance-none"
-                                    style="background:@(cmdColor + "18"); border-color:@(cmdColor + "40"); color:@cmdColor; font-family:inherit; padding:0 2px;"
-                                    value="@mi.Command"
-                                    @onchange="@(e => { mi.Command = e.Value?.ToString() ?? "WAYPOINT"; TriggerMapRedraw(); })"
-                                    @onclick:stopPropagation="true">
+                           @* Col 2: Command badge — styled select so operator can change it *@
+                           <select class="w-full h-[22px] rounded-[3px] border text-[0.65rem] font-bold uppercase tracking-[0.06em] text-center cursor-pointer outline-none focus:outline-none appearance-none"
+                                style="background:@(cmdColor + "18"); border-color:@(cmdColor + "40"); color:@cmdColor; font-family:inherit; padding:0 2px;"
+                                value="@mi.Command"
+                                @onchange="@(e => { 
+                                mi.Command = e.Value?.ToString() ?? "WAYPOINT"; 
+                                if (mi.Command == "LAND") { mi.Alt = 0; } 
+                                TriggerMapRedraw(); 
+                                })"
+                                @onclick:stopPropagation="true">
                                 <option value="WAYPOINT">WAYPOINT</option>
                                 <option value="TAKEOFF">TAKEOFF</option>
                                 <option value="LOITER">LOITER</option>
@@ -373,9 +377,17 @@
         try
         {
             isUploaded = false;
-        StateHasChanged();
+            StateHasChanged();
             await JS.InvokeVoidAsync("drawMission", MissionItems);
-    }
+
+            // Snaps the viewport scrollbar to the bottom row after the new DOM element renders
+            await JS.InvokeVoidAsync("eval", @"
+                setTimeout(() => {
+                    var el = document.getElementById('waypoint-list-container');
+                    if (el) el.scrollTop = el.scrollHeight;
+                }, 30);
+            ");
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"Map Redraw Error: {ex.Message}");
