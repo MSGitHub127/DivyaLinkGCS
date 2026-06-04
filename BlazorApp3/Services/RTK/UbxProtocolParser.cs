@@ -48,6 +48,7 @@ public sealed class UbxStreamParser
 
     public byte Class    => _class;
     public byte SubClass => _subclass;
+    public bool IsIdle   => _state == State.Preamble1;
 
     /// <summary>Zero-allocation view of the current payload (valid only immediately after Feed returns > 0).</summary>
     public ReadOnlySpan<byte> Payload => _buf.AsSpan(6, _payloadLen);
