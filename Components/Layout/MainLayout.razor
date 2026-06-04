@@ -1,0 +1,569 @@
+@inherits LayoutComponentBase
+@using BlazorApp3.Components.GCS
+@inject MavlinkService Drone
+@inject IJSRuntime JS
+@inject DgcaAirspaceService AirspaceSvc
+@implements IDisposable
+@using System.IO.Ports
+@using System.Linq
+@inject VehicleProfileService Vehicle
+
+@* REMOVED 'flex flex-col' so elements can overlap properly to restore frosted glass *@
+<div class="gcs-wrapper block h-screen w-full bg-[#0a0b0d] overflow-hidden relative">
+
+    @* --- HEADER --- *@
+    <header class="header fixed top-0 left-0 w-full h-[60px] z-[100] shrink-0 bg-[rgba(18,20,26,0.6)] backdrop-blur-md border-b border-[#242731] flex items-center justify-between px-2 md:px-5 transition-all duration-300">
+        @* HEADER CONTENT IS UNCHANGED *@
+        <div class="flex items-center gap-2 md:gap-[15px]">
+            <div class="hidden sm:flex flex-col justify-center">
+                <span class="bg-gradient-to-r from-[#3a86ff] to-[#ff00c8] bg-clip-text text-transparent font-black text-lg md:text-[1.6rem] tracking-[-0.5px] leading-none">DIVYALINK</span>
+                <div class="text-[0.7rem] text-[#888] tracking-[1.5px] uppercase mt-[2px] font-bold">BY VAYUNOTICS</div>
+            </div>
+
+            <div class="flex items-center gap-1.5 flex-nowrap overflow-x-auto no-scrollbar pb-1 sm:pb-0">
+                @{
+                    var pillBase = "inline-flex items-center justify-center gap-1.5 h-[28px] min-w-[95px] px-2 rounded-[4px] text-[0.8rem] font-bold tracking-[0.8px] whitespace-nowrap transition-all duration-300 border box-border";
+                }
+                <div class="@pillBase @(IsDroneActuallyTalking ? "bg-[rgba(0,200,80,0.12)] border-[#2ea043] text-[#3fb950]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
+                    <i class="bi bi-router-fill"></i>
+                    <span class="hidden sm:inline">
+                        @if (IsDroneActuallyTalking)
+                        {
+                            @($"TELEM {Drone.State.RxPacketsPerSec:0}Hz")
+                        }
+                        else
+                        {
+                            @("NO LINK")
+                        }
+                    </span>
+                </div>
+                <div class="@pillBase @(Drone.State.GpsFixType >= 3 ? "bg-[rgba(0,200,80,0.10)] border-[#2ea043] text-[#3fb950]" : Drone.State.GpsFixType >= 2 ? "bg-[rgba(210,153,34,0.12)] border-[#d29922] text-[#e3a820]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
+                    <i class="bi bi-reception-4"></i>
+                    <span class="hidden sm:inline">@(Drone.State.SatCount > 0 ? $"{Drone.State.SatCount} SAT" : "NO GPS")</span>
+                </div>
+                <div class="@pillBase @(Drone.State.IsRcConnected ? "bg-[rgba(0,220,80,0.20)] border-[#00cc55] text-[#00ee66]" : "bg-[rgba(220,60,60,0.18)] border-[#cc3333] text-[#ff6666]")">
+                    <i class="bi bi-controller"></i>
+                    <span class="hidden sm:inline">@(Drone.State.IsRcConnected ? "RC" : "NO RC")</span>
+                </div>
+                @if (IsDroneActuallyTalking && Drone.State.FlightMode != "Unknown")
+                {
+                    <div class="@pillBase bg-[rgba(88,166,255,0.10)] border-[#58a6ff] text-[#58a6ff]">
+                        <i class="bi bi-airplane-fill"></i>
+                        <span class="hidden sm:inline">@Drone.State.FlightMode</span>
+                    </div>
+                }
+                @if (IsDroneActuallyTalking)
+                {
+                    <div class="@pillBase @(Drone.State.IsArmed ? "bg-[rgba(248,81,73,0.15)] border-[#f85149] text-[#ff8080]" : "bg-[rgba(46,160,67,0.10)] border-[#2ea043] text-[#3fb950]")">
+                        <i class="bi @(Drone.State.IsArmed ? "bi-shield-fill-exclamation" : "bi-shield-fill-check")"></i>
+                        <span class="hidden sm:inline">@(Drone.State.IsArmed ? "ARMED" : "DISARMED")</span>
+                    </div>
+                }
+            </div>
+        </div>
+
+    <div class="flex items-center gap-2 md:gap-3 overflow-x-auto no-scrollbar">
+    @{
+        @* FIX: explicitly locked to h-[36px] and text-[0.9rem] to prevent shrinking/jumping *@
+        var inputBase = "h-[36px] bg-[#08090b] border border-[#242731] text-white px-3 rounded-[4px] text-[0.9rem] font-semibold outline-none focus:border-[#58a6ff]";
+    }
+
+    <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedType">
+        <option value="Serial">SERIAL</option>
+        <option value="UDP">UDP</option>
+        <option value="TCP">TCP</option>
+    </select>
+
+    @if (selectedType == "Serial")
+    {
+        <select class="@inputBase cursor-pointer min-w-[140px]" @onchange="OnPortChanged" value="@selectedPort">
+            @if (availablePorts.Count == 0)
+            {
+                <option value="" disabled selected>Scanning...</option>
+            }
+            else
+            {
+                <option value="" disabled selected="@(string.IsNullOrEmpty(selectedPort))">-- Port --</option>
+                @foreach (var port in Drone.GetAvailablePorts())
+                {
+                    <option value="@port.PortId">@port.DisplayName</option>
+                }
+            }
+        </select>
+    }
+    else
+    {
+        <input class="@inputBase w-[140px]" @bind="selectedPort" placeholder="127.0.0.1" />
+    }
+
+    <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedBaud">
+        <option value="9600">9600</option>
+        <option value="57600">57600</option>
+        <option value="115200">115200</option>
+    </select>
+
+    @* Scaled Status Indicator *@
+    <span class="w-3 h-3 rounded-full shrink-0 mx-1 @(IsDroneActuallyTalking ? "bg-[#00ff00] shadow-[0_0_8px_#00ff00]" : "bg-[#ff0000]")"></span>
+
+    @* Scaled Connect Button: h-[36px] matching the inputs exactly *@
+    <button class="h-[36px] border-none p-2 rounded-[4px] font-extrabold cursor-pointer text-[0.9rem] tracking-[1px] transition-colors flex items-center justify-center @(IsDroneActuallyTalking ? "bg-[#ff3a3a] text-white hover:bg-red-600" : "bg-[#2b58ff] text-white hover:bg-blue-600")"
+            @onclick="ToggleConnection" disabled="@isAttempting">
+        @if (isAttempting)
+        {
+            <span>VERIFYING...</span>
+        }
+        else
+        {
+            @(IsDroneActuallyTalking ? "DISCONNECT" : "CONNECT")
+        }
+    </button>
+    </div>
+    </header>
+
+    @* ── AIRSPACE WARNING BANNER ──────────────────────────────────────────────────
+         Sits fixed at top-[60px] (just below the 60px header).
+         z-[99] — below the header (z-100) but above everything else.
+         Only rendered when _airspaceWarning is non-null.
+         RED  → pulsing red background, white bold text (matches RESTRICTED severity).
+         YELLOW → solid amber, no pulse (CONTROLLED / advisory).
+    *@
+    @if (_airspaceWarning is not null)
+    {
+        <div class="airspace-warning-banner @(_airspaceWarning == "RED" ? "banner-red" : "banner-yellow")"
+             role="alert"
+             aria-live="assertive">
+            <span class="banner-icon">⚠️</span>
+            <span class="banner-text">
+                WARNING: AIRCRAFT INSIDE RESTRICTED
+                <strong>@(_airspaceWarning == "RED" ? "PROHIBITED" : "CONTROLLED")</strong>
+                AIRSPACE
+            </span>
+            @* Zone type label pill *@
+            <span class="banner-zone-pill">@_airspaceWarning ZONE</span>
+        </div>
+    }
+
+    @* THE ABSOLUTE WORKSPACE: inset-0 forces this container to the very top, restored the glass blur! *@
+    <div class="absolute inset-0 flex flex-row pointer-events-none z-[10] transition-all duration-300">
+        
+        @* 1. THE DRAWER (Consolidated all visibility logic to inline styles, slides under header z-[90]) *@
+        <div class="pointer-events-auto shrink-0 bg-[rgba(15,17,23,0.9)] backdrop-blur-xl border-r border-[rgba(255,255,255,0.1)] z-[90] transition-all duration-300 shadow-[20px_0_50px_rgba(0,0,0,0.3)] overflow-hidden flex flex-col h-full relative pt-[60px]"
+     style="@GetDrawerStyle()">
+             
+            <button class="absolute top-[65px] right-[5px] bg-transparent border-none text-[rgba(255,255,255,0.7)] text-[26px] font-bold p-0 cursor-pointer z-[2000] leading-none transition-all duration-200 hover:text-[#ff3a3a] hover:scale-125" @onclick='() => HandleTabClick(activeTab)'>&times;</button>
+            <div class="w-full h-full p-0 box-border overflow-y-auto overflow-x-hidden">
+                @if (activeTab == "Quick") { <Quick /> }
+                else if (activeTab == "Actions") { <Actions /> }
+                else if (activeTab == "Messages") { <Messages /> }
+                else if (activeTab == "FlightPlan") { <FlightPlan /> }
+                else if (activeTab == "Pre Flight") { <PreFlight /> }
+                else if (activeTab == "Setup") { <Setup /> }
+                else if (activeTab == "Swarm") { <Swarm /> }
+            </div>
+        </div>
+
+        @* 2. THE MAP CONTAINER (flex-1 handles the push, but it reaches top: 0!) *@
+        <main class="flex-1 relative h-full pointer-events-none transition-all duration-300">
+            <CascadingValue Value="activeTab">
+                <div class="pointer-events-auto absolute inset-0 w-full h-full">
+                    @Body
+                </div>
+            </CascadingValue>
+
+            @* 3. THE FOOTER (Anchored strictly inside the shrinking map workspace) *@
+            <footer class="absolute bottom-0 left-0 w-full p-[15px_10px] flex justify-center z-[1000] transition-all duration-300 pointer-events-none">
+                <div class="flex gap-2 md:gap-[10px] w-full max-w-[750px] justify-center overflow-x-auto no-scrollbar pointer-events-auto px-2">
+                    @foreach (var tab in tabs)
+                    {
+                        var isActive = activeTab == tab;
+                        <button class="min-w-[70px] md:min-w-[95px] flex-1 rounded-[8px] text-white py-[4px] px-1 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 shadow-lg @(isActive ? "bg-gradient-to-br from-[#2b58ff] to-[#7e3ff2] border border-transparent shadow-[0_0_15px_rgba(126,63,242,0.4)]" : "bg-[rgba(10,11,14,0.85)] backdrop-blur-md border border-[#30363d] hover:bg-[#1a1f2e] hover:border-[#58a6ff]")"
+                                @onclick="() => HandleTabClick(tab)">
+                            <div class="h-[30px] flex items-center justify-center shrink-0">
+                                <i class="not-italic flex items-center justify-center @(isActive ? "text-white" : "text-[#00f2ff]") [&>svg]:w-[22px] [&>svg]:h-[22px]">
+                                    @((MarkupString)GetIcon(tab))
+                                </i>
+                            </div>
+                            <span class="text-[1.1rem] md:text-[1.1rem] font-semibold tracking-tighter leading-none whitespace-nowrap mt-[1px]">@tab</span>
+                        </button>
+                    }
+                </div>
+            </footer>
+            <MapOverlayHost />
+        </main>
+    </div>
+    
+    <ConnectionDialog />
+    <ToastContainer />
+
+</div>
+
+<style>
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    .gcs-wrapper.map-fullscreen .header { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+    .gcs-wrapper.map-fullscreen .footer { transform: translateY(100%); opacity: 0; pointer-events: none; }
+    
+    @* Restored original map pop-out logic for z-indexing, merges with absolute layout *@
+    .gcs-wrapper.map-fullscreen main {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1000; @* COVER EVERY ELEMENT WHEN FULLSCREEN *@
+        pointer-events: auto;
+    }
+
+    /* ── AIRSPACE WARNING BANNER ────────────────────────────────────────────
+       Fixed just below the 60px header.
+       Highest possible z-index below the header itself.
+    ─────────────────────────────────────────────────────────────────────── */
+    .airspace-warning-banner {
+        position: fixed;
+        top: 60px;
+        left: 0;
+        width: 100%;
+        z-index: 99;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 7px 20px;
+        font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 1.2px;
+        text-transform: uppercase;
+        pointer-events: none;          /* never block map interaction */
+        box-shadow: 0 2px 16px rgba(0,0,0,0.45);
+        border-bottom: 1px solid rgba(255,255,255,0.12);
+        transition: background 0.3s ease;
+    }
+
+    /* RED zone — pulsing red, high-contrast white text */
+    .banner-red {
+        background: rgba(200, 30, 30, 0.88);
+        color: #ffffff;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+        animation: bannerPulse 1.4s ease-in-out infinite;
+    }
+
+    /* YELLOW zone — solid amber, no pulse */
+    .banner-yellow {
+        background: rgba(210, 140, 0, 0.90);
+        color: #ffffff;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        box-shadow: 0 2px 18px rgba(255, 180, 0, 0.30);
+    }
+
+    .banner-icon {
+        font-size: 1rem;
+        flex-shrink: 0;
+    }
+
+    .banner-text {
+        flex: 1;
+        text-align: center;
+    }
+
+    .banner-zone-pill {
+        background: rgba(0,0,0,0.28);
+        border: 1px solid rgba(255,255,255,0.30);
+        border-radius: 3px;
+        padding: 2px 8px;
+        font-size: 0.68rem;
+        letter-spacing: 1.5px;
+        flex-shrink: 0;
+    }
+
+    /* Pulsing animation — RED only */
+    @@keyframes bannerPulse {
+        0%,100% { background: rgba(200, 30, 30, 0.88); }
+        50%      { background: rgba(230, 20, 20, 0.98); }
+    }
+
+    /* Leaflet popup override — remove default white box, let our HTML style it */
+    .dgca-popup .leaflet-popup-content-wrapper {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        border-radius: 0 !important;
+    }
+    .dgca-popup .leaflet-popup-content {
+        margin: 0 !important;
+    }
+    .dgca-popup .leaflet-popup-tip-container {
+        display: none !important;
+    }
+</style>
+
+@code {
+    // ── Existing state (unchanged) ────────────────────────────────────────
+    private string activeTab = "";
+    private string selectedType = "Serial";
+    private string selectedPort = "";
+    private int selectedBaud = 57600;
+    [Inject] private IConfiguration Config { get; set; } = default!;
+
+    private List<string> availablePorts = new();
+    private bool isManualConnected = false;
+    private bool isAttempting = false;
+    private System.Threading.Timer? _autoDetectTimer;
+    private string[] tabs = { "Quick", "Actions", "Messages", "FlightPlan", "Pre Flight", "Setup", "Swarm" };
+
+    private bool IsConnected => Drone.State.ConnectionStatus.Contains("Receiving");
+    private bool IsDroneActuallyTalking => Drone.IsLinkHealthy;
+
+    // ── Airspace warning state ────────────────────────────────────────────
+    // null  = no warning  |  "RED" = prohibited  |  "YELLOW" = controlled
+    private string? _airspaceWarning = null;
+
+    // DotNet reference passed to JS so airspace.js can invoke back
+    private DotNetObjectReference<MainLayout>? _dotnetRef;
+
+    // ── Proximity throttle: don't call JS on every telemetry packet ───────
+    private DateTime _lastProximityCheck = DateTime.MinValue;
+    private static readonly TimeSpan ProximityCheckInterval = TimeSpan.FromSeconds(2);
+
+    // ── Airspace load throttle: reload when drone moves >5 km ─────────────
+    private double _lastAirspaceLoadLat = double.NaN;
+    private double _lastAirspaceLoadLon = double.NaN;
+    private const double AirspaceReloadDistanceMeters = 5000;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+
+    protected override void OnInitialized()
+    {
+        _autoDetectTimer = new System.Threading.Timer(AutoDetectPorts, null, 0, 1000);
+        Drone.OnTelemetryUpdated += RefreshUi;
+        Drone.OnRcChannelsUpdated += OnRcUpdated;
+
+        var defaultType = Config["TcpConnection:DefaultConnectionType"] ?? "Serial";
+        if (Enum.TryParse<ConnectionType>(defaultType, out _))
+            selectedType = defaultType;
+
+        if (selectedType is "TCP" or "UDP")
+        {
+            var host = Config["TcpConnection:DefaultHost"] ?? "";
+            var port = Config["TcpConnection:DefaultPort"] ?? "";
+            selectedPort = string.IsNullOrEmpty(port) ? host : $"{host}:{port}";
+        }
+        Vehicle.OnAutoSnap += HandleVehicleAutoSnap;
+    }
+
+    private void HandleVehicleAutoSnap(AutoSnapEventArgs args)
+    {
+        try
+        {
+            _ = InvokeAsync(() =>
+            {
+                // ── Now on the Blazor circuit thread ──────────────────────────
+                Drone.Toast(args.ToastMessage, MavlinkService.ToastLevel.Warning, "⚠️");
+                // StateHasChanged not needed here — toast library manages its own render
+            });
+        }
+        catch (ObjectDisposedException) { }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        _dotnetRef = DotNetObjectReference.Create(this);
+        try
+        {
+            await JS.InvokeVoidAsync("airspace.setDotnetRef", _dotnetRef);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Airspace] JS not ready: {ex.Message}");
+            // Non-fatal — proximity warnings won't fire but map still works
+        }
+    }
+
+    // ── JSInvokable: called by airspace.js when proximity state changes ───
+    [JSInvokable]
+    public void UpdateAirspaceWarning(string? zoneType)
+    {
+        // zoneType is "RED", "YELLOW", or null (cleared)
+        if (_airspaceWarning == zoneType) return;
+        _airspaceWarning = zoneType;
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ── Called by Home.razor (or any page) to load zones for current region ─
+    /// <summary>
+    /// Fetches DGCA airspace GeoJSON for a bounding box and passes it to Leaflet.
+    /// Call this from Home.razor after the map is initialized.
+    /// </summary>
+    public async Task LoadAirspaceForRegion(double lat, double lon)
+    {
+        // Only reload if drone has moved significantly
+        if (!double.IsNaN(_lastAirspaceLoadLat))
+        {
+            double dLat = (lat - _lastAirspaceLoadLat) * 111320;
+            double dLon = (lon - _lastAirspaceLoadLon) * 111320 * Math.Cos(lat * Math.PI / 180);
+            double dist = Math.Sqrt(dLat * dLat + dLon * dLon);
+            if (dist < AirspaceReloadDistanceMeters) return;
+        }
+
+        _lastAirspaceLoadLat = lat;
+        _lastAirspaceLoadLon = lon;
+
+        // Bounding box: ±0.5° (~55 km) around current position
+        double pad = 0.5;
+        string geoJson = await AirspaceSvc.GetAirspaceGeoJsonAsync(
+            lat - pad, lon - pad, lat + pad, lon + pad);
+
+        await JS.InvokeVoidAsync("airspace.loadZones", geoJson, _dotnetRef);
+    }
+
+    // ── Telemetry handler (throttled proximity check) ─────────────────────
+    private void RefreshUi()
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastHeaderRender).TotalMilliseconds < 1000) return;
+        _lastHeaderRender = now;
+
+        // Piggyback proximity check on the 1-second header refresh
+        // Only run if we have valid GPS and the check interval has elapsed
+        if ((now - _lastProximityCheck) >= ProximityCheckInterval)
+        {
+            _lastProximityCheck = now;
+            var lat = Drone.State.Latitude;
+            var lon = Drone.State.Longitude;
+            if (Math.Abs(lat) > 0.0001 || Math.Abs(lon) > 0.0001)
+            {
+                _ = JS.InvokeVoidAsync("airspace.checkProximity", lat, lon);
+            }
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ── Drawer logic (unchanged) ──────────────────────────────────────────
+
+    private DateTime _lastHeaderRender = DateTime.MinValue;
+
+    private int GetDrawerWidth() => activeTab switch { "Swarm" => 640, _ => 540 };
+
+    private string GetDrawerStyle()
+    {
+        int width = GetDrawerWidth();
+        if (string.IsNullOrEmpty(activeTab))
+            return $"width: {width}px; margin-left: -{width}px;";
+
+        var styles = $"width: {width}px; margin-left: 0;";
+        if (activeTab == "Swarm")
+            styles += " border-bottom-right-radius: 12px; border-top-right-radius: 12px;";
+        return styles;
+    }
+
+    private void HandleTabClick(string tab)
+    {
+        activeTab = (activeTab == tab) ? "" : tab;
+        _ = JS.InvokeVoidAsync("animateMapResize");
+    }
+
+    private void AutoDetectPorts(object? state)
+    {
+        try
+        {
+            var current = SerialPort.GetPortNames().Distinct().OrderBy(x => x).ToList();
+            InvokeAsync(() =>
+            {
+                bool changed = false;
+
+                if (isManualConnected && !string.IsNullOrEmpty(selectedPort)
+                    && !current.Contains(selectedPort))
+                {
+                    Drone.StopConnection();
+                    isManualConnected = false;
+                    selectedPort = "";
+                    changed = true;
+                }
+
+                if (!current.SequenceEqual(availablePorts.OrderBy(x => x)))
+                {
+                    availablePorts = current;
+                    if (!isManualConnected && !string.IsNullOrEmpty(selectedPort)
+                        && !availablePorts.Contains(selectedPort))
+                        selectedPort = "";
+                    changed = true;
+                }
+
+                if (changed) StateHasChanged();
+            });
+        }
+        catch { }
+    }
+
+    private void OnPortChanged(ChangeEventArgs e)
+    {
+        selectedPort = e.Value?.ToString() ?? "";
+        StateHasChanged();
+    }
+
+    private async Task ToggleConnection()
+    {
+        if (isAttempting) return;
+        if (selectedType == "Serial" && string.IsNullOrEmpty(selectedPort)) return;
+
+        isAttempting = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            if (isManualConnected)
+            {
+                Drone.StopConnection();
+                isManualConnected = false;
+            }
+            else
+            {
+                Drone.Connect(Enum.Parse<ConnectionType>(selectedType), selectedPort, selectedBaud);
+                for (int i = 0; i < 30; i++)
+                {
+                    if (IsDroneActuallyTalking) break;
+                    if (Drone.State.ConnectionStatus == "Disconnected") break;
+                    await Task.Delay(500);
+                }
+                if (IsDroneActuallyTalking)
+                {
+                    isManualConnected = true;
+                    Drone.RequestDataStreams();
+                }
+                else
+                {
+                    Drone.StopConnection();
+                    isManualConnected = false;
+                    Drone.Toast("No response from vehicle. Check connection.", MavlinkService.ToastLevel.Warning, "⚠️");
+                }
+            }
+        }
+        catch (Exception) { isManualConnected = false; }
+        finally { isAttempting = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private string GetIcon(string t) => t switch { "Quick" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-zap-icon lucide-zap"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>""", "Actions" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-cog-icon lucide-cog"><path d="M11 10.27 7 3.34"/><path d="m11 13.73-4 6.93"/><path d="M12 22v-2"/><path d="M12 2v2"/><path d="M14 12h8"/><path d="m17 20.66-1-1.73"/><path d="m17 3.34-1 1.73"/><path d="M2 12h2"/><path d="m20.66 17-1.73-1"/><path d="m20.66 7-1.73 1"/><path d="m3.34 17 1.73-1"/><path d="m3.34 7 1.73 1"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="8"/></svg>""", "Messages" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-messages-square-icon lucide-messages-square"><path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/></svg>""", "FlightPlan" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plane-takeoff-icon lucide-plane-takeoff"><path d="M2 22h20"/><path d="M6.36 17.4 4 17l-2-4 1.1-.55a2 2 0 0 1 1.8 0l.17.1a2 2 0 0 0 1.8 0L8 12 5 6l.9-.45a2 2 0 0 1 2.09.2l4.02 3a2 2 0 0 0 2.1.2l4.19-2.06a2.41 2.41 0 0 1 1.73-.17L21 7a1.4 1.4 0 0 1 .87 1.99l-.38.76c-.23.46-.6.84-1.07 1.08L7.58 17.2a2 2 0 0 1-1.22.18Z"/></svg>""", "Pre Flight" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shield-check-icon lucide-shield-check"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>""", "Setup" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings-icon lucide-settings"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>""", "Swarm" => """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" overflow="visible"><defs><g id="swarm-bug"><path d="M -4 -13 L -10 -20 M 4 -13 L 10 -20" stroke="#00f2ff" stroke-width="6" stroke-linecap="round" /><path d="M -6 -7 h -12 a 7 7 0 0 0 0 14 h 12" stroke="#00f2ff" stroke-width="6" fill="#000000" stroke-linejoin="round"/><path d="M 6 -7 h 12 a 7 7 0 0 1 0 14 h -12" stroke="#00f2ff" stroke-width="6" fill="#000000" stroke-linejoin="round"/><rect x="-6" y="-14" width="12" height="28" rx="6" stroke="#00f2ff" stroke-width="6" fill="#000000" stroke-linejoin="round"/></g></defs><g transform="scale(0.24) translate(-10, -4)"><use href="#swarm-bug" x="60" y="32" /><use href="#swarm-bug" x="32" y="82" /><use href="#swarm-bug" x="88" y="70" /><circle cx="92" cy="30" r="4" fill="#00f2ff" /><circle cx="46" cy="54" r="4" fill="#00f2ff" /><circle cx="76" cy="92" r="4" fill="#00f2ff" /></g></svg>""", _ => "❓" };
+
+    private bool _lastRcState = false;
+    private void OnRcUpdated(ushort[] _)
+    {
+        bool current = Drone.State.IsRcConnected;
+        if (current == _lastRcState) return;
+        _lastRcState = current;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        _autoDetectTimer?.Dispose();
+        Drone.OnTelemetryUpdated -= RefreshUi;
+        Drone.OnRcChannelsUpdated -= OnRcUpdated;
+        _dotnetRef?.Dispose();
+        Vehicle.OnAutoSnap -= HandleVehicleAutoSnap;
+    }
+}
