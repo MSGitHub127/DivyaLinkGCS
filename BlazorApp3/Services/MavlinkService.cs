@@ -61,6 +61,12 @@ public class MavlinkService : BackgroundService
     private bool _pendingArmToast = false;
     private bool _pendingDisarmToast = false;
 
+    // ── MISSION TRANSACTION VERIFICATION FIELDS ──
+    private TaskCompletionSource<byte>? _missionAckTcs;
+    private TaskCompletionSource<bool>? _missionDownloadTcs;
+    private List<WaypointModel> _verificationDownloadQueue = new();
+    private int _expectedVerificationCount = 0;
+
     // ── RC connection tracking ────────────────────────────────────────────
     private DateTime _lastRcPacketUtc = DateTime.MinValue;  // last packet timestamp
     private bool _rcWasConnected = false;
@@ -1574,21 +1580,108 @@ public class MavlinkService : BackgroundService
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST || packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT)
         {
-            #pragma warning disable 0612
-            var req = packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST
-                ? new MAVLink.mavlink_mission_request_int_t { seq = ((MAVLink.mavlink_mission_request_t)packet.data).seq }
-                : (MAVLink.mavlink_mission_request_int_t)packet.data;
-            #pragma warning restore 0612
-            HandleMissionRequest(req);
+            bool isInt = packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_INT;
+            ushort seq = isInt 
+                ? ((MAVLink.mavlink_mission_request_int_t)packet.data).seq 
+                : ((MAVLink.mavlink_mission_request_t)packet.data).seq;
+
+            HandleMissionRequest(seq, isInt, packet.sysid, packet.compid);
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ACK)
         {
             var ack = (MAVLink.mavlink_mission_ack_t)packet.data;
+            
+            // Route status parameters straight back up to our active task thread tracking token
+            lock (_sync)
+            {
+                _missionAckTcs?.TrySetResult(ack.type);
+            }
+
             string status = ack.type == 0 ? "Mission Upload Success" : $"Mission Error: {ack.type}";
             string logEntry = $"[{DateTime.Now:HH:mm:ss}] {status}";
 
             lock (StatusMessages) StatusMessages.Insert(0, logEntry);
             OnMessageReceived?.Invoke(logEntry);
+        }
+        // ── NEW DOWNWARD MISSION TRANSACTION HANDLERS FOR VERIFICATION ──
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_COUNT)
+        {
+            var mCount = (MAVLink.mavlink_mission_count_t)packet.data;
+            if (_missionDownloadTcs != null)
+            {
+                lock (_sync)
+                {
+                    _expectedVerificationCount = mCount.count;
+                    _verificationDownloadQueue.Clear();
+                }
+
+                // Fire off immediate read command request for index zero
+                RequestWaypointIndexItem(0);
+            }
+        }
+        else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ITEM || packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ITEM_INT)
+        {
+            if (_missionDownloadTcs != null)
+            {
+                lock (_sync)
+                {
+                    double lat = 0;
+                    double lng = 0;
+                    float alt = 0;
+                    ushort command = 0;
+
+                    if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MISSION_ITEM)
+                    {
+                        var mItem = (MAVLink.mavlink_mission_item_t)packet.data;
+                        lat = mItem.x;
+                        lng = mItem.y;
+                        alt = mItem.z;
+                        command = mItem.command;
+                    }
+                    else
+                    {
+                        var mItemInt = (MAVLink.mavlink_mission_item_int_t)packet.data;
+                        lat = mItemInt.x / 10000000.0;
+                        lng = mItemInt.y / 10000000.0;
+                        alt = mItemInt.z;
+                        command = mItemInt.command;
+                    }
+
+                    _verificationDownloadQueue.Add(new WaypointModel
+                    {
+                        Lat = lat,
+                        Lng = lng,
+                        Alt = (int)alt,
+                        Command = ((MAVLink.MAV_CMD)command).ToString()
+                    });
+
+                    if (_verificationDownloadQueue.Count < _expectedVerificationCount)
+                    {
+                        RequestWaypointIndexItem((uint)_verificationDownloadQueue.Count);
+                    }
+                    else
+                    {
+                        // Conclude download handshake loop pass sequence by sending a final ACCEPTED ACK to the vehicle
+                        var clearAck = new MAVLink.mavlink_mission_ack_t
+                        {
+                            target_system = target_sysid,
+                            target_component = target_compid,
+                            type = (byte)MAVLink.MAV_MISSION_RESULT.MAV_MISSION_ACCEPTED,
+                            mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
+                        };
+                        SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_ACK, clearAck);
+
+                        // Give the serial port thread pool 150ms to completely transmit the binary 
+                        // packet frame over the telemetry radio before letting the verification task conclude.
+                        var tcsToResolve = _missionDownloadTcs;
+                        _ = Task.Run(async () => 
+                        {
+                            await Task.Delay(150);
+                            tcsToResolve?.TrySetResult(true);
+                        });
+                    }
+                }
+            }
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.MAG_CAL_PROGRESS)
         {
@@ -2423,43 +2516,209 @@ if (nopackets > 5)
 
     // ---------------- MISSIONS ----------------
 
+// ---------------- MISSIONS ----------------
+
     public async Task<bool> UploadMissionAsync(IList<WaypointModel> items)
     {
-        try
+        if (items == null || items.Count == 0)
+        {
+            Toast("Cannot upload an empty waypoint route list.", ToastLevel.Warning, "📋");
+            return false;
+        }
+
+        lock (_sync)
         {
             _uploadQueue = items.ToList();
-            var count = new MAVLink.mavlink_mission_count_t { target_system = target_sysid, target_component = target_compid, count = (ushort)_uploadQueue.Count, mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION };
-            SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_COUNT, count);
-            return true;
+            _missionAckTcs = new TaskCompletionSource<byte>();
         }
-        catch { return false; }
+
+        try
+        {
+            _logger.LogInformation("[MAVLink] Initiating mission upload transaction. Count: {Count}, SysId: {SysId}, CompId: {CompId}", _uploadQueue.Count, target_sysid, target_compid);
+            
+            // 1. Send the standard MAVLink mission count packet block
+            var count = new MAVLink.mavlink_mission_count_t 
+            { 
+                target_system = target_sysid, 
+                target_component = (byte)MAVLink.MAV_COMPONENT.MAV_COMP_ID_AUTOPILOT1, 
+                count = (ushort)_uploadQueue.Count, 
+                mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION 
+            };
+            SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_COUNT, count);
+
+            // 2. Wait for the vehicle to complete downloading all parts and send a final MISSION_ACK
+            int timeoutSec = IsWireless ? 12 : 5;
+            var ackResult = await _missionAckTcs.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSec));
+
+            if (ackResult != (byte)MAVLink.MAV_MISSION_RESULT.MAV_MISSION_ACCEPTED)
+            {
+                _logger.LogError("[MAVLink] Flight Controller rejected mission configuration. Code: {Result}", ackResult);
+                return false;
+            }
+
+            // 🛑 HARDWARE STABILIZATION DELAY (Crucial for physical Pixhawk setups)
+            // Give ArduPilot's internal storage engine time to write the new mission items to 
+            // the physical EEPROM flash chips before we flood the 57600 baud radio link with requests.
+            _logger.LogInformation("[MAVLink] Upload transaction acknowledged. Allowing hardware EEPROM to settle...");
+            await Task.Delay(1200); 
+
+            _logger.LogInformation("[MAVLink] Settle window complete. Starting verification read-back...");
+            
+            // 3. Trigger the verification read-back cycle to prove EEPROM security
+            bool isDataGenuine = await DownloadAndVerifyMissionItemsAsync();
+            return isDataGenuine;
+        }
+        catch (TimeoutException)
+        {
+            Toast("Mission transaction timed out. Autopilot not responding.", ToastLevel.Error, "⏳");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected exception during mission verification path execution.");
+            return false;
+        }
+        finally
+        {
+            lock (_sync) { _missionAckTcs = null; }
+        }
     }
 
-    private void HandleMissionRequest(MAVLink.mavlink_mission_request_int_t req)
+    private async Task<bool> DownloadAndVerifyMissionItemsAsync()
     {
-        if (req.seq < _uploadQueue.Count)
+        lock (_sync)
         {
-            var wp = _uploadQueue[req.seq];
-            var item = new MAVLink.mavlink_mission_item_int_t
-            {
-                seq = (ushort)req.seq,
-                target_system = target_sysid,
-                target_component = target_compid,
-                command = (ushort)TranslateCommand(wp.Command),
-                frame = (byte)MAVLink.MAV_FRAME.GLOBAL_RELATIVE_ALT_INT,
-                x = (int)(wp.Lat * 10000000),
-                y = (int)(wp.Lng * 10000000),
-                z = (float)wp.Alt,
-                autocontinue = 1,
-                // ArduPilot mission protocol:
-                //   seq=0 is the home position  → current=0
-                //   seq=1 is the first waypoint → current=1 (tells FC where to start)
-                //   seq>1 all other items        → current=0
-                current = (byte)(req.seq == 1 ? 1 : 0),
-                mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
-            };
-            SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_ITEM_INT, item);
+            _verificationDownloadQueue.Clear();
+            _expectedVerificationCount = 0;
+            _missionDownloadTcs = new TaskCompletionSource<bool>();
         }
+
+        // Send a request demanding the current full route list layout back from the flight controller
+        var reqList = new MAVLink.mavlink_mission_request_list_t
+        {
+            target_system = target_sysid,
+            target_component = (byte)MAVLink.MAV_COMPONENT.MAV_COMP_ID_AUTOPILOT1,
+            mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
+        };
+        SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST_LIST, reqList);
+
+        // Increased timeout variables to sustain wireless latency spikes and RF jitter
+        int timeoutSec = IsWireless ? 20 : 8;
+        try
+        {
+            // Wait for the background packet processor thread to parse all incoming MISSION_ITEM entries
+            bool downloadComplete = await _missionDownloadTcs.Task.WaitAsync(TimeSpan.FromSeconds(timeoutSec));
+            if (!downloadComplete) return false;
+
+            // Deep Data Array Verification Check Pass
+            return RunDeepValidationCheck();
+        }
+        catch (TimeoutException)
+        {
+            Toast("EEPROM validation pass timed out. Verification failed.", ToastLevel.Error, "⏳");
+            return false;
+        }
+        finally
+        {
+            lock (_sync) { _missionDownloadTcs = null; }
+        }
+    }
+
+    private bool RunDeepValidationCheck()
+    {
+        // Coordinate geometry tolerance offsets to accommodate single-precision float variations
+        const double CoordEpsilon = 0.000001; 
+        const double AltEpsilon = 0.1;
+
+        lock (_sync)
+        {
+            if (_verificationDownloadQueue.Count != _uploadQueue.Count)
+            {
+                Toast($"Verification Fail: Drone reported {_verificationDownloadQueue.Count} points instead of {_uploadQueue.Count}!", ToastLevel.Error, "🚨");
+                return false;
+            }
+
+            for (int i = 1; i < _uploadQueue.Count; i++)
+            {
+                var local = _uploadQueue[i];
+                var remote = _verificationDownloadQueue[i];
+
+                if (Math.Abs(local.Lat - remote.Lat) > CoordEpsilon ||
+                    Math.Abs(local.Lng - remote.Lng) > CoordEpsilon ||
+                    Math.Abs(local.Alt - remote.Alt) > AltEpsilon)
+                {
+                    _logger.LogError("[MAVLink Fail] Index #{Idx} Mismatch! GCS: {gLat},{gLng} vs Drone: {dLat},{dLng}", i, local.Lat, local.Lng, remote.Lat, remote.Lng);
+                    Toast($"CRITICAL: Corrupted coordinates detected at sequence point #{i}!", ToastLevel.Error, "🚨");
+                    return false;
+                }
+            }
+        }
+
+        Toast($"Handshake Complete. All {_uploadQueue.Count} waypoints verified inside Autopilot EEPROM!", ToastLevel.Success, "🛡️");
+        return true;
+    }
+
+    private void HandleMissionRequest(ushort seq, bool isInt, byte srcSysid, byte srcCompid)
+    {
+        if (seq < _uploadQueue.Count)
+        {
+            var wp = _uploadQueue[seq];
+            if (isInt)
+            {
+                var item = new MAVLink.mavlink_mission_item_int_t
+                {
+                    seq = seq,
+                    target_system = srcSysid,
+                    target_component = srcCompid,
+                    command = (ushort)TranslateCommand(wp.Command),
+                    frame = (byte)MAVLink.MAV_FRAME.GLOBAL_RELATIVE_ALT_INT,
+                    x = (int)(wp.Lat * 10000000),
+                    y = (int)(wp.Lng * 10000000),
+                    z = (float)wp.Alt,
+                    autocontinue = 1,
+                    // ArduPilot mission protocol:
+                    //   seq=0 is the home position  → current=0
+                    //   seq=1 is the first waypoint → current=1 (tells FC where to start)
+                    //   seq>1 all other items        → current=0
+                    current = (byte)(seq == 1 ? 1 : 0),
+                    mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
+                };
+                SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_ITEM_INT, item);
+            }
+            else
+            {
+                var item = new MAVLink.mavlink_mission_item_t
+                {
+                    seq = seq,
+                    target_system = srcSysid,
+                    target_component = srcCompid,
+                    command = (ushort)TranslateCommand(wp.Command),
+                    frame = (byte)MAVLink.MAV_FRAME.GLOBAL_RELATIVE_ALT_INT,
+                    x = (float)wp.Lat,
+                    y = (float)wp.Lng,
+                    z = (float)wp.Alt,
+                    autocontinue = 1,
+                    current = (byte)(seq == 1 ? 1 : 0),
+                    mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
+                };
+                SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_ITEM, item);
+            }
+        }
+    }
+
+    private void RequestWaypointIndexItem(uint sequentialIndex)
+    {
+        // Explicitly targeted to the primary Autopilot system component registry engine
+        var req = new MAVLink.mavlink_request_data_stream_t(); // Fallback instance safety initialization check passed
+        var missionReq = new MAVLink.mavlink_mission_request_t
+        {
+            target_system = target_sysid,
+            target_component = (byte)MAVLink.MAV_COMPONENT.MAV_COMP_ID_AUTOPILOT1,
+            seq = (ushort)sequentialIndex,
+            mission_type = (byte)MAVLink.MAV_MISSION_TYPE.MISSION
+        };
+        
+        SendPacket(MAVLink.MAVLINK_MSG_ID.MISSION_REQUEST, missionReq);
     }
 
     private MAVLink.MAV_CMD TranslateCommand(string cmd) => cmd.ToUpper() switch

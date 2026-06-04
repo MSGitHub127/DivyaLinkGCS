@@ -137,8 +137,8 @@ public sealed class RtkBaseStationService : IAsyncDisposable
             {
                 ReadTimeout  = 500,
                 WriteTimeout = 2000,
-                DtrEnable    = false,
-                RtsEnable    = false
+                DtrEnable    = true,
+                RtsEnable    = true
             };
             _port.DataReceived += OnDataReceived;
             _port.Open();
@@ -438,58 +438,51 @@ _port.Write(
 /// </summary>
 private void DispatchByte(byte b, UbxStreamParser ubx, RtcmStreamParser rtcm, ref bool inRtcm)
 {
-    // ── 0xD3 preamble always starts a new RTCM frame ──────────────────
-    // This takes priority over any in-progress UBX frame, matching
-    // Mission Planner's behaviour. If this byte is 0xD3 we can never be
-    // in the middle of a CRC-failed RTCM frame (that has already reset).
-    if (b == 0xD3)
-    {
-        ubx.Reset();
-        rtcm.Reset();
-        rtcm.Feed(b);   // stores preamble, advances to ReadLength
-        inRtcm = true;
-        return;
-    }
-
-    // ── RTCM continuation ────────────────────────────────────────────
     if (inRtcm)
     {
         bool complete = rtcm.Feed(b);
 
         if (complete)
         {
-            // CRC-validated frame: inject and reset
             ProcessRtcmFrame(rtcm);
             rtcm.Reset();
             inRtcm = false;
-            return;
         }
-
-        if (rtcm.IsIdle)
+        else if (rtcm.IsIdle)
         {
-            // Feed() returned false and internally reset (PATCH 1 active).
-            // The parser is back at WaitPreamble. Clear RTCM mode and
-            // fall through to parse the current byte as UBX.
-            // (b cannot be 0xD3 here — that was caught above.)
             inRtcm = false;
-            // intentional fall-through to UBX path below
+            if (b == 0xB5)
+            {
+                ubx.Reset();
+                ubx.Feed(b);
+            }
+            else if (b == 0xD3)
+            {
+                rtcm.Reset();
+                rtcm.Feed(b);
+                inRtcm = true;
+            }
+        }
+    }
+    else
+    {
+        if (b == 0xD3 && ubx.IsIdle)
+        {
+            ubx.Reset();
+            rtcm.Reset();
+            rtcm.Feed(b);
+            inRtcm = true;
         }
         else
         {
-            // Frame still accumulating — nothing more to do with this byte
-            return;
+            int result = ubx.Feed(b);
+            if (result > 0)
+            {
+                ProcessUbxFrame(ubx.Class, ubx.SubClass, ubx.Payload);
+                ubx.Reset();
+            }
         }
     }
-
-    // ── UBX parsing ──────────────────────────────────────────────────
-    int result = ubx.Feed(b);
-    if (result > 0)
-    {
-        ProcessUbxFrame(ubx.Class, ubx.SubClass, ubx.Payload);
-        ubx.Reset();
-    }
-    // result == 0  : frame in progress, wait for more bytes
-    // result == -1 : UBX checksum failed; UbxStreamParser already reset itself
 }
     // ── UBX frame dispatch ─────────────────────────────────────────────────────
 

@@ -191,13 +191,29 @@ window.initMap = function (lat, lng, containerId = 'map-element') {
         return;
     }
 
-    // If this container already has a map, just fix its size and return.
-    // This handles Blazor's enhanced navigation where the DOM node persists.
     if (_mapRegistry.has(containerId)) {
         const existing = _mapRegistry.get(containerId);
-        window._gcsMap = existing;
-        existing.invalidateSize();
-        return;
+        if (document.body.contains(existing.getContainer())) {
+            window._gcsMap = existing;
+            existing.invalidateSize();
+            return;
+        } else {
+            try {
+                existing.remove();
+            } catch (e) {
+                console.warn('Error removing old map:', e);
+            }
+            _mapRegistry.delete(containerId);
+            if (window._gcsMap === existing) {
+                window._gcsMap = null;
+                window._gcsMarker = null;
+                window._accuracyCircle = null;
+                window._trailLine = null;
+                window._trailPoints = [];
+                window._missionMarkers = [];
+                window._missionPath = null;
+            }
+        }
     }
 
     const isGpsValid = _validGps(lat, lng);
@@ -292,7 +308,7 @@ window.initMap = function (lat, lng, containerId = 'map-element') {
     try {
         map.on('click', function (e) {
             if (typeof DotNet !== 'undefined') {
-                DotNet.invokeMethodAsync('DivyaLink', 'AddWaypointFromMap', e.latlng.lat, e.latlng.lng)
+                DotNet.invokeMethodAsync('BlazorApp3', 'AddWaypointFromMap', e.latlng.lat, e.latlng.lng)
                     .catch(err => console.error('[initMap] AddWaypointFromMap failed', err));
             }
         });
@@ -389,7 +405,7 @@ window.drawMission = function (waypoints) {
             const p = e.target.getLatLng();
             if (typeof DotNet !== 'undefined') {
                 // ASSEMBLY NAME: change 'DivyaLink' if your project DLL differs.
-                DotNet.invokeMethodAsync('DivyaLink', 'UpdateWaypointPosition', idx, p.lat, p.lng)
+                DotNet.invokeMethodAsync('BlazorApp3', 'UpdateWaypointPosition', idx, p.lat, p.lng)
                     .catch(console.error);
             }
         });
@@ -513,7 +529,7 @@ window.initHLSStreamWithFallback = async function (urls) {
             console.log(`[HLS] ✓ Success with URL: ${url}`);
             if (typeof DotNet !== 'undefined') {
                 // ASSEMBLY NAME: change 'BlazorApp3' if your project DLL differs.
-                DotNet.invokeMethodAsync('DivyaLink', 'OnVideoStatusChanged', 'Connected')
+                DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Connected')
                     .catch(e => console.log('[HLS] Blazor callback unavailable', e));
             }
             return;
@@ -526,7 +542,7 @@ window.initHLSStreamWithFallback = async function (urls) {
     console.error('[HLS] ✗ All URLs failed');
     if (typeof DotNet !== 'undefined') {
         // ASSEMBLY NAME: change 'BlazorApp3' if your project DLL differs.
-        DotNet.invokeMethodAsync('DivyaLink', 'OnVideoStatusChanged', 'Error')
+        DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Error')
             .catch(() => { });
     }
 
@@ -692,7 +708,7 @@ window.initWebRTCStream = async function (webrtcUrl) {
 
         if (typeof DotNet !== 'undefined') {
             // ASSEMBLY NAME: change 'BlazorApp3' if your project DLL differs.
-            DotNet.invokeMethodAsync('DivyaLink', 'OnVideoStatusChanged', 'Connected')
+            DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Connected')
                 .catch(e => console.warn('[WebRTC] Blazor callback failed', e));
         }
 
@@ -700,7 +716,7 @@ window.initWebRTCStream = async function (webrtcUrl) {
         console.warn('[WebRTC] Camera not detected — entering Standby mode.', err.message);
         if (typeof DotNet !== 'undefined') {
             // ASSEMBLY NAME: change 'BlazorApp3' if your project DLL differs.
-            DotNet.invokeMethodAsync('DivyaLink', 'OnVideoStatusChanged', 'Standby')
+            DotNet.invokeMethodAsync('BlazorApp3', 'OnVideoStatusChanged', 'Standby')
                 .catch(e => console.warn('[WebRTC] Blazor callback failed', e));
         }
     }
