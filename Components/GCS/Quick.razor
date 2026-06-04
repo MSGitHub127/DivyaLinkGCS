@@ -1,0 +1,224 @@
+﻿@page "/quick"
+@inject MavlinkService Drone
+@implements IDisposable
+
+<div class="flex flex-col h-full gap-[16px] p-[20px] bg-transparent w-full max-w-[500px] mx-auto">
+
+    @* HUD SECTION: Tactical Horizon *@
+    <div class="h-[300px] w-full rounded-[8px] overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-[#333] shrink-0">
+        <Hud />
+    </div>
+
+    @* TELEMETRY GRID: High-Visibility 3-Column Layout *@
+    <div class="grid grid-cols-3 gap-[8px] w-full">
+
+        @* FLIGHT MODE CARD - Critical Mission Context *@
+        <div class="bg-[rgba(18,20,28,0.8)] border border-[rgba(255,255,255,0.15)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[85px] backdrop-blur-[4px] overflow-hidden">
+            <div class="text-[1.1rem] font-semibold text-[#6c757d] tracking-tight mb-1 uppercase text-center w-full truncate">FLIGHT MODE</div>
+            <div class="flex flex-col items-center w-full min-w-0">
+                <div class="text-[0.9rem] font-bold uppercase mb-1 drop-shadow-[0_0_10px_rgba(0,0,0,0.5)] w-full text-center truncate" style="color: @GetModeColor(Drone.State.FlightMode);">
+                    @(Drone.State.FlightMode == "Unknown" ? "--" : Drone.State.FlightMode)
+                </div>
+                <div class="flex items-stretch justify-center gap-[4px] w-full mt-[4px] h-[30px]">
+                    <select class="min-w-0 flex-1 bg-[rgba(0,0,0,0.5)] text-[#aaa] border border-[#444] rounded-[4px] text-[0.85rem] px-1 cursor-pointer outline-none h-full box-border hover:border-[#00f2ff] hover:text-white transition-colors [&>option]:bg-[#0b0c10]" @bind="targetFlightMode">
+                        <option value="" disabled>MODE</option>
+                        <option value="STABILIZE">STABILIZE</option>
+                        <option value="LOITER">LOITER</option>
+                        <option value="ALT_HOLD">ALT HOLD</option>
+                        <option value="RTL">RTL</option>
+                        <option value="LAND">LAND</option>
+                        <option value="AUTO">AUTO</option>
+                        <option value="GUIDED">GUIDED</option>
+                    </select>
+                    <button class="shrink-0 flex items-center justify-center px-3 text-[0.95rem] rounded-[4px] border-none bg-[#2b58ff] text-white font-bold cursor-pointer h-full box-border hover:brightness-120 transition-all" @onclick="ChangeFlightMode">SET</button>
+                </div>
+            </div>
+        </div>
+
+        @{
+            // Styles for high-performance telemetry cards
+            var cardBase = "bg-[rgba(18,20,28,0.6)] border border-[rgba(255,255,255,0.08)] rounded-[6px] py-[10px] px-[8px] flex flex-col items-center justify-center min-h-[55px] backdrop-blur-[4px]";
+            var cardLabel = "text-[1rem] font-semibold text-[#6c757d] tracking-tight mb-1 uppercase";
+            var cardVal = "text-[1rem] font-normal leading-none text-[#e0e0e0]";
+            var cardUnit = "text-[1rem] text-[#00f2ff] font-normal ml-[2px]";
+            var cardValSmall = "text-[1rem] font-normal leading-none"; 
+        }
+
+        @* ALTITUDE (With Bench-Test Zero Button) *@
+        <div class="@cardBase relative group">
+            <div class="@cardLabel">ALTITUDE</div>
+            <div class="flex items-baseline gap-[1px]">
+                <span class="@cardVal">@SmoothedAltitude.ToString("0.0")</span>
+                <span class="@cardUnit">m</span>
+            </div>
+            @* Appears on hover: Zeroes out the thermal drift *@
+            <button class="absolute top-1 right-1 bg-[#2b58ff] text-white border-none rounded-[3px] text-[0.6rem] px-1.5 py-0.5 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" @onclick="ZeroAltitude">ZERO</button>
+        </div>
+
+        @* HEADING *@
+        <div class="@cardBase">
+            <div class="@cardLabel">HEADING</div>
+            <div class="flex items-baseline gap-[1px]">
+                <span class="@cardVal">@Drone.State.Yaw.ToString("0")</span>
+                <span class="@cardUnit">deg</span>
+            </div>
+        </div>
+
+        @* BATTERY *@
+        <div class="@cardBase">
+            <div class="@cardLabel">BATTERY</div>
+            <div class="flex items-baseline gap-[1px] @(Drone.State.BatteryPercent < 20 ? "text-[#ff3a3a]" : "text-[#00ff00]")">
+                <span class="@cardVal">@Drone.State.BatteryPercent</span>
+                <span class="@cardUnit">%</span>
+            </div>
+        </div>
+
+        @* SATELLITES *@
+        <div class="@cardBase">
+            <div class="@cardLabel">SATELLITES</div>
+            <div class="flex items-baseline gap-[1px]">
+                <span class="@cardVal">@(Drone.State.SatCount > 0 ? Drone.State.SatCount : "--")</span>
+                <span class="@cardUnit">sats</span>
+            </div>
+        </div>
+
+        @* SPEED *@
+        <div class="@cardBase">
+            <div class="@cardLabel">SPEED</div>
+            <div class="flex items-baseline gap-[1px]">
+                <span class="@cardVal">@Drone.State.GroundSpeed.ToString("0.0")</span>
+                <span class="@cardUnit">m/s</span>
+            </div>
+        </div>
+
+        @* VOLTAGE *@
+        <div class="@cardBase">
+            <div class="@cardLabel">VOLTAGE</div>
+            <div class="flex items-baseline gap-[1px]">
+                <span class="@cardVal">@Drone.State.Voltage.ToString("0.0")</span>
+                <span class="@cardUnit">V</span>
+            </div>
+        </div>
+
+        @* GPS COORDINATES & CALIBRATION *@
+        <div class="@cardBase">
+            <div class="@cardLabel">LATITUDE</div>
+            <span class="@cardValSmall text-[#e0e0e0]">@Drone.State.Latitude.ToString("F3")</span>
+        </div>
+
+        <div class="@cardBase">
+            <div class="@cardLabel">LONGITUDE</div>
+            <span class="@cardValSmall text-[#e0e0e0]">@Drone.State.Longitude.ToString("F3")</span>
+        </div>
+
+        <div class="@cardBase">
+            <div class="@cardLabel">ACCEL</div>
+            <span class="@cardValSmall @GetCalColor(Drone.LiveAccelStatus)">@GetCalDisplayText(Drone.LiveAccelStatus)</span>
+        </div>
+
+        <div class="@cardBase">
+            <div class="@cardLabel">GYRO</div>
+            <span class="@cardValSmall @GetCalColor(Drone.LiveGyroStatus)">@GetCalDisplayText(Drone.LiveGyroStatus)</span>
+        </div>
+
+        <div class="@cardBase">
+            <div class="@cardLabel">MAG</div>
+            <span class="@cardValSmall @GetCalColor(Drone.LiveMagStatus)">@GetCalDisplayText(Drone.LiveMagStatus)</span>
+        </div>
+    </div>
+</div>
+
+@code {
+    private DateTime _lastRender = DateTime.MinValue;
+    
+    // --- SMOOTHED & OFFSET TELEMETRY ---
+    public float SmoothedAltitude { get; private set; } = 0.0f;
+    public float SmoothedSpeed { get; private set; } = 0.0f;
+    private float _altitudeOffset = 0.0f; // Stores the drift to subtract it
+    private bool _isFirstRender = true;
+
+    private string targetFlightMode = "";
+
+    protected override void OnInitialized()
+    {
+        Drone.OnTelemetryUpdated += RefreshComponent;
+    }
+
+    private void ZeroAltitude()
+    {
+        // Capture the current false altitude so we can subtract it out
+        _altitudeOffset = Drone.State.Altitude;
+        SmoothedAltitude = 0.0f;
+    }
+
+    private void RefreshComponent()
+    {
+        var now = DateTime.UtcNow;
+        
+        // STRICT TIMING LOCK: 50ms (20 FPS). 
+        // This drops excess packets instead of queueing them!
+        if ((now - _lastRender).TotalMilliseconds < 50) return;
+        _lastRender = now;
+
+        float currentRealAlt = Drone.State.Altitude - _altitudeOffset;
+
+        if (_isFirstRender)
+        {
+            SmoothedAltitude = currentRealAlt;
+            SmoothedSpeed = Drone.State.GroundSpeed;
+            _isFirstRender = false;
+        }
+        else
+        {
+            // EMA Filter: Smooths out the jitters from the bare sensor
+            SmoothedAltitude = (SmoothedAltitude * 0.8f) + (currentRealAlt * 0.2f);
+            SmoothedSpeed = (SmoothedSpeed * 0.8f) + (Drone.State.GroundSpeed * 0.2f);
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Drone.OnTelemetryUpdated -= RefreshComponent;
+    }
+
+    private void ChangeFlightMode()
+    {
+        if (!string.IsNullOrEmpty(targetFlightMode))
+        {
+            Drone.SetFlightMode(targetFlightMode);
+            targetFlightMode = "";
+        }
+    }
+
+    private string GetModeColor(string mode) => mode?.ToUpper() switch
+    {
+        "RTL" or "LAND" => "#ff3a3a",
+        "LOITER" or "POSHOLD" => "#00ff00",
+        "AUTO" or "GUIDED" => "#d946ef",
+        "STABILIZE" or "ALT_HOLD" => "#ffcc00",
+        "UNKNOWN" => "#666666",
+        _ => "#00f2ff"
+    };
+
+    private string GetCalColor(string status) => status?.ToUpper() switch
+    {
+        var s when s.Contains("SUCCESS") || s.Contains("CALIBRATED") || s.Contains("DONE") => "text-[#3fb950]",
+        var s when s.Contains("FAIL") || s.Contains("ERROR") || s.Contains("DENIED") => "text-[#f85149]",
+        var s when s.Contains("STANDBY") || s.Contains("NONE") => "text-[#555]",
+        _ => "text-[#f0b429]"
+    };
+
+    private string GetCalDisplayText(string status) => status?.ToUpper() switch
+    {
+        var s when s.Contains("STANDBY") => "STANDBY",
+        var s when s.Contains("SUCCESS") => "CALIBRATED",
+        var s when s.Contains("FAIL") => "FAILED",
+        var s when s.Contains("COMPUTING") => "COMPUTING...",
+        var s when s.Contains("RECORDING") => "RECORDING...",
+        var s when s.Contains("CANCELLED") => "CANCELLED",
+        var s when s.Contains("DENIED") => "DENIED",
+        _ => status ?? "STANDBY"
+    };
+}

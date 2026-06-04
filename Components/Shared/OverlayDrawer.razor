@@ -1,0 +1,52 @@
+@* Components/Shared/OverlayDrawer.razor
+   Shared overlay container that slides left→right over the map area.
+   Parent container MUST have position:relative and overflow:hidden.
+
+   Usage:
+   <OverlayDrawer @bind-Visible="_showTuning" Title="TUNING">
+       <TuningDrawer />
+   </OverlayDrawer>
+*@
+
+<div class="absolute inset-0 z-[1000] flex flex-col
+            transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
+            @(Visible ? "translate-x-0" : "-translate-x-full")
+            @(Visible ? "" : "pointer-events-none")"
+     style="background:#0a0b0d;">
+
+    @* ── Header ─────────────────────────────────────────────────────────── *@
+    @if (!string.IsNullOrEmpty(Title))
+    {
+        <div class="flex items-center gap-[10px] px-[20px] py-[14px]
+                    border-b border-[#21262d] shrink-0 bg-[#0d1117]">
+            <button class="text-[#8b949e] hover:text-white transition-colors p-0 border-none bg-transparent cursor-pointer"
+                    @onclick="Close">
+                <i class="bi bi-arrow-left text-[1rem]"></i>
+            </button>
+            <span class="font-bold text-[0.9rem] uppercase tracking-widest text-white">
+                @Title
+            </span>
+            @if (HeaderContent != null)
+            {
+                <div class="flex items-center gap-[8px] flex-1 min-w-0">
+                    @HeaderContent
+                </div>
+            }
+        </div>
+    }
+
+    @* ── Body ────────────────────────────────────────────────────────────── *@
+    <div class="flex-1 min-h-0 overflow-hidden">
+        @ChildContent
+    </div>
+</div>
+
+@code {
+    [Parameter] public bool               Visible        { get; set; }
+    [Parameter] public EventCallback<bool>VisibleChanged { get; set; }
+    [Parameter] public string             Title          { get; set; } = "";
+    [Parameter] public RenderFragment?    ChildContent   { get; set; }
+    [Parameter] public RenderFragment?    HeaderContent  { get; set; }
+
+    private Task Close() => VisibleChanged.InvokeAsync(false);
+}
