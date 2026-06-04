@@ -313,12 +313,21 @@
         }
         else
         {
-            // Dynamically uses the current globalAlt value instead of a hardcoded 50
-            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = globalAlt, IsHome = false });
+            // Mission Planner Workflow: If the last waypoint was LAND, 
+            // treat this next node as a fresh launch point starting at 0m altitude.
+            var lastItem = MissionItems.LastOrDefault();
+            if (lastItem != null && lastItem.Command == "LAND")
+            {
+                MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = 0, IsHome = false });
+            }
+            else
+            {
+                MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = globalAlt, IsHome = false });
+            }
         }
         Resequence();
     }
-
+    
     [JSInvokable]
     public static void TriggerUndoFromJS()
     {
