@@ -214,7 +214,25 @@
             const el = document.getElementById('map-element');
             if (!el) return;
 
-            if (window._gcsMap) { window._gcsMap.invalidateSize(); return; }
+            if (window._gcsMap) {
+                if (document.body.contains(window._gcsMap.getContainer())) {
+                    window._gcsMap.invalidateSize();
+                    return;
+                } else {
+                    try {
+                        window._gcsMap.remove();
+                    } catch (e) {
+                        console.warn('Error removing old map:', e);
+                    }
+                    window._gcsMap = null;
+                    window._gcsMarker = null;
+                    window._accuracyCircle = null;
+                    window._trailLine = null;
+                    window._trailPoints = [];
+                    window._missionMarkers = [];
+                    window._missionPath = null;
+                }
+            }
 
             const isGpsValid = _validGps(lat, lng);
             const startLatLng = isGpsValid ? [lat, lng] : [20.5937, 78.9629];
