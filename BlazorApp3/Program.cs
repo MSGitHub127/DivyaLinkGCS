@@ -4,9 +4,30 @@ using System.Diagnostics;
 using System.IO;
 using BlazorApp3.Services;
 
+using System.Runtime.InteropServices;
+
 // 1. Locate the embedded MediaMTX executable
 string serverFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MediaServer");
-string mtxExePath = Path.Combine(serverFolder, "mediamtx.exe");
+string binaryName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "mediamtx.exe" : "mediamtx";
+string mtxExePath = Path.Combine(serverFolder, binaryName);
+
+if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && File.Exists(mtxExePath))
+{
+    try
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "chmod",
+            Arguments = $"+x \"{mtxExePath}\"",
+            CreateNoWindow = true,
+            UseShellExecute = false
+        })?.WaitForExit();
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[DivyaLink] Failed to set executable permissions on MediaMTX: {ex.Message}");
+    }
+}
 
 var mtxProcess = new Process
 {
@@ -21,12 +42,14 @@ var mtxProcess = new Process
     }
 };
 
+bool mtxStarted = false;
 try
 {
     Console.WriteLine("[DivyaLink] Booting internal video server...");
     bool started = mtxProcess.Start();
     if (started)
     {
+        mtxStarted = true;
         mtxProcess.BeginOutputReadLine();
         mtxProcess.BeginErrorReadLine();
         mtxProcess.OutputDataReceived += (sender, e) => { if (!string.IsNullOrEmpty(e.Data)) Console.WriteLine($"[MediaMTX] {e.Data}"); };
@@ -63,6 +86,7 @@ builder.Services.AddControllers();
 builder.Services.AddSingleton<VehicleProfileService>();
 
 builder.Services.AddSingleton<OverlayService>();
+builder.Services.AddSingleton<LicenseService>();
 
 // MAVLink
 builder.Services.AddSingleton<MavlinkService>();
@@ -141,6 +165,12 @@ _ = app.Services.GetRequiredService<VehicleProfileService>();
 _ = app.Services.GetRequiredService<NtripService>();
 _ = app.Services.GetRequiredService<RtkBaseStationService>();
 
+// Resolve and log license info
+var licenseSvc = app.Services.GetRequiredService<LicenseService>();
+logger.LogInformation("License:    {Tier} ({Days})", licenseSvc.LicenseTier, licenseSvc.RemainingDaysText);
+logger.LogInformation("Hardware ID: {HwId}", licenseSvc.HardwareId);
+logger.LogInformation("═══════════════════════════════════════");
+
 
 if (!app.Environment.IsDevelopment())
 {
@@ -164,10 +194,20 @@ app.MapRazorComponents<App>()
 
 app.Lifetime.ApplicationStopping.Register(() =>
 {
-    if (!mtxProcess.HasExited)
+    if (mtxStarted)
     {
-        Console.WriteLine("[DivyaLink] Shutting down internal video server...");
-        mtxProcess.Kill();
+        try
+        {
+            if (!mtxProcess.HasExited)
+            {
+                Console.WriteLine("[DivyaLink] Shutting down internal video server...");
+                mtxProcess.Kill();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DivyaLink] Error killing video server process: {ex.Message}");
+        }
     }
 });
 

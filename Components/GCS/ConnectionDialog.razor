@@ -1,0 +1,180 @@
+﻿@inject MavlinkService Drone
+@implements IDisposable
+
+@if (_isOpen)
+{
+    <div class="fixed inset-0 bg-[rgba(5,6,8,0.85)] backdrop-blur-[8px] flex items-center justify-center z-[99999] animate-[fadeIn_0.2s_ease-out]">
+        <div class="w-[380px] bg-[#0b0c10] border rounded-[8px] p-[30px_20px] text-center text-white flex flex-col items-center gap-[15px] transition-all duration-300 @(_isError ? "border-[#ff3a3a] shadow-[0_0_50px_rgba(255,58,58,0.2)]" : "border-[#2b58ff] shadow-[0_0_50px_rgba(43,88,255,0.15)]")">
+
+            @if (_isError)
+            {
+                <div class="text-[3rem] leading-none animate-[popIn_0.3s_cubic-bezier(0.175,0.885,0.32,1.275)]">⚠️</div>
+            }
+            else
+            {
+                <div class="w-[45px] h-[45px] border-[3px] border-[rgba(0,242,255,0.1)] border-t-[#00f2ff] rounded-full animate-spin"></div>
+            }
+
+            <div class="font-extrabold text-[1.1rem] tracking-[1px]">
+                @(_isError ? "CONNECTION FAILED" : "CONNECTING TO DRONE")
+            </div>
+
+            <div class="font-mono text-[0.9rem] min-h-[1.2em] @(_isError ? "text-[#ff3a3a] font-bold" : "text-[#888]")">
+                @_statusMessage
+            </div>
+
+            <div class="mt-[10px] flex gap-[10px]">
+                @if (_isError)
+                {
+                    <button class="px-[25px] py-[8px] rounded-[4px] font-bold text-[0.8rem] uppercase cursor-pointer transition-colors duration-200 bg-[#3a0d0d] border border-[#ff3a3a] text-[#ff3a3a] hover:bg-[#ff3a3a] hover:text-white" @onclick="ForceClose">CLOSE</button>
+                }
+                else
+                {
+                    <button class="px-[25px] py-[8px] rounded-[4px] font-bold text-[0.8rem] uppercase cursor-pointer transition-colors duration-200 bg-transparent border border-[#555] text-[#ccc] hover:border-white hover:text-white" @onclick="UserCancel">CANCEL</button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    @@keyframes fadeIn {
+        from {
+            opacity: 0;
+        }
+
+        to {
+            opacity: 1;
+        }
+    }
+    @@keyframes popIn {
+        from {
+            transform: scale(0);
+        }
+
+        to {
+            transform: scale(1);
+        }
+    }
+</style>
+
+@code {
+    // State
+    private bool _isOpen = false;
+    private bool _isError = false;
+    private bool _heartbeatReceived = false;
+    private bool _userCancelled = false;
+    private DateTime _heartbeatConfirmedAt = DateTime.MinValue;
+    private string _statusMessage = "Initializing...";
+
+    protected override void OnInitialized()
+    {
+        Drone.OnConnectionDialog += HandleDialogSignal;
+        Drone.OnConnectionStatus += UpdateStatusMessage;
+        Drone.OnTelemetryUpdated += CheckForValidData;
+    }
+
+    // Called by service: true = open dialog, false = close/update
+    private void HandleDialogSignal(bool show)
+    {
+        if (show)
+        {
+            // Fresh open — reset everything
+            _isOpen = true;
+            _isError = false;
+            _heartbeatReceived = false;
+            _userCancelled = false;
+            _heartbeatConfirmedAt = DateTime.MinValue;
+            _statusMessage = Drone.IsWireless
+                                    ? "Searching for telemetry radio..."
+                                    : "Initializing...";
+        }
+        else
+        {
+            if (_userCancelled)
+            {
+                _isOpen = false;
+            }
+            else if (Drone.IsConnected)
+            {
+                // Service confirmed link is stable — mark heartbeat received,
+                // CheckForValidData will close the dialog once telemetry flows.
+                _heartbeatReceived = true;
+            }
+            else if (!_heartbeatReceived)
+            {
+                // Timed out before getting any heartbeat
+                _isError = true;
+                _statusMessage = Drone.IsWireless
+                                   ? "No response from telemetry radio"
+                                   : "Connection timed out";
+            }
+            else
+            {
+                _isOpen = false;
+            }
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    // Status text from service ("Opening COM7 @ 57600...")
+    private void UpdateStatusMessage(string msg)
+    {
+        if (_isError) return;
+        _statusMessage = msg;
+        InvokeAsync(StateHasChanged);
+    }
+
+    // Fired every time telemetry arrives — decides when to actually close
+    private void CheckForValidData()
+    {
+        if (!_isOpen || _isError || !_heartbeatReceived) return;
+
+        // Stamp when heartbeat was first confirmed this connect attempt
+        if (_heartbeatConfirmedAt == DateTime.MinValue)
+        {
+            _heartbeatConfirmedAt = DateTime.UtcNow;
+            _statusMessage = Drone.IsWireless
+                ? "Radio link confirmed ✅ — loading telemetry..."
+                : "Connected ✅";
+            InvokeAsync(StateHasChanged);
+        }
+
+        // Close as soon as any real telemetry arrives
+        bool hasTelemetry = Drone.State.Roll != 0
+                         || Drone.State.Altitude != 0
+                         || Drone.State.SatCount > 0
+                         || Drone.State.Voltage > 0;
+
+        // Fallback: close after grace period even if bench drone shows all-zero
+        double grace = Drone.IsWireless ? 5.0 : 2.0;
+        bool graceUp = (DateTime.UtcNow - _heartbeatConfirmedAt).TotalSeconds > grace;
+
+        if (hasTelemetry || graceUp)
+        {
+            _isOpen = false;
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void UserCancel()
+    {
+        _userCancelled = true;
+        Drone.StopConnection();
+        _isOpen = false;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void ForceClose()
+    {
+        _isOpen = false;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Drone.OnConnectionDialog -= HandleDialogSignal;
+        Drone.OnConnectionStatus -= UpdateStatusMessage;
+        Drone.OnTelemetryUpdated -= CheckForValidData;
+    }
+}

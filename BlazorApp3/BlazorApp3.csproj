@@ -38,10 +38,13 @@
 	</ItemGroup>
 
 	<ItemGroup>
-<None Update="appsettings.json">
-<CopyToOutputDirectory>Always</CopyToOutputDirectory>
-</None>
-</ItemGroup>
+		<None Update="appsettings.json">
+			<CopyToOutputDirectory>Always</CopyToOutputDirectory>
+		</None>
+		<None Update="license.key">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
 	
 	<Target Name="Tailwind" BeforeTargets="Build">
 		<Exec Command="npx @tailwindcss/cli -i ./wwwroot/app.tailwind.css -o ./wwwroot/app.css" />

@@ -1,0 +1,174 @@
+using BlazorApp3.Components;
+using Microsoft.AspNetCore.Components.Server;
+using System.Diagnostics;
+using System.IO;
+using BlazorApp3.Services;
+
+// 1. Locate the embedded MediaMTX executable
+string serverFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MediaServer");
+string mtxExePath = Path.Combine(serverFolder, "mediamtx.exe");
+
+var mtxProcess = new Process
+{
+    StartInfo = new ProcessStartInfo
+    {
+        FileName = mtxExePath,
+        WorkingDirectory = serverFolder,
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    }
+};
+
+try
+{
+    Console.WriteLine("[DivyaLink] Booting internal video server...");
+    bool started = mtxProcess.Start();
+    if (started)
+    {
+        mtxProcess.BeginOutputReadLine();
+        mtxProcess.BeginErrorReadLine();
+        mtxProcess.OutputDataReceived += (sender, e) => { if (!string.IsNullOrEmpty(e.Data)) Console.WriteLine($"[MediaMTX] {e.Data}"); };
+        mtxProcess.ErrorDataReceived  += (sender, e) => { if (!string.IsNullOrEmpty(e.Data)) Console.WriteLine($"[MediaMTX] {e.Data}"); };
+        Console.WriteLine("[DivyaLink] Video server started (PID {0})", mtxProcess.Id);
+    }
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"[DivyaLink] Failed to start video server: {ex.Message}");
+}
+
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
+    WebRootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot")
+});
+
+// Logging
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+
+// Razor + Blazor
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+// ── NEW: MVC Controllers (needed for AirspaceController REST endpoint) ────────
+builder.Services.AddControllers();
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Vehicle profile service
+builder.Services.AddSingleton<VehicleProfileService>();
+
+builder.Services.AddSingleton<OverlayService>();
+
+// MAVLink
+builder.Services.AddSingleton<MavlinkService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MavlinkService>());
+
+// Parameter services
+builder.Services.AddHttpClient("ArduPilotClient", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("DivyaLink-GCS/1.0");
+});
+builder.Services.AddSingleton<ParameterMetadataService>(sp =>
+{
+    var httpClientFactory = sp.GetRequiredService<IHttpClientFactory>();
+    var client = httpClientFactory.CreateClient("ArduPilotClient");
+    var logger = sp.GetRequiredService<ILogger<ParameterMetadataService>>();
+    return new ParameterMetadataService(client, logger);
+});
+builder.Services.AddSingleton<ParameterManager>(sp =>
+{
+    var mavlink  = sp.GetRequiredService<MavlinkService>();
+    var metadata = sp.GetRequiredService<ParameterMetadataService>();
+    var logger   = sp.GetRequiredService<ILogger<ParameterManager>>();
+    var manager  = new ParameterManager(mavlink, metadata, logger);
+    mavlink.ParameterManager = manager;
+    return manager;
+});
+
+builder.Services.AddSingleton<NtripService>();
+builder.Services.AddSingleton<RtkBaseStationService>();
+
+// ── DGCA Airspace services ────────────────────────────────────────────────────
+builder.Services.AddMemoryCache();
+
+builder.Services.AddHttpClient("DgcaClient", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("DivyaLink-GCS/1.0");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+});
+
+// Scoped: one instance per Blazor circuit / HTTP request
+builder.Services.AddScoped<DgcaAirspaceService>();
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Startup log
+var logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger("Startup");
+logger.LogInformation("═══════════════════════════════════════");
+logger.LogInformation("  DIVYALINK GROUND CONTROL STATION");
+logger.LogInformation("═══════════════════════════════════════");
+logger.LogInformation("TCP:   {Host}:{Port}",
+    builder.Configuration["TcpConnection:DefaultHost"],
+    builder.Configuration["TcpConnection:DefaultPort"]);
+logger.LogInformation("Video: {Enabled}", builder.Configuration["VideoStreaming:Enabled"]);
+logger.LogInformation("DGCA:  AuthToken={HasToken}",
+    string.IsNullOrWhiteSpace(builder.Configuration["DgcaAirspace:AuthToken"]) ? "NOT SET (mock mode)" : "SET");
+logger.LogInformation("═══════════════════════════════════════");
+
+// Circuit options
+builder.Services.Configure<CircuitOptions>(options =>
+{
+    options.DetailedErrors = true;
+    options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(10);
+});
+
+builder.Services.AddServerSideBlazor().AddHubOptions(options =>
+{
+    options.MaximumReceiveMessageSize = 1024 * 128;
+    options.HandshakeTimeout = TimeSpan.FromSeconds(60);
+    options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+});
+
+var app = builder.Build();
+_ = app.Services.GetRequiredService<ParameterManager>();
+_ = app.Services.GetRequiredService<VehicleProfileService>();
+_ = app.Services.GetRequiredService<NtripService>();
+_ = app.Services.GetRequiredService<RtkBaseStationService>();
+
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
+    app.UseHsts();
+}
+
+app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
+app.UseHttpsRedirection();
+app.UseStaticFiles();
+app.UseAntiforgery();
+
+// ── NEW: Map the API controller routes ───────────────────────────────────────
+app.MapControllers();
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.MapStaticAssets();
+
+app.MapRazorComponents<App>()
+    .AddInteractiveServerRenderMode();
+
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    if (!mtxProcess.HasExited)
+    {
+        Console.WriteLine("[DivyaLink] Shutting down internal video server...");
+        mtxProcess.Kill();
+    }
+});
+
+app.Run();
