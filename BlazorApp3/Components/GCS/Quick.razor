@@ -1,4 +1,4 @@
-﻿@page "/quick"
+@page "/quick"
 @inject MavlinkService Drone
 @implements IDisposable
 
@@ -202,23 +202,23 @@
         _ => "#00f2ff"
     };
 
-    private string GetCalColor(string status) => status?.ToUpper() switch
+    private string GetCalColor(string? status) => status?.ToUpper() switch
     {
-        var s when s.Contains("SUCCESS") || s.Contains("CALIBRATED") || s.Contains("DONE") => "text-[#3fb950]",
-        var s when s.Contains("FAIL") || s.Contains("ERROR") || s.Contains("DENIED") => "text-[#f85149]",
-        var s when s.Contains("STANDBY") || s.Contains("NONE") => "text-[#555]",
+        var s when s != null && (s.Contains("SUCCESS") || s.Contains("CALIBRATED") || s.Contains("DONE")) => "text-[#3fb950]",
+        var s when s != null && (s.Contains("FAIL") || s.Contains("ERROR") || s.Contains("DENIED")) => "text-[#f85149]",
+        var s when s != null && (s.Contains("STANDBY") || s.Contains("NONE")) => "text-[#555]",
         _ => "text-[#f0b429]"
     };
 
-    private string GetCalDisplayText(string status) => status?.ToUpper() switch
+    private string GetCalDisplayText(string? status) => status?.ToUpper() switch
     {
-        var s when s.Contains("STANDBY") => "STANDBY",
-        var s when s.Contains("SUCCESS") => "CALIBRATED",
-        var s when s.Contains("FAIL") => "FAILED",
-        var s when s.Contains("COMPUTING") => "COMPUTING...",
-        var s when s.Contains("RECORDING") => "RECORDING...",
-        var s when s.Contains("CANCELLED") => "CANCELLED",
-        var s when s.Contains("DENIED") => "DENIED",
+        var s when s != null && s.Contains("STANDBY") => "STANDBY",
+        var s when s != null && s.Contains("SUCCESS") => "CALIBRATED",
+        var s when s != null && s.Contains("FAIL") => "FAILED",
+        var s when s != null && s.Contains("COMPUTING") => "COMPUTING...",
+        var s when s != null && s.Contains("RECORDING") => "RECORDING...",
+        var s when s != null && s.Contains("CANCELLED") => "CANCELLED",
+        var s when s != null && s.Contains("DENIED") => "DENIED",
         _ => status ?? "STANDBY"
     };
 }

@@ -2516,10 +2516,16 @@ if (nopackets > 5)
 
     // ---------------- MISSIONS ----------------
 
-// ---------------- MISSIONS ----------------
-
     public async Task<bool> UploadMissionAsync(IList<WaypointModel> items)
     {
+        // 🛡️ HARDWARE CONNECTION GUARD
+        // Prevent the UI from hanging on "Uploading..." if the physical link is dead
+        if (!IsLinkHealthy || !IsConnected)
+        {
+            Toast("Upload failed: No active connection to the Flight Controller.", ToastLevel.Error, "📡");
+            return false;
+        }
+
         if (items == null || items.Count == 0)
         {
             Toast("Cannot upload an empty waypoint route list.", ToastLevel.Warning, "📋");

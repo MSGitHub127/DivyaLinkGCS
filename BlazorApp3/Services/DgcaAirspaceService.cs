@@ -1,6 +1,8 @@
 using System.Net.Http.Headers;
 using System.Text;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Primitives;
+using System.Threading;
 
 namespace BlazorApp3.Services;
 
@@ -16,6 +18,9 @@ public class DgcaAirspaceService
     private const string AirspacePath      = "/api/airspace/geojson";
     private const string CacheKey          = "dgca_airspace_geojson";
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(15);
+
+    // Shared across scoped service instances to invalidate memory cache entries globally
+    private static CancellationTokenSource _cacheCts = new();
 
     private readonly IHttpClientFactory  _httpFactory;
     private readonly IConfiguration      _config;
@@ -57,11 +62,29 @@ public class DgcaAirspaceService
         }
 
         string result = await FetchFromDigitalSkyAsync(minLat, minLon, maxLat, maxLon, authToken!);
-        _cache.Set(regionKey, result, CacheDuration);
+        
+        var cacheOptions = new MemoryCacheEntryOptions()
+            .SetAbsoluteExpiration(CacheDuration)
+            .AddExpirationToken(new CancellationChangeToken(_cacheCts.Token));
+
+        _cache.Set(regionKey, result, cacheOptions);
         return result;
     }
 
-    public void InvalidateCache() => _cache.Remove(CacheKey);
+    public void InvalidateCache()
+    {
+        var oldCts = Interlocked.Exchange(ref _cacheCts, new CancellationTokenSource());
+        try
+        {
+            oldCts.Cancel();
+            oldCts.Dispose();
+            _logger.LogInformation("[DGCA] Airspace memory cache globally invalidated.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[DGCA] Error invalidating airspace memory cache.");
+        }
+    }
 
     // ── Live Fetch ─────────────────────────────────────────────────────────
 
@@ -127,102 +150,10 @@ public class DgcaAirspaceService
 
     private static string GetMockGeoJson(double minLat, double minLon, double maxLat, double maxLon)
     {
-        // Centre of whatever region the user is currently viewing
-        double cLat = (minLat + maxLat) / 2.0;
-        double cLon = (minLon + maxLon) / 2.0;
-
-        // Helper: GeoJSON Point feature with radius (DGCA circular zone format)
-        static string Circle(
-            string type, string name, string designator,
-            double lat, double lon, int radiusMetres,
-            int floorAgl, int ceilingAgl, string reason) =>
-        $$"""
-        {
-          "type": "Feature",
-          "geometry": {
-            "type": "Point",
-            "coordinates": [{{lon:F6}}, {{lat:F6}}]
-          },
-          "properties": {
-            "type":           "{{type}}",
-            "name":           "{{name}}",
-            "designator":     "{{designator}}",
-            "radius":         {{radiusMetres}},
-            "lowerLimit":     {{floorAgl}},
-            "upperLimit":     {{ceilingAgl}},
-            "lowerLimitUnit": "AGL",
-            "upperLimitUnit": "AGL",
-            "reason":         "{{reason}}"
-          }
-        }
-        """;
-
         return $$"""
 {
   "type": "FeatureCollection",
-  "features": [
-
-    {{Circle(
-        "RED",
-        "MOCK-P101 Prohibited Zone",
-        "P-101",
-        cLat + 0.055, cLon - 0.080,
-        radiusMetres: 1500,
-        floorAgl: 0, ceilingAgl: 500,
-        "MOCK DATA — Military airfield perimeter. Replace with live DGCA token."
-    )}},
-
-    {{Circle(
-        "RED",
-        "MOCK-R102 Restricted Zone",
-        "R-102",
-        cLat - 0.040, cLon + 0.095,
-        radiusMetres: 800,
-        floorAgl: 0, ceilingAgl: 300,
-        "MOCK DATA — Government sensitive infrastructure."
-    )}},
-
-    {{Circle(
-        "YELLOW",
-        "MOCK-CTR Controlled Zone",
-        "VAAH-CTR",
-        cLat + 0.010, cLon + 0.035,
-        radiusMetres: 5000,
-        floorAgl: 0, ceilingAgl: 1500,
-        "MOCK DATA — ATC clearance required above 400ft AGL."
-    )}},
-
-    {{Circle(
-        "YELLOW",
-        "MOCK-TMA Terminal Area",
-        "VAAH-TMA",
-        cLat - 0.080, cLon - 0.050,
-        radiusMetres: 3500,
-        floorAgl: 300, ceilingAgl: 3000,
-        "MOCK DATA — High-traffic approach corridor."
-    )}},
-
-    {{Circle(
-        "GREEN",
-        "MOCK-G201 Uncontrolled Airspace",
-        "UAS-G201",
-        cLat - 0.060, cLon + 0.075,
-        radiusMetres: 4000,
-        floorAgl: 0, ceilingAgl: 400,
-        "MOCK DATA — BVLOS operations require NPNT approval."
-    )}},
-
-    {{Circle(
-        "GREEN",
-        "MOCK-G202 Uncontrolled Rural",
-        "UAS-G202",
-        cLat + 0.090, cLon + 0.090,
-        radiusMetres: 3000,
-        floorAgl: 0, ceilingAgl: 400,
-        "MOCK DATA — Standard DGCA drone rules apply."
-    )}}
-
-  ]
+  "features": []
 }
 """;
     }
