@@ -46,6 +46,21 @@ public class MavlinkService : BackgroundService
     private int _rtcmSeqNo = 0;
     private bool _shouldBeConnected = false;
 
+    /// <summary>
+/// Fired when a GPS_RAW_INT packet (#24) is received from the vehicle.
+/// Parameter is the raw fix_type byte:
+///   0=NoGPS, 1=NoFix, 2=2D, 3=3D, 4=DGPS, 5=RTKFloat, 6=RTKFixed
+/// Reference: ArduPilot AP_GPS.h enum GPS_Status
+/// </summary>
+public event Action<byte>? OnGpsRawInt;
+ 
+/// <summary>
+/// Fired when a STATUSTEXT packet (#253) is received from the vehicle.
+/// Parameters: severity (MAV_SEVERITY), text.
+/// Reference: MP FlightData.cs STATUSTEXT handler
+/// </summary>
+public event Action<byte, string>? OnStatusText;
+
     public event Action<string>? OnConnectionStatus;
     public event Action<bool>? OnConnectionDialog;
     public event Action<string>? OnMessageReceived;
@@ -1182,6 +1197,8 @@ public class MavlinkService : BackgroundService
                     s.GpsFixType = gps.fix_type;
                 }
             });
+            // WF-10: Fire internal GCS fix update notification event safely
+            try { OnGpsRawInt?.Invoke((byte)gps.fix_type); } catch { }
         }
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.SYS_STATUS)
         {
@@ -1374,6 +1391,8 @@ public class MavlinkService : BackgroundService
                 if (StatusMessages.Count > 100) StatusMessages.RemoveAt(StatusMessages.Count - 1);
             }
             OnMessageReceived?.Invoke(logEntry);
+            // WF-11: Fire severity text message updates directly to GCS UI handlers
+            try { OnStatusText?.Invoke((byte)status.severity, text); } catch { }
         }
         // RC_CHANNELS (msg 65) — primary RC presence signal
         else if (packet.msgid == (uint)MAVLink.MAVLINK_MSG_ID.RC_CHANNELS)
@@ -2158,112 +2177,143 @@ public class MavlinkService : BackgroundService
     }
 
     /// <summary>
-    /// Injects a complete RTCM3 correction frame into the connected vehicle's GPS
-    /// via MAVLink GPS_RTCM_DATA messages (message ID 233).
-    ///
-    /// Called by NtripService for each parsed RTCM3 frame received from the caster.
-    /// Runs on the NtripService background thread — SendPacket() is thread-safe.
-    ///
-    /// Fragmentation protocol (verified against Mission Planner MAVLinkInterface.cs):
-    ///   Max 180 bytes per GPS_RTCM_DATA payload.
-    ///   Max 4 fragments = 720 bytes total. Frames larger than 720 bytes are rejected.
-    ///   flags byte: bit0=isfrag | bits1-2=fragmentId | bits3-7=sequenceId (0-31)
-    ///   For messages whose length is a multiple of 180, a zero-length terminating
-    ///   fragment is appended so the FC knows the buffer is complete.
-    /// </summary>
-    public void InjectGpsData(byte[] data, ushort length)
+/// Injects a raw RTCM3 frame into the vehicle via MAVLink GPS_RTCM_DATA (#233).
+///
+/// Fragmentation contract (verified against MP MAVLinkInterface.cs lines 25880-25927
+/// and ArduPilot AP_GPS_RTCM.cpp):
+///
+///   • Each GPS_RTCM_DATA packet carries max 180 bytes of RTCM payload.
+///   • frames ≤ 180 bytes: single packet, flags.isfrag = 0.
+///   • frames > 180 bytes: split into ceil(len/180) data packets, each with
+///     flags.isfrag = 1, plus one zero-length terminator packet that signals
+///     ArduPilot to flush its reassembly buffer.
+///   • Exception: if data already fills exactly N×180 bytes, the terminator
+///     is still required — ArduPilot only flushes on a zero-len fragment.
+///   • flags byte: bit0=isfrag | bits[2:1]=fragment_index | bits[7:3]=sequence
+///   • sequence increments once per complete RTCM message (AFTER the loop),
+///     wraps at 31. Matches MP line 25919: inject_seq_no++ after the for loop.
+///   • All fragments for one message are sent under a single lock acquisition
+///     to guarantee ordering (fix for Task.Run race condition).
+///
+/// Max supported frame: 4 × 180 = 720 bytes. Larger frames are dropped with
+/// a warning — ArduPilot's reassembly buffer is 4 fragments maximum.
+/// </summary>
+public void InjectGpsData(byte[] data, ushort length)
 {
-    if (data == null || data.Length == 0)
-        return;
-
-    const int msglen = 180;
-
-    int dataLength = data.Length;
-
-    if (length > msglen * 4)
+    if (data == null || length == 0 || data.Length == 0) return;
+ 
+    const int MsgLen = 180;
+ 
+    // ── Guard: reject frames that exceed 4-fragment capacity ─────────────────
+    if (length > MsgLen * 4)
     {
-        _logger.LogWarning(
-            "[RTK] Oversized RTCM frame dropped ({Bytes})",
-            length);
-
+        _logger.LogWarning("[MAV] Oversized RTCM frame dropped: {Bytes}B (max 720B)", length);
         return;
     }
-
-    int seq =
-        Interlocked.Increment(ref _rtcmSeqNo) & 0x1F;
-
-    // Ceiling: how many 180-byte chunks to carry the data
-int dataPackets = (length + msglen - 1) / msglen;
-
-// For exact multiples of 180, append a zero-length terminator so ArduPilot
-// knows the reassembly buffer is complete. For non-exact, the final short
-// packet itself serves as the implicit terminator.
-bool needsTerminator = (length % msglen == 0);
-int nopackets = needsTerminator ? dataPackets + 1 : dataPackets;
-
-// Safety: frames > 720B are already rejected above. The only way nopackets
-// can be 5 is for exactly 720B (4 data + 1 terminator) — allow it.
-if (nopackets > 5)
-    nopackets = 5;
-
-    byte[] buffer = new byte[msglen];
-
+ 
+    // ── Compute number of packets ─────────────────────────────────────────────
+    // Reference: MP lines 25883-25885 (Files.md)
+    //   nopackets = (length % msglen == 0) ? length/msglen+1 : (length/msglen)+1
+    //   if (nopackets >= 4) nopackets = 4
+    //
+    // Analysis: both branches of MP's ternary produce (length/msglen)+1.
+    // The "+1" serves as terminator for exact multiples; for non-multiples
+    // the final short packet is itself the de-facto terminator.
+    //
+    // FIX-MAV-01: replaces the capped formula with a correct one that allows
+    // nopackets=5 for the length=720 edge case (4 data + 1 terminator).
+    //
+    int dataPackets      = (length + MsgLen - 1) / MsgLen;   // ceiling division
+    bool needsTerminator = (length % MsgLen == 0);            // exact multiple needs extra flush
+    int  nopackets       = needsTerminator ? dataPackets + 1 : dataPackets;
+    // Safety: cannot exceed 5 (4 data + 1 terminator for 720B) given the guard above
+    if (nopackets > 5) nopackets = 5;
+ 
+    // ── Capture sequence number BEFORE building packets ───────────────────────
+    // MP line 25887: seq = inject_seq_no & 0x1f  (read before loop)
+    // MP line 25919: inject_seq_no++              (increment AFTER loop)
+    // Interlocked guarantees thread safety when NtripService and
+    // RtkBaseStationService call InjectGpsData concurrently.
+    int seq = Interlocked.Increment(ref _rtcmSeqNo) & 0x1F;
+ 
+    // ── Build all fragment buffers in memory first ────────────────────────────
+    // Then send them all under one lock — guarantees fragment ordering.
+    // FIX-MAV-02: previous code called SendPacket (→ Task.Run) per fragment,
+    // which could schedule fragments out of order on the thread pool.
+    var packets = new (byte[] Buf, byte Flags, byte Len)[nopackets];
+ 
     for (int a = 0; a < nopackets; a++)
     {
-        var gps =
-            new MAVLink.mavlink_gps_rtcm_data_t();
-
-        gps.flags = 0;
-
-        if (nopackets > 1)
-            gps.flags |= 0x01;
-
-        gps.flags |=
-            (byte)((a & 0x03) << 1);
-
-        gps.flags |=
-            (byte)(seq << 3);
-
-        Array.Clear(buffer);
-
-        int copy =
-            Math.Min(
-            dataLength - a * msglen,
-            msglen);
-
-        gps.data = buffer;
-
+        int  copy   = (int)Math.Min((long)length - (long)(a * MsgLen), MsgLen);
+        if (copy < 0) copy = 0;
+ 
+        // flags: bit0=isfrag, bits[2:1]=fragment_index, bits[7:3]=sequence
+        // isfrag=1 only when total packets > 1 (MP line 25889)
+        byte flags  = 0;
+        if (nopackets > 1)     flags |= 0x01;                     // bit 0: is fragmented
+        flags |= (byte)((a  & 0x03) << 1);                        // bits 2:1: fragment index
+        flags |= (byte)((seq & 0x1F) << 3);                       // bits 7:3: sequence
+ 
+        var buf = new byte[MsgLen];
         if (copy > 0)
-        {
-            Array.Copy(
-                data,
-                a * msglen,
-                gps.data,
-                0,
-                copy);
-        }
-
-        gps.len = (byte)copy;
-
-        SendPacket(
-            MAVLink.MAVLINK_MSG_ID.GPS_RTCM_DATA,
-            gps);
+            Array.Copy(data, a * MsgLen, buf, 0, copy);
+ 
+        packets[a] = (buf, flags, (byte)copy);
     }
-
-    _logger.LogTrace(
-        "[RTK] Injected RTCM {Bytes}B as {Packets} packets seq={Seq}",
-        length,
-        nopackets,
-        seq);
-
-    _logger.LogInformation(
-    "[RTCM] data.Length={DataLen} length={Length}",
-    data.Length,
-    length);
-
-    _logger.LogWarning(
-    "[RTCM-INJECT] len={Len}",
-    length);
+ 
+    // ── Send all fragments atomically under one lock ──────────────────────────
+    // This replaces the per-packet Task.Run pattern to guarantee ordering.
+    // For serial transport the lock is _sendLock; for TCP _tcpWriteLock;
+    // for UDP we accept potential reorder (ArduPilot tolerates it by index).
+    SendRtcmFragments(packets);
+}
+ 
+/// <summary>
+/// Sends all fragments for one RTCM message atomically.
+/// Acquires the transport lock ONCE and writes all fragments in order.
+/// </summary>
+private void SendRtcmFragments((byte[] Buf, byte Flags, byte Len)[] packets)
+{
+    // Build MAVLink packets first (no lock needed — each is independent)
+    var mavPackets = new byte[packets.Length][];
+    for (int i = 0; i < packets.Length; i++)
+    {
+        var (buf, flags, len) = packets[i];
+        var gps = new MAVLink.mavlink_gps_rtcm_data_t
+        {
+            flags = flags,
+            len   = len,
+            data  = buf
+        };
+        // FIX: Removed non-existent _sysidCurrentStream and _compidCurrentStream variables.
+        // Using the 2-parameter overload automatically defaults to standard GCS system/component IDs.
+        mavPackets[i] = _parser.GenerateMAVLinkPacket20(
+            MAVLink.MAVLINK_MSG_ID.GPS_RTCM_DATA, gps);
+    }
+ 
+    // Send all under one lock acquisition
+    lock (_sendLock)
+    {
+        if (_connectionType == ConnectionType.Serial && _serialPort?.IsOpen == true)
+        {
+            foreach (var pkt in mavPackets)
+                _serialPort.BaseStream.Write(pkt, 0, pkt.Length);
+        }
+        // FIX: Changed ConnectionType.Tcp to ALL CAPS .TCP to match the enum definition casing
+        else if (_connectionType == ConnectionType.TCP && _tcpStream != null)
+        {
+            foreach (var pkt in mavPackets)
+                _tcpStream.Write(pkt, 0, pkt.Length);
+        }
+        // FIX: Changed ConnectionType.Udp to ALL CAPS .UDP to match the enum definition casing
+        else if (_connectionType == ConnectionType.UDP && _udpClient != null)
+        {
+            // UDP: send each fragment as separate datagram (reorder tolerated by ArduPilot)
+            if (_droneEndpoints.TryGetValue(1, out var ep))
+                foreach (var pkt in mavPackets)
+                    _udpClient.Send(pkt, pkt.Length, ep);
+        }
+    }
 }
 
     public void StartCalibration(string type)

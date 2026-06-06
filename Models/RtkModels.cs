@@ -1,6 +1,16 @@
-// Models/RtkModels.cs
-// All data models for the RTK Base Station / GPS Injection engine.
-// All records are immutable — state is replaced atomically, never mutated in place.
+// RtkModels.cs
+// Complete rewrite — all data models for the RTK Base Station / GPS Injection engine.
+//
+// Changes vs previous version:
+//   NEW: VehicleGpsFixType + VehicleGpsLabel on RtkState  (WF-10)
+//   NEW: StatusMessages on RtkState                        (WF-11)
+//   NEW: StatusMessage record
+//   NEW: GpsFixType enum  (mirrors ArduPilot GPS_RAW_INT fix_type field)
+//   FIX: SurveyInStatus.ProgressPct uses target — not confused with accuracy
+//   FIX: ConstellationStatus expiry constants match MP seenRTCM timers exactly:
+//        5s for GNSS signals (MP line 30196), 20s for base (MP line 30202)
+//   FIX: RtkStreamStats includes VehicleGpsFixType for use in dashboard
+//   REMOVED: M8p130Plus from RtkConfig — auto-detected from MON-VER
 
 using System;
 using System.Collections.Generic;
@@ -8,82 +18,104 @@ using System.Collections.Generic;
 namespace BlazorApp3.Models;
 
 // ── Phase state machine ───────────────────────────────────────────────────────
+// Mirrors MP button states: Idle → Connecting → Survey → Fixed → Injecting
 public enum RtkPhase
 {
-    Idle       = 0,   // Not connected
+    Idle       = 0,   // Not connected — port closed
     Connecting = 1,   // Serial port opened; SetupM8P commands being sent
-    Survey     = 2,   // Survey-In in progress; monitoring UBX-NAV-SVIN
-    Fixed      = 3,   // Survey-In valid; position locked (brief transitional)
-    Injecting  = 4,   // RTCM corrections streaming → MavlinkService.InjectGpsData()
+    Survey     = 2,   // Survey-In running; monitoring UBX-NAV-SVIN
+    Fixed      = 3,   // Survey-In valid; position confirmed (transient state)
+    Injecting  = 4,   // RTCM corrections streaming to MavlinkService.InjectGpsData
 }
 
-// ── Operator-configurable parameters ────────────────────────────────────────
+// ── Vehicle GPS fix type (GPS_RAW_INT.fix_type, ArduPilot definition) ────────
+// Reference: ArduPilot libraries/AP_GPS/AP_GPS.h enum GPS_Status
+public enum GpsFixType : byte
+{
+    NoGps    = 0,
+    NoFix    = 1,
+    Fix2D    = 2,
+    Fix3D    = 3,
+    Dgps     = 4,
+    RtkFloat = 5,
+    RtkFixed = 6,
+}
+
+// ── Operator-configurable parameters ─────────────────────────────────────────
+// NOTE: M8p130Plus REMOVED — MSM7/MSM4 is now auto-detected from MON-VER.
 public sealed record RtkConfig(
     string ComPort,
     int    BaudRate,
     bool   AutoConfig,
-    bool   M8p130Plus,       // false=MSM7 (1077/1087), true=MSM4 (1074/1084)
-    double TargetAccuracyM,  // Survey-In stops when accuracy ≤ this value
-    int    MinDurationSec    // Survey-In stops when duration ≥ this value (seconds)
+    double TargetAccuracyM,
+    int    MinDurationSec
 )
 {
     public static RtkConfig Default => new(
-        ComPort:          "COM3",
-        BaudRate:         460800,
-        AutoConfig:       true,
-        M8p130Plus:       false,
-        TargetAccuracyM:  0.200,
-        MinDurationSec:   60
+        ComPort:         "COM3",
+        BaudRate:        460800,
+        AutoConfig:      true,
+        TargetAccuracyM: 0.200,
+        MinDurationSec:  60
     );
 }
 
-// ── Survey-In telemetry (from UBX-NAV-SVIN, class=0x01, id=0x3B) ───────────
+// ── Survey-In telemetry (from UBX-NAV-SVIN, class=0x01, id=0x3B) ─────────────
+// Reference: u-blox M8 Interface Description §32.17.26
 public sealed record SurveyInStatus(
-    uint   DurationSec,       // Elapsed Survey-In time (seconds)
-    uint   Observations,      // Number of valid position fixes observed
-    double AccuracyM,          // Current position accuracy (metres)
-    bool   Valid,              // true when Survey-In has successfully converged
-    bool   Active              // true while Survey-In is in progress
+    uint   DurationSec,
+    uint   Observations,
+    double AccuracyM,
+    bool   Valid,
+    bool   Active
 )
 {
-    public static SurveyInStatus Empty => new(0, 0, 94568.32, false, false);
+    public static SurveyInStatus Empty => new(0, 0, 9999.0, false, false);
 
-    /// <summary>Convergence percentage toward the target accuracy.</summary>
+    /// Convergence percentage toward the target accuracy.
+    /// 0% = far from target; 100% = at or better than target.
     public double ProgressPct(double targetM) =>
-        Math.Min(100.0, (targetM / Math.Max(AccuracyM, 1e-6)) * 100.0);
+        targetM <= 0 ? 0.0
+        : Math.Min(100.0, (targetM / Math.Max(AccuracyM, 1e-6)) * 100.0);
 }
 
 // ── Fixed base position ───────────────────────────────────────────────────────
 public sealed record BasePosition(
-    double EcefX,   // metres
+    double EcefX,   // metres (WGS-84 ECEF)
     double EcefY,
     double EcefZ,
-    double Lat,     // degrees
+    double Lat,     // degrees  (derived from ECEF via Bowring)
     double Lng,     // degrees
     double Alt      // metres above ellipsoid
 );
 
-// ── Satellite signal data (from UBX-NAV-SAT, class=0x01, id=0x35) ───────────
+// ── Satellite signal data (from UBX-NAV-SAT, class=0x01, id=0x35) ────────────
+// Reference: u-blox M8 Interface Description §32.17.20
 public sealed record SatelliteInfo(
-    string Id,        // e.g. "G12", "R04", "B03", "E17"
-    byte   Snr,       // Carrier-to-noise ratio in dB-Hz
-    bool   Active,    // true = used in navigation solution (flags bit 3)
-    byte   GnssId,    // 0=GPS, 2=Galileo, 3=BeiDou, 6=GLONASS
-    byte   SvId       // Satellite vehicle number
+    string Id,       // e.g. "G12", "R04", "B03", "E17", "Q01"
+    byte   Snr,      // Carrier-to-noise ratio (C/N₀) in dBHz
+    bool   Active,   // true = used in navigation solution (flags bit 3)
+    byte   GnssId,   // 0=GPS, 1=SBAS, 2=Galileo, 3=BeiDou, 5=QZSS, 6=GLONASS
+    byte   SvId      // Satellite vehicle number
 )
 {
+    /// Maps u-blox gnssId to the single-character prefix used in the satellite ID string.
+    /// Reference: u-blox M8 spec §32.17.20 gnssId enumeration
     public static string GnssPrefix(byte gnssId) => gnssId switch
     {
-        0 => "G",
-        2 => "E",
-        3 => "B",
-        5 => "Q",
-        6 => "R",
+        0 => "G",   // GPS
+        1 => "S",   // SBAS
+        2 => "E",   // Galileo
+        3 => "B",   // BeiDou
+        5 => "Q",   // QZSS
+        6 => "R",   // GLONASS
         _ => "?"
     };
 }
 
-// ── Constellation health (expiry-based, matching Mission Planner's seenRTCM) ─
+// ── Constellation health (expiry-based, matching MP seenRTCM) ─────────────────
+// MP uses a Timer tick every 1s; any constellation not refreshed within the
+// expiry window is greyed out (Files.md lines 30186-30210).
 public sealed record ConstellationStatus(
     string   Id,           // "gps" | "glonass" | "galileo" | "beidou" | "base"
     string   Label,
@@ -92,6 +124,8 @@ public sealed record ConstellationStatus(
     DateTime LastSeenUtc
 )
 {
+    // MP line 30196: GPS/GLONASS/Galileo/BeiDou expire after 5s
+    // MP line 30202: Base (1005/4072) expires after 20s
     public static readonly TimeSpan SignalExpiry = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan BaseExpiry   = TimeSpan.FromSeconds(20);
 
@@ -110,54 +144,87 @@ public sealed record ConstellationStatus(
     ];
 }
 
-// ── Message counters (UBX + RTCM message-seen tracking) ──────────────────────
+// ── Message counters ──────────────────────────────────────────────────────────
 public sealed record MessageEntry(string Name, int Count);
 
 // ── RTCM stream statistics ────────────────────────────────────────────────────
 public sealed record RtkStreamStats(
-    int  RxBps,             // Received bytes/sec × 8
-    int  TxBps,             // Injected bytes/sec × 8
-    long TotalMessages,     // Total UBX + RTCM frames processed
-    int  LargestRtcmBytes,  // Largest single RTCM frame seen (bytes)
-    int  FragmentsUsed,     // ceil(LargestRtcmBytes / 180), max 4
-    bool HasOverflow        // true if LargestRtcmBytes > 540 (approaching 720B limit)
+    int  RxBps,
+    int  TxBps,
+    long TotalMessages,
+    int  LargestRtcmBytes,
+    int  FragmentsUsed,      // ceil(LargestRtcmBytes / 180), max 4
+    bool HasOverflow         // true if LargestRtcmBytes > 540 (3+ fragments)
 )
 {
     public static RtkStreamStats Zero => new(0, 0, 0, 0, 0, false);
 }
 
-// ── Saved base profiles (persisted to local JSON) ────────────────────────────
+// ── Vehicle MAVLink status text ───────────────────────────────────────────────
+// WF-11: mirrors MP's STATUSTEXT display in FlightData
+public sealed record StatusMessage(
+    byte     Severity,    // MAV_SEVERITY: 0=Emergency…6=Info…7=Debug
+    string   Text,
+    DateTime ReceivedUtc
+)
+{
+    public string SeverityLabel => Severity switch
+    {
+        0 => "EMERG",
+        1 => "ALERT",
+        2 => "CRIT",
+        3 => "ERROR",
+        4 => "WARN",
+        5 => "NOTICE",
+        6 => "INFO",
+        _ => "DEBUG"
+    };
+}
+
+// ── Saved base profiles (persisted to local JSON) ─────────────────────────────
 public sealed record SavedBaseProfile(
-    string Name,
-    double EcefX,
-    double EcefY,
-    double EcefZ,
-    double Lat,
-    double Lng,
-    double Alt,
+    string   Name,
+    double   EcefX,
+    double   EcefY,
+    double   EcefZ,
+    double   Lat,
+    double   Lng,
+    double   Alt,
     DateTime SavedUtc
 );
 
-// ── Aggregate state snapshot (single object handed to Blazor UI) ─────────────
+// ── Aggregate state snapshot (handed to Blazor UI atomically) ────────────────
+// All fields are init-only. Service replaces the entire record on every change.
+// Blazor components receive a snapshot and never hold a reference to mutable state.
 public sealed record RtkState
 {
-    public RtkPhase                          Phase            { get; init; } = RtkPhase.Idle;
-    public SurveyInStatus                    Survey           { get; init; } = SurveyInStatus.Empty;
-    public BasePosition?                     FixedPosition    { get; init; }
-    public IReadOnlyList<SatelliteInfo>      Satellites       { get; init; } = [];
-    public IReadOnlyList<ConstellationStatus>Constellations   { get; init; } = ConstellationStatus.DefaultSet();
-    public IReadOnlyList<MessageEntry>       Messages         { get; init; } = [];
-    public RtkStreamStats                    Stream           { get; init; } = RtkStreamStats.Zero;
-    public string?                           ActiveProfileName{ get; init; }   // Bug 1 fix: reset on disconnect
-    public string?                           ErrorMessage     { get; init; }
-    public IReadOnlyList<SavedBaseProfile>   SavedProfiles    { get; init; } = [];
+    public RtkPhase                           Phase              { get; init; } = RtkPhase.Idle;
+    public SurveyInStatus                     Survey             { get; init; } = SurveyInStatus.Empty;
+    public BasePosition?                      FixedPosition      { get; init; }
+    public IReadOnlyList<SatelliteInfo>       Satellites         { get; init; } = [];
+    public IReadOnlyList<ConstellationStatus> Constellations     { get; init; } = ConstellationStatus.DefaultSet();
+    public IReadOnlyList<MessageEntry>        Messages           { get; init; } = [];
+    public RtkStreamStats                     Stream             { get; init; } = RtkStreamStats.Zero;
+    public string?                            ActiveProfileName  { get; init; }
+    public string?                            ErrorMessage       { get; init; }
+    public IReadOnlyList<SavedBaseProfile>    SavedProfiles      { get; init; } = [];
 
-    // Derived helpers used directly in the UI
+    // WF-10: Vehicle GPS fix type — populated from GPS_RAW_INT
+    public byte    VehicleGpsFixType { get; init; } = 0;
+    public string  VehicleGpsLabel   { get; init; } = "No Fix";
+
+    // WF-11: Recent STATUSTEXT messages from vehicle
+    public IReadOnlyList<StatusMessage> StatusMessages { get; init; } = [];
+
+    // ── Derived helpers used directly in Blazor UI ────────────────────────────
     public bool IsActive    => Phase >= RtkPhase.Survey;
     public bool IsFixed     => Phase >= RtkPhase.Fixed;
     public bool IsInjecting => Phase == RtkPhase.Injecting;
 
-    // Backward-compatibility properties used by legacy Setup.razor panels
-    public bool IsSourceConnected => Phase != RtkPhase.Idle;
+    public bool VehicleIsRtkFloat => VehicleGpsFixType == (byte)GpsFixType.RtkFloat;
+    public bool VehicleIsRtkFixed => VehicleGpsFixType == (byte)GpsFixType.RtkFixed;
+
+    // Backward-compat helpers for existing Blazor panels
+    public bool     IsSourceConnected  => Phase != RtkPhase.Idle;
     public RtkPhase CurrentSurveyState => Phase;
 }
