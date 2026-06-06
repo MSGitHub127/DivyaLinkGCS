@@ -172,6 +172,10 @@
         window._accuracyCircle = null;
         window._MAX_TRAIL_PTS = 400;
         window._pc = null;
+        window._isDrawingPolygon = false;
+        window._drawnPoints = [];
+        window._drawLayer = null;
+        window._highlightedPolygon = null;
 
         function _validGps(lat, lng) {
             return typeof lat === 'number' && typeof lng === 'number'
@@ -295,6 +299,10 @@
 
             try {
                 window._gcsMap.on('click', function (e) {
+                    if (window._isDrawingPolygon) {
+                        _handleDrawClick(e.latlng);
+                        return;
+                    }
                     if (typeof DotNet !== 'undefined') {
                         DotNet.invokeMethodAsync('BlazorApp3', 'AddWaypointFromMap', e.latlng.lat, e.latlng.lng)
                             .catch(err => console.error('AddWaypointFromMap invoke failed', err));
@@ -304,6 +312,139 @@
                 console.warn('Failed to attach map click handler', ex);
             }
         }; // <-- MAKE SURE THIS CLOSING BRACKET AND SEMICOLON ARE HERE
+
+        window._drawingMarkers = [];
+        window._drawingShape = null;
+
+        function _handleDrawKeyDown(e) {
+            if (!window._isDrawingPolygon) return;
+            const isUndo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z';
+            if (isUndo) {
+                e.preventDefault();
+                _undoLastPoint();
+            }
+        }
+
+        function _undoLastPoint() {
+            if (!window._drawnPoints || window._drawnPoints.length === 0) return;
+            window._drawnPoints.pop();
+            if (window._drawingMarkers && window._drawingMarkers.length > 0) {
+                const marker = window._drawingMarkers.pop();
+                if (window._drawLayer) {
+                    window._drawLayer.removeLayer(marker);
+                }
+            }
+            _updateDrawingShape();
+            console.log("[Draw] Undo last point. Points remaining: " + window._drawnPoints.length);
+        }
+
+        function _updateDrawingShape() {
+            if (!window._drawLayer) return;
+            if (window._drawingShape) {
+                window._drawLayer.removeLayer(window._drawingShape);
+                window._drawingShape = null;
+            }
+            if (window._drawnPoints.length > 2) {
+                window._drawingShape = L.polygon(window._drawnPoints, {
+                    color: '#ff9900',
+                    fillColor: '#ff9900',
+                    fillOpacity: 0.15,
+                    weight: 2
+                }).addTo(window._drawLayer);
+            } else if (window._drawnPoints.length > 1) {
+                window._drawingShape = L.polyline(window._drawnPoints, {
+                    color: '#ff9900',
+                    weight: 2
+                }).addTo(window._drawLayer);
+            }
+        }
+
+        function _handleDrawClick(latlng) {
+            if (!window._drawLayer) {
+                window._drawLayer = L.layerGroup().addTo(window._gcsMap);
+            }
+            
+            const idx = window._drawnPoints.length;
+            window._drawnPoints.push([latlng.lat, latlng.lng]);
+            
+            const marker = L.marker(latlng, {
+                draggable: true,
+                icon: L.divIcon({
+                    html: `<div style="width: 10px; height: 10px; background: #fff; border: 2px solid #ff9900; border-radius: 50%; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>`,
+                    className: '',
+                    iconSize: [10, 10],
+                    iconAnchor: [5, 5]
+                })
+            }).addTo(window._drawLayer)
+              .bindTooltip(`Point ${idx + 1}`, { permanent: false, direction: 'top' });
+              
+            marker.on('drag', function (e) {
+                const pos = e.target.getLatLng();
+                window._drawnPoints[idx] = [pos.lat, pos.lng];
+                _updateDrawingShape();
+            });
+            
+            window._drawingMarkers.push(marker);
+            _updateDrawingShape();
+        }
+
+        window.startDrawingPolygon = () => {
+            window._isDrawingPolygon = true;
+            window._drawnPoints = [];
+            window._drawingMarkers = [];
+            window._drawingShape = null;
+            if (window._drawLayer) {
+                window._gcsMap?.removeLayer(window._drawLayer);
+                window._drawLayer = null;
+            }
+            window._drawLayer = L.layerGroup().addTo(window._gcsMap);
+            if (window._highlightedPolygon) {
+                window._gcsMap?.removeLayer(window._highlightedPolygon);
+                window._highlightedPolygon = null;
+            }
+            window.addEventListener('keydown', _handleDrawKeyDown);
+            console.log("[Draw] Drawing mode activated. Ctrl+Z listener attached.");
+        };
+
+        window.stopDrawingPolygon = (save) => {
+            window._isDrawingPolygon = false;
+            window.removeEventListener('keydown', _handleDrawKeyDown);
+            const pts = [...window._drawnPoints];
+            if (window._drawLayer) {
+                window._gcsMap?.removeLayer(window._drawLayer);
+                window._drawLayer = null;
+            }
+            window._drawingMarkers = [];
+            window._drawingShape = null;
+            console.log("[Draw] Drawing mode deactivated. Points count: " + pts.length);
+            return JSON.stringify(pts);
+        };
+
+        window.showSavedPolygon = (coordsJson) => {
+            if (!window._gcsMap) return;
+            if (window._highlightedPolygon) {
+                window._gcsMap.removeLayer(window._highlightedPolygon);
+                window._highlightedPolygon = null;
+            }
+            try {
+                const coords = JSON.parse(coordsJson);
+                if (!coords || coords.length < 3) return;
+                
+                // Do not render the polygon overlay to keep the map clean, but fit the map view bounds to the saved region.
+                const tempPoly = L.polygon(coords);
+                window._gcsMap.fitBounds(tempPoly.getBounds());
+            } catch (ex) {
+                console.error("[Draw] Show polygon error:", ex);
+            }
+        };
+
+        window.clearSavedPolygon = () => {
+            if (window._gcsMap && window._highlightedPolygon) {
+                window._gcsMap.removeLayer(window._highlightedPolygon);
+                window._highlightedPolygon = null;
+            }
+        };
+
         window.preserveMap = () => { /* Leaflet: no-op */ };
 
         function _droneTooltip(lat, lng, yaw, alt, spd, bat) {

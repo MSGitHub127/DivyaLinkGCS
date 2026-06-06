@@ -150,7 +150,7 @@
                             <div class="flex items-center gap-[20px] w-full">
                                 <div class="flex flex-col gap-[4px] w-[140px] shrink-0">
                                     <span class="text-[0.65rem] font-extrabold text-[#8b949e] tracking-[0.5px]">ACCELEROMETER</span>
-                                    <span class="text-[0.8rem] font-extrabold whitespace-nowrap overflow-hidden text-ellipsis @(IsAccelCalibrating && Drone.LiveAccelStatus != "WAITING..." ? "text-[#58a6ff]" : Drone.LiveAccelStatus == "FAILED" || Drone.LiveAccelStatus.Contains("DENIED") || Drone.LiveAccelStatus.Contains("NO RESPONSE") ? "text-[#f85149]" : Drone.LiveAccelStatus == "SUCCESS" ? "text-[#58a6ff]" : "text-[#c9d1d9]")">
+                                    <span class="text-[0.8rem] font-extrabold whitespace-nowrap overflow-hidden text-ellipsis @(IsAccelCalibrating && Drone.LiveAccelStatus != "WAITING..." ? "text-[#58a6ff]" : Drone.LiveAccelStatus == "FAILED" || (Drone.LiveAccelStatus?.Contains("DENIED") ?? false) || (Drone.LiveAccelStatus?.Contains("NO RESPONSE") ?? false) ? "text-[#f85149]" : Drone.LiveAccelStatus == "SUCCESS" ? "text-[#58a6ff]" : "text-[#c9d1d9]")">
                                         @Drone.LiveAccelStatus
                                     </span>
                                 </div>
@@ -280,7 +280,7 @@
                             <div class="flex items-center gap-[20px] w-full">
                                 <div class="flex flex-col gap-[4px] w-[140px] shrink-0">
                                     <span class="text-[0.65rem] font-extrabold text-[#8b949e] tracking-[0.5px]">COMPASS (MAG)</span>
-                                    <span class="text-[0.8rem] font-extrabold whitespace-nowrap overflow-hidden text-ellipsis @(IsMagCalibrating ? "text-[#58a6ff]" : (Drone.LiveMagStatus.Contains("FAILED") || Drone.LiveMagStatus.Contains("DENIED") ? "text-[#f85149]" : "text-[#c9d1d9]"))">
+                                    <span class="text-[0.8rem] font-extrabold whitespace-nowrap overflow-hidden text-ellipsis @(IsMagCalibrating ? "text-[#58a6ff]" : ((Drone.LiveMagStatus?.Contains("FAILED") ?? false) || (Drone.LiveMagStatus?.Contains("DENIED") ?? false) ? "text-[#f85149]" : "text-[#c9d1d9]"))">
                                         @Drone.LiveMagStatus
                                     </span>
                                 </div>

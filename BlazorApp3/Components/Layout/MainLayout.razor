@@ -7,9 +7,27 @@
 @using System.IO.Ports
 @using System.Linq
 @inject VehicleProfileService Vehicle
+@inject NavigationManager Navigation
+@inject BlazorApp3.Services.LicenseService License
+@inject BlazorApp3.Services.ParameterMetadataService MetadataSvc
 
 @* REMOVED 'flex flex-col' so elements can overlap properly to restore frosted glass *@
 <div class="gcs-wrapper block h-screen w-full bg-[#0a0b0d] overflow-hidden relative">
+
+    @if (isDrawing)
+    {
+        <div class="fixed top-[75px] left-1/2 -translate-x-1/2 bg-[#0f1117]/90 backdrop-blur-md border border-[#ff9900] rounded-[8px] p-[10px_20px] shadow-[0_4px_25px_rgba(255,153,0,0.3)] z-[1000] flex items-center gap-4 text-white pointer-events-auto">
+            <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-[#ff9900] animate-pulse"></span>
+                <span class="text-xs font-black tracking-[1px] uppercase">Drawing Cache Zone</span>
+            </div>
+            <div class="text-[0.75rem] text-[#8b949e]">Click map to place points (min 3 to save)</div>
+            <button class="h-[28px] px-3 bg-[#3fb950] border-none rounded-[4px] text-white text-[0.75rem] font-bold cursor-pointer hover:bg-green-600 transition-colors"
+                    @onclick="SaveDrawnRegion" id="floating-btn-save-zone">SAVE ZONE</button>
+            <button class="h-[28px] px-3 bg-[#ff4a4a] border-none rounded-[4px] text-white text-[0.75rem] font-bold cursor-pointer hover:bg-red-600 transition-colors"
+                    @onclick="CancelDrawingRegion" id="floating-btn-cancel-zone">CANCEL</button>
+        </div>
+    }
 
     @* --- HEADER --- *@
     <header class="header fixed top-0 left-0 w-full h-[60px] z-[100] shrink-0 bg-[rgba(18,20,26,0.6)] backdrop-blur-md border-b border-[#242731] flex items-center justify-between px-2 md:px-5 transition-all duration-300">
@@ -62,61 +80,232 @@
             </div>
         </div>
 
-    <div class="flex items-center gap-2 md:gap-3 overflow-x-auto no-scrollbar">
-    @{
-        @* FIX: explicitly locked to h-[36px] and text-[0.9rem] to prevent shrinking/jumping *@
-        var inputBase = "h-[36px] bg-[#08090b] border border-[#242731] text-white px-3 rounded-[4px] text-[0.9rem] font-semibold outline-none focus:border-[#58a6ff]";
-    }
+    <div class="flex items-center gap-2 md:gap-3">
+        <div class="flex items-center gap-2 md:gap-3 overflow-x-auto no-scrollbar">
+        @{
+            @* FIX: explicitly locked to h-[36px] and text-[0.9rem] to prevent shrinking/jumping *@
+            var inputBase = "h-[36px] bg-[#08090b] border border-[#242731] text-white px-3 rounded-[4px] text-[0.9rem] font-semibold outline-none focus:border-[#58a6ff]";
+        }
 
-    <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedType">
-        <option value="Serial">SERIAL</option>
-        <option value="UDP">UDP</option>
-        <option value="TCP">TCP</option>
-    </select>
-
-    @if (selectedType == "Serial")
-    {
-        <select class="@inputBase cursor-pointer min-w-[140px]" @onchange="OnPortChanged" value="@selectedPort">
-            @if (availablePorts.Count == 0)
-            {
-                <option value="" disabled selected>Scanning...</option>
-            }
-            else
-            {
-                <option value="" disabled selected="@(string.IsNullOrEmpty(selectedPort))">-- Port --</option>
-                @foreach (var port in Drone.GetAvailablePorts())
-                {
-                    <option value="@port.PortId">@port.DisplayName</option>
-                }
-            }
+        <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedType">
+            <option value="Serial">SERIAL</option>
+            <option value="UDP">UDP</option>
+            <option value="TCP">TCP</option>
         </select>
-    }
-    else
-    {
-        <input class="@inputBase w-[140px]" @bind="selectedPort" placeholder="127.0.0.1" />
-    }
 
-    <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedBaud">
-        <option value="9600">9600</option>
-        <option value="57600">57600</option>
-        <option value="115200">115200</option>
-    </select>
-
-    @* Scaled Status Indicator *@
-    <span class="w-3 h-3 rounded-full shrink-0 mx-1 @(IsDroneActuallyTalking ? "bg-[#00ff00] shadow-[0_0_8px_#00ff00]" : "bg-[#ff0000]")"></span>
-
-    @* Scaled Connect Button: h-[36px] matching the inputs exactly *@
-    <button class="h-[36px] border-none p-2 rounded-[4px] font-extrabold cursor-pointer text-[0.9rem] tracking-[1px] transition-colors flex items-center justify-center @(IsDroneActuallyTalking ? "bg-[#ff3a3a] text-white hover:bg-red-600" : "bg-[#2b58ff] text-white hover:bg-blue-600")"
-            @onclick="ToggleConnection" disabled="@isAttempting">
-        @if (isAttempting)
+        @if (selectedType == "Serial")
         {
-            <span>VERIFYING...</span>
+            <select class="@inputBase cursor-pointer min-w-[140px]" @onchange="OnPortChanged" value="@selectedPort">
+                @if (availablePorts.Count == 0)
+                {
+                    <option value="" disabled selected>Scanning...</option>
+                }
+                else
+                {
+                    <option value="" disabled selected="@(string.IsNullOrEmpty(selectedPort))">-- Port --</option>
+                    @foreach (var port in Drone.GetAvailablePorts())
+                    {
+                        <option value="@port.PortId">@port.DisplayName</option>
+                    }
+                }
+            </select>
         }
         else
         {
-            @(IsDroneActuallyTalking ? "DISCONNECT" : "CONNECT")
+            <input class="@inputBase w-[140px]" @bind="selectedPort" placeholder="127.0.0.1" />
         }
-    </button>
+
+        <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedBaud">
+            <option value="9600">9600</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+        </select>
+
+        @* Scaled Status Indicator *@
+        <span class="w-3 h-3 rounded-full shrink-0 mx-1 @(IsDroneActuallyTalking ? "bg-[#00ff00] shadow-[0_0_8px_#00ff00]" : "bg-[#ff0000]")"></span>
+
+        @* Scaled Connect Button: h-[36px] matching the inputs exactly *@
+        <button class="h-[36px] border-none p-2 rounded-[4px] font-extrabold cursor-pointer text-[0.9rem] tracking-[1px] transition-colors flex items-center justify-center @(IsDroneActuallyTalking ? "bg-[#ff3a3a] text-white hover:bg-red-600" : "bg-[#2b58ff] text-white hover:bg-blue-600")"
+                @onclick="ToggleConnection" disabled="@isAttempting">
+            @if (isAttempting)
+            {
+                <span>VERIFYING...</span>
+            }
+            else
+            {
+                @(IsDroneActuallyTalking ? "DISCONNECT" : "CONNECT")
+            }
+        </button>
+        </div>
+
+        @* Profile Dropdown Menu *@
+        <div class="relative shrink-0 flex items-center ml-1">
+            <button class="w-[36px] h-[36px] rounded-full bg-[#1c1f26] border border-[#30363d] flex items-center justify-center font-black text-[0.85rem] text-white hover:border-[#58a6ff] cursor-pointer transition-all duration-200"
+                    @onclick="ToggleProfileMenu" id="profile-avatar-btn">
+                @AvatarInitials
+            </button>
+
+            @if (isProfileMenuOpen)
+            {
+                <div class="fixed inset-0 z-[998] bg-transparent pointer-events-auto" @onclick="ToggleProfileMenu"></div>
+                <div class="absolute top-[48px] right-0 w-[290px] bg-[#0f1117]/95 backdrop-blur-xl border border-[#30363d] rounded-[12px] p-4 shadow-[0_10px_35px_rgba(0,0,0,0.6)] z-[999] flex flex-col gap-3 text-white profile-dropdown-animate" id="profile-dropdown-menu">
+                    <!-- Profile Row -->
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="w-[44px] h-[44px] rounded-full bg-gradient-to-tr from-[#3a86ff] to-[#7e3ff2] flex items-center justify-center font-black text-[0.95rem] text-white shadow-inner shrink-0">
+                            @AvatarInitials
+                        </div>
+                        <div class="flex-1 flex flex-col justify-center leading-tight">
+                            @if (isEditingName)
+                            {
+                                <input class="bg-[#08090b] border border-[#30363d] text-white text-[0.9rem] rounded px-2 py-0.5 w-[140px] outline-none font-bold"
+                                       @bind="tempOperatorName" @onblur="SaveOperatorName" @onkeyup="HandleNameKeyUp" autofocus />
+                            }
+                            else
+                            {
+                                <span class="text-white font-black text-[0.95rem] tracking-[-0.2px]">@operatorName</span>
+                            }
+                            <span class="text-[#3fb950] font-bold text-[0.65rem] uppercase tracking-[0.5px] mt-[2px]">@operatorRole</span>
+                        </div>
+                        <button class="text-[#8b949e] hover:text-white transition-colors cursor-pointer border-none bg-transparent p-1"
+                                @onclick="ToggleEditName">
+                            <i class="bi @(isEditingName ? "bi-check-lg text-[#3fb950] text-[1.2rem]" : "bi-pencil-square text-[1.05rem]")"></i>
+                        </button>
+                    </div>
+
+                    <!-- License Tier -->
+                    <div class="border-t border-[#242731] pt-3 flex flex-col gap-1.5">
+                        <div class="flex justify-between items-center text-[0.68rem] tracking-[1.5px] font-black text-[#8b949e]">
+                            <span>LICENSE TIER</span>
+                            <span class="text-[#3a86ff] font-black uppercase text-[0.78rem] tracking-[1.2px]">@licenseTier</span>
+                        </div>
+                        <div class="flex justify-between items-center text-[0.68rem] tracking-[1.5px] font-black text-[#8b949e]">
+                            <span>VALID FOR</span>
+                            <span class="text-white font-black text-[0.78rem]">@licenseValidity</span>
+                        </div>
+                    </div>
+
+                    <!-- Toggles & Select -->
+                    <div class="border-t border-[#242731] pt-3 flex flex-col gap-3">
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="flex items-center gap-2 flex-1">
+                                <i class="bi bi-brightness-high text-[#8b949e] text-[1.05rem]"></i>
+                                <span class="text-white font-semibold text-[0.82rem]">Outdoor Mode</span>
+                            </div>
+                            <label class="gcs-switch">
+                                <input type="checkbox" @bind="isOutdoorMode" />
+                                <span class="gcs-switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="flex items-center gap-2 flex-1">
+                                <i class="bi bi-cloud-arrow-down text-[#8b949e] text-[1.05rem]"></i>
+                                <span class="text-white font-semibold text-[0.82rem]">Live Map Auto-Cache</span>
+                            </div>
+                            <label class="gcs-switch">
+                                <input type="checkbox" @bind="isLiveMapCache" />
+                                <span class="gcs-switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="flex flex-col gap-1">
+                            <div class="flex items-center gap-2">
+                                <i class="bi bi-map text-[#8b949e] text-[1.05rem]"></i>
+                                <span class="text-white font-semibold text-[0.82rem]">Offline Base Map</span>
+                            </div>
+                            <div class="relative w-full mt-1">
+                                <button class="w-full bg-[#08090b] border border-[#242731] text-white px-3 py-1.5 rounded-[4px] text-[0.8rem] font-semibold flex items-center justify-between cursor-pointer outline-none hover:border-[#58a6ff] transition-all"
+                                        @onclick="ToggleMapDropdown" id="custom-map-dropdown-btn">
+                                    <span class="truncate pr-2">@(string.IsNullOrEmpty(selectedOfflineMap) ? "No saved regions" : selectedOfflineMap)</span>
+                                    <i class="bi bi-chevron-down text-[#8b949e] text-[0.75rem]"></i>
+                                </button>
+                                
+                                @if (isMapDropdownOpen)
+                                {
+                                    <div class="fixed inset-0 z-[1000] bg-transparent" @onclick="ToggleMapDropdown"></div>
+                                    <div class="absolute top-[34px] left-0 w-full bg-[#0f1117]/95 backdrop-blur-xl border border-[#30363d] rounded-[6px] shadow-[0_4px_20px_rgba(0,0,0,0.6)] z-[1001] max-h-[160px] overflow-y-auto p-1 flex flex-col gap-0.5 custom-scrollbar">
+                                        @if (savedRegions.Count == 0)
+                                        {
+                                            <div class="text-[#8b949e] text-[0.75rem] p-2 text-center">No saved regions</div>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var region in savedRegions)
+                                            {
+                                                var isSelected = region.Name == selectedOfflineMap;
+                                                <div class="flex items-center justify-between px-2.5 py-1.5 rounded-[4px] transition-all duration-150 @(isSelected ? "bg-[#2b58ff]/15 text-[#58a6ff]" : "hover:bg-[#1f242c] text-[#c9d1d9]")">
+                                                    <span class="text-[0.78rem] font-semibold cursor-pointer truncate flex-1 pr-2"
+                                                          @onclick="() => SelectRegion(region)">
+                                                        @region.Name
+                                                    </span>
+                                                    <div class="flex items-center gap-1.5 shrink-0 pointer-events-auto">
+                                                        <button class="text-[#8b949e] hover:text-white transition-colors cursor-pointer border-none bg-transparent p-0.5 flex items-center justify-center text-[0.85rem]"
+                                                                @onclick="() => RenameRegion(region)" title="Rename zone">
+                                                            <i class="bi bi-pencil text-[0.85rem]"></i>
+                                                        </button>
+                                                        <button class="text-[#ff4a4a] hover:text-[#ff6b6b] transition-colors cursor-pointer border-none bg-transparent p-0.5 flex items-center justify-center text-[0.85rem]"
+                                                                @onclick="() => DeleteRegion(region)" title="Delete zone">
+                                                            <i class="bi bi-trash text-[0.85rem]"></i>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            @if (!isDrawing)
+                            {
+                                <button class="w-full mt-1.5 py-1.5 bg-[rgba(58,134,255,0.15)] hover:bg-[rgba(58,134,255,0.25)] text-[#58a6ff] border border-[#3a86ff]/30 rounded-[6px] text-[0.8rem] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                                        @onclick="StartDrawingRegion" id="btn-draw-cache-zone">
+                                    <i class="bi bi-pencil-square"></i>
+                                    <span>DRAW CACHE ZONE</span>
+                                </button>
+                            }
+                            else
+                            {
+                                <div class="flex gap-1.5 mt-1.5">
+                                    <button class="flex-1 py-1.5 bg-[#3fb950]/20 hover:bg-[#3fb950]/30 text-[#3fb950] border border-[#3fb950]/30 rounded-[6px] text-[0.8rem] font-bold transition-all cursor-pointer flex items-center justify-center gap-1"
+                                            @onclick="SaveDrawnRegion" id="btn-save-zone">
+                                        <i class="bi bi-check-lg"></i>
+                                        <span>SAVE ZONE</span>
+                                    </button>
+                                    <button class="flex-1 py-1.5 bg-[#ff4a4a]/20 hover:bg-[#ff4a4a]/30 text-[#ff4a4a] border border-[#ff4a4a]/30 rounded-[6px] text-[0.8rem] font-bold transition-all cursor-pointer flex items-center justify-center gap-1"
+                                            @onclick="CancelDrawingRegion" id="btn-cancel-zone">
+                                        <i class="bi bi-x-lg"></i>
+                                        <span>CANCEL</span>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Menu Buttons -->
+                    <div class="border-t border-[#242731] pt-2.5 flex flex-col gap-0.5">
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#c9d1d9] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#1f242c]"
+                                @onclick='() => ClickMenuItem("Operator Profile & Settings")'>
+                            <i class="bi bi-sliders2 text-[#8b949e] text-[1rem] shrink-0"></i>
+                            <span>Operator Profile & Settings</span>
+                        </button>
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#c9d1d9] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#1f242c]"
+                                @onclick='() => ClickMenuItem("Global Settings")'>
+                            <i class="bi bi-gear text-[#8b949e] text-[1rem] shrink-0"></i>
+                            <span>Global Settings</span>
+                        </button>
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#c9d1d9] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#1f242c]"
+                                @onclick='() => ClickMenuItem("Manage License")'>
+                            <i class="bi bi-shield-lock text-[#8b949e] text-[1rem] shrink-0"></i>
+                            <span>Manage License</span>
+                        </button>
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#ff4a4a] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#3a0d0d]/30 hover:text-white"
+                                @onclick="PurgeOfflineStorage">
+                            <i class="bi bi-trash text-[#ff4a4a] text-[1rem] shrink-0"></i>
+                            <span>Purge All Offline Map Storage</span>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
     </div>
     </header>
 
@@ -171,27 +360,114 @@
             </CascadingValue>
 
             @* 3. THE FOOTER (Anchored strictly inside the shrinking map workspace) *@
-            <footer class="absolute bottom-0 left-0 w-full p-[15px_10px] flex justify-center z-[1000] transition-all duration-300 pointer-events-none">
-                <div class="flex gap-2 md:gap-[10px] w-full max-w-[750px] justify-center overflow-x-auto no-scrollbar pointer-events-auto px-2">
-                    @foreach (var tab in tabs)
-                    {
-                        var isActive = activeTab == tab;
-                        <button class="min-w-[70px] md:min-w-[95px] flex-1 rounded-[8px] text-white py-[4px] px-1 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 shadow-lg @(isActive ? "bg-gradient-to-br from-[#2b58ff] to-[#7e3ff2] border border-transparent shadow-[0_0_15px_rgba(126,63,242,0.4)]" : "bg-[rgba(10,11,14,0.85)] backdrop-blur-md border border-[#30363d] hover:bg-[#1a1f2e] hover:border-[#58a6ff]")"
-                                @onclick="() => HandleTabClick(tab)">
-                            <div class="h-[30px] flex items-center justify-center shrink-0">
-                                <i class="not-italic flex items-center justify-center @(isActive ? "text-white" : "text-[#00f2ff]") [&>svg]:w-[22px] [&>svg]:h-[22px]">
-                                    @((MarkupString)GetIcon(tab))
-                                </i>
-                            </div>
-                            <span class="text-[1.1rem] md:text-[1.1rem] font-semibold tracking-tighter leading-none whitespace-nowrap mt-[1px]">@tab</span>
-                        </button>
-                    }
-                </div>
-            </footer>
+            @if (IsOnDashboard)
+            {
+                <footer class="absolute bottom-0 left-0 w-full p-[15px_10px] flex justify-center z-[1000] transition-all duration-300 pointer-events-none">
+                    <div class="flex gap-2 md:gap-[10px] w-full max-w-[750px] justify-center overflow-x-auto no-scrollbar pointer-events-auto px-2">
+                        @foreach (var tab in tabs)
+                        {
+                            var isActive = activeTab == tab;
+                            <button class="min-w-[70px] md:min-w-[95px] flex-1 rounded-[8px] text-white py-[4px] px-1 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 shadow-lg @(isActive ? "bg-gradient-to-br from-[#2b58ff] to-[#7e3ff2] border border-transparent shadow-[0_0_15px_rgba(126,63,242,0.4)]" : "bg-[rgba(10,11,14,0.85)] backdrop-blur-md border border-[#30363d] hover:bg-[#1a1f2e] hover:border-[#58a6ff]")"
+                                    @onclick="() => HandleTabClick(tab)">
+                                <div class="h-[30px] flex items-center justify-center shrink-0">
+                                    <i class="not-italic flex items-center justify-center @(isActive ? "text-white" : "text-[#00f2ff]") [&>svg]:w-[22px] [&>svg]:h-[22px]">
+                                        @((MarkupString)GetIcon(tab))
+                                    </i>
+                                </div>
+                                <span class="text-[1.1rem] md:text-[1.1rem] font-semibold tracking-tighter leading-none whitespace-nowrap mt-[1px]">@tab</span>
+                            </button>
+                        }
+                    </div>
+                </footer>
+            }
             <MapOverlayHost />
         </main>
     </div>
-    
+
+    @if (isSettingsModalOpen)
+    {
+        <div class="fixed inset-0 z-[10000] bg-black/60 backdrop-blur-md flex items-center justify-center pointer-events-auto">
+            <div class="w-[450px] bg-[#0f1117] border border-[#30363d] rounded-[16px] p-6 shadow-[0_15px_50px_rgba(0,0,0,0.8)] text-white flex flex-col gap-4 relative">
+                <!-- Header -->
+                <div class="flex items-center justify-between border-b border-[#242731] pb-3">
+                    <h3 class="text-[1.1rem] font-black tracking-tight text-[#00f2ff] flex items-center gap-2 m-0">
+                        <i class="bi bi-gear-fill"></i> GLOBAL SYSTEM SETTINGS
+                    </h3>
+                    <button class="bg-transparent border-none text-[#8b949e] hover:text-white text-[1.4rem] cursor-pointer" @onclick="CloseSettingsModal">&times;</button>
+                </div>
+
+                <!-- Body -->
+                <div class="flex flex-col gap-4 py-2 overflow-y-auto max-h-[400px]">
+                    <!-- Unit System -->
+                    <div class="flex flex-col gap-1.5">
+                        <label class="text-[0.7rem] font-bold text-gray-400 uppercase tracking-[0.5px]">Unit System</label>
+                        <select class="w-full bg-[#08090b] border border-[#242731] text-white px-3 py-2 rounded-[6px] text-xs font-semibold outline-none focus:border-[#58a6ff] cursor-pointer"
+                                @bind="settingsUnitSystem">
+                            <option value="Metric">Metric (meters, m/s)</option>
+                            <option value="Imperial">Imperial (feet, mph)</option>
+                        </select>
+                    </div>
+
+                    <!-- Log Rate -->
+                    <div class="flex flex-col gap-1.5">
+                        <label class="text-[0.7rem] font-bold text-gray-400 uppercase tracking-[0.5px]">Telemetry Log Rate</label>
+                        <select class="w-full bg-[#08090b] border border-[#242731] text-white px-3 py-2 rounded-[6px] text-xs font-semibold outline-none focus:border-[#58a6ff] cursor-pointer"
+                                @bind="settingsLogRate">
+                            <option value="1">1 Hz (Low Overhead)</option>
+                            <option value="2">2 Hz (Standard)</option>
+                            <option value="5">5 Hz (Detailed)</option>
+                            <option value="10">10 Hz (Real-time)</option>
+                        </select>
+                    </div>
+
+                    <!-- Toggles -->
+                    <div class="flex flex-col gap-3 mt-2">
+                        <div class="flex items-center justify-between p-2.5 bg-[#08090b] border border-[#242731] rounded-[8px]">
+                            <div class="flex flex-col">
+                                <span class="text-xs font-bold text-gray-300">Voice Alerts</span>
+                                <span class="text-[0.6rem] text-gray-500">Read safety alarms aloud</span>
+                            </div>
+                            <label class="gcs-switch">
+                                <input type="checkbox" @bind="settingsVoiceAlerts" />
+                                <span class="gcs-switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="flex items-center justify-between p-2.5 bg-[#08090b] border border-[#242731] rounded-[8px]">
+                            <div class="flex flex-col">
+                                <span class="text-xs font-bold text-gray-300">Auto-Save Logs</span>
+                                <span class="text-[0.6rem] text-gray-500">Save flight logs on disarm</span>
+                            </div>
+                            <label class="gcs-switch">
+                                <input type="checkbox" @bind="settingsAutoSaveLogs" />
+                                <span class="gcs-switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="flex items-center justify-between p-2.5 bg-[#08090b] border border-[#242731] rounded-[8px]">
+                            <div class="flex flex-col">
+                                <span class="text-xs font-bold text-gray-300">Auto-Reconnect Link</span>
+                                <span class="text-[0.6rem] text-gray-500">Attempt MAVLink reconnect on loss</span>
+                            </div>
+                            <label class="gcs-switch">
+                                <input type="checkbox" @bind="settingsAutoReconnect" />
+                                <span class="gcs-switch-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <div class="flex justify-end gap-3 border-t border-[#242731] pt-3 mt-1">
+                    <button class="px-4 py-2 rounded-[6px] bg-[#1c1f26] border border-[#30363d] hover:border-[#8b949e] text-xs font-bold transition-all cursor-pointer text-white"
+                            @onclick="CloseSettingsModal">CANCEL</button>
+                    <button class="px-4 py-2 rounded-[6px] bg-[#2b58ff] hover:bg-blue-600 text-xs font-bold transition-all cursor-pointer text-white shadow-lg shadow-blue-500/10"
+                            @onclick="SaveGlobalSettings">SAVE CHANGES</button>
+                </div>
+            </div>
+        </div>
+    }
+
     <ConnectionDialog />
     <ToastContainer />
 
@@ -297,6 +573,61 @@
     .dgca-popup .leaflet-popup-tip-container {
         display: none !important;
     }
+
+    /* Beautiful Custom Toggle Switch */
+    .gcs-switch {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        cursor: pointer;
+        user-select: none;
+    }
+    .gcs-switch input {
+        display: none;
+    }
+    .gcs-switch-slider {
+        position: relative;
+        width: 32px;
+        height: 18px;
+        background-color: #242731;
+        border: 1px solid #30363d;
+        border-radius: 9px;
+        transition: all 0.2s ease-in-out;
+    }
+    .gcs-switch-slider::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background-color: #8b949e;
+        transition: all 0.2s ease-in-out;
+    }
+    .gcs-switch input:checked + .gcs-switch-slider {
+        background-color: #1a3860;
+        border-color: #58a6ff;
+    }
+    .gcs-switch input:checked + .gcs-switch-slider::after {
+        transform: translateX(14px);
+        background-color: #58a6ff;
+    }
+
+    /* Dropdown Animation */
+    @@keyframes dropdownFadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.98);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+    }
+    .profile-dropdown-animate {
+        animation: dropdownFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
 </style>
 
 @code {
@@ -351,6 +682,7 @@
             selectedPort = string.IsNullOrEmpty(port) ? host : $"{host}:{port}";
         }
         Vehicle.OnAutoSnap += HandleVehicleAutoSnap;
+        Navigation.LocationChanged += OnLocationChanged;
     }
 
     private void HandleVehicleAutoSnap(AutoSnapEventArgs args)
@@ -380,6 +712,75 @@
         {
             Console.WriteLine($"[Airspace] JS not ready: {ex.Message}");
             // Non-fatal — proximity warnings won't fire but map still works
+        }
+
+        try
+        {
+            var savedName = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_operator_name");
+            if (!string.IsNullOrWhiteSpace(savedName))
+            {
+                operatorName = savedName;
+                tempOperatorName = savedName;
+            }
+
+            var savedOutdoor = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_outdoor_mode");
+            if (bool.TryParse(savedOutdoor, out bool outdoor))
+            {
+                _isOutdoorMode = outdoor;
+            }
+
+            var savedCache = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_live_map_cache");
+            if (bool.TryParse(savedCache, out bool cache))
+            {
+                _isLiveMapCache = cache;
+            }
+
+            // Load saved regions
+            try
+            {
+                var savedRegionsJson = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_saved_regions");
+                if (!string.IsNullOrEmpty(savedRegionsJson))
+                {
+                    var loaded = System.Text.Json.JsonSerializer.Deserialize<List<SavedRegion>>(savedRegionsJson);
+                    if (loaded != null)
+                    {
+                        savedRegions = loaded;
+                        offlineMaps = savedRegions.Select(r => r.Name).ToList();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Regions] Failed to load saved regions: {ex.Message}");
+            }
+
+            var savedMap = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_offline_map");
+            if (!string.IsNullOrWhiteSpace(savedMap) && offlineMaps.Contains(savedMap))
+            {
+                _selectedOfflineMap = savedMap;
+            }
+
+            // Global Settings
+            var savedUnit = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_units");
+            if (!string.IsNullOrWhiteSpace(savedUnit)) settingsUnitSystem = savedUnit;
+
+            var savedLogRate = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_log_rate");
+            if (!string.IsNullOrWhiteSpace(savedLogRate)) settingsLogRate = savedLogRate;
+
+            var savedVoice = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_voice_alerts");
+            if (bool.TryParse(savedVoice, out bool voice)) settingsVoiceAlerts = voice;
+
+            var savedAutoSave = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_auto_save_logs");
+            if (bool.TryParse(savedAutoSave, out bool autoSave)) settingsAutoSaveLogs = autoSave;
+
+            var savedReconnect = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_auto_reconnect");
+            if (bool.TryParse(savedReconnect, out bool reconnect)) settingsAutoReconnect = reconnect;
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Settings] Failed to load from localStorage: {ex.Message}");
         }
     }
 
@@ -558,6 +959,397 @@
         InvokeAsync(StateHasChanged);
     }
 
+    // Profile Dropdown State
+    private bool isProfileMenuOpen = false;
+    private bool isEditingName = false;
+    private string operatorName = "Faheem";
+    private string tempOperatorName = "Faheem";
+    private string operatorRole = "Admin Operator";
+    private string licenseTier => License.LicenseTier;
+    private string licenseValidity => License.RemainingDaysText;
+
+    // Global Settings Modal State
+    private bool isSettingsModalOpen = false;
+    private string settingsUnitSystem = "Metric";
+    private string settingsLogRate = "2";
+    private bool settingsVoiceAlerts = true;
+    private bool settingsAutoSaveLogs = true;
+    private bool settingsAutoReconnect = true;
+
+    private bool _isOutdoorMode = false;
+    private bool isOutdoorMode
+    {
+        get => _isOutdoorMode;
+        set
+        {
+            if (_isOutdoorMode != value)
+            {
+                _isOutdoorMode = value;
+                _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_outdoor_mode", value.ToString());
+                Drone.Toast($"Outdoor mode {(value ? "enabled" : "disabled")}", MavlinkService.ToastLevel.Info, "☀️");
+            }
+        }
+    }
+
+    private bool _isLiveMapCache = false;
+    private bool isLiveMapCache
+    {
+        get => _isLiveMapCache;
+        set
+        {
+            if (_isLiveMapCache != value)
+            {
+                _isLiveMapCache = value;
+                _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_live_map_cache", value.ToString());
+                Drone.Toast($"Live map auto-cache {(value ? "enabled" : "disabled")}", MavlinkService.ToastLevel.Info, "🗺️");
+            }
+        }
+    }
+
+    private bool isDrawing = false;
+    private bool isMapDropdownOpen = false;
+    private string _selectedOfflineMap = "";
+    private string selectedOfflineMap
+    {
+        get => _selectedOfflineMap;
+        set
+        {
+            if (_selectedOfflineMap != value)
+            {
+                _selectedOfflineMap = value;
+                _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", value);
+                Drone.Toast($"Switched base map to: {value}", MavlinkService.ToastLevel.Info, "📍");
+
+                var region = savedRegions.FirstOrDefault(r => r.Name == value);
+                if (region != null)
+                {
+                    _ = JS.InvokeVoidAsync("showSavedPolygon", region.CoordsJson);
+                }
+                else
+                {
+                    _ = JS.InvokeVoidAsync("clearSavedPolygon");
+                }
+            }
+        }
+    }
+
+    private List<SavedRegion> savedRegions = new();
+    private List<string> offlineMaps = new();
+
+    private async Task StartDrawingRegion()
+    {
+        isDrawing = true;
+        isProfileMenuOpen = false;
+        await JS.InvokeVoidAsync("startDrawingPolygon");
+        Drone.Toast("Drawing mode: Click map to place points", MavlinkService.ToastLevel.Info, "✏️");
+    }
+
+    private async Task CancelDrawingRegion()
+    {
+        isDrawing = false;
+        await JS.InvokeVoidAsync("stopDrawingPolygon", false);
+        Drone.Toast("Drawing cancelled", MavlinkService.ToastLevel.Info, "❌");
+    }
+
+    private async Task SaveDrawnRegion()
+    {
+        try
+        {
+            var coordsJson = await JS.InvokeAsync<string>("stopDrawingPolygon", true);
+            isDrawing = false;
+
+            var points = System.Text.Json.JsonSerializer.Deserialize<List<double[]>>(coordsJson);
+            if (points == null || points.Count < 3)
+            {
+                Drone.Toast("Save failed: Define at least 3 points for a zone.", MavlinkService.ToastLevel.Error, "❌");
+                return;
+            }
+
+            var name = await JS.InvokeAsync<string>("prompt", "Enter a name for the new offline cache zone:", "");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                Drone.Toast("Save cancelled or name cannot be empty.", MavlinkService.ToastLevel.Warning, "⚠️");
+                return;
+            }
+
+            if (savedRegions.Any(r => r.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            {
+                Drone.Toast($"A region named '{name}' already exists.", MavlinkService.ToastLevel.Error, "❌");
+                return;
+            }
+
+            var newRegion = new SavedRegion { Name = name, CoordsJson = coordsJson };
+            savedRegions.Add(newRegion);
+            offlineMaps = savedRegions.Select(r => r.Name).ToList();
+
+            var json = System.Text.Json.JsonSerializer.Serialize(savedRegions);
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_saved_regions", json);
+
+            _selectedOfflineMap = name;
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", name);
+            await JS.InvokeVoidAsync("showSavedPolygon", coordsJson);
+
+            Drone.Toast($"Zone '{name}' saved successfully!", MavlinkService.ToastLevel.Success, "💾");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Draw] Save error: {ex.Message}");
+            Drone.Toast("Error saving drawing zone.", MavlinkService.ToastLevel.Error, "❌");
+        }
+    }
+
+    private void ToggleMapDropdown()
+    {
+        isMapDropdownOpen = !isMapDropdownOpen;
+    }
+
+    private void SelectRegion(SavedRegion region)
+    {
+        selectedOfflineMap = region.Name;
+        isMapDropdownOpen = false;
+    }
+
+    private async Task RenameRegion(SavedRegion region)
+    {
+        var newName = await JS.InvokeAsync<string>("prompt", $"Rename offline cache zone '{region.Name}' to:", region.Name);
+        if (!string.IsNullOrWhiteSpace(newName) && newName != region.Name)
+        {
+            if (savedRegions.Any(r => r.Name.Equals(newName, StringComparison.OrdinalIgnoreCase)))
+            {
+                Drone.Toast($"A region named '{newName}' already exists.", MavlinkService.ToastLevel.Error, "❌");
+                return;
+            }
+            
+            var oldName = region.Name;
+            region.Name = newName;
+            offlineMaps = savedRegions.Select(r => r.Name).ToList();
+            
+            if (_selectedOfflineMap == oldName)
+            {
+                _selectedOfflineMap = newName;
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", newName);
+            }
+            
+            var json = System.Text.Json.JsonSerializer.Serialize(savedRegions);
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_saved_regions", json);
+            
+            Drone.Toast($"Zone renamed to '{newName}'", MavlinkService.ToastLevel.Success, "✏️");
+            StateHasChanged();
+        }
+    }
+
+    private async Task DeleteRegion(SavedRegion region)
+    {
+        savedRegions.Remove(region);
+        offlineMaps = savedRegions.Select(r => r.Name).ToList();
+        
+        var json = System.Text.Json.JsonSerializer.Serialize(savedRegions);
+        await JS.InvokeVoidAsync("localStorage.setItem", "gcs_saved_regions", json);
+        
+        if (_selectedOfflineMap == region.Name)
+        {
+            _selectedOfflineMap = offlineMaps.FirstOrDefault() ?? "";
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", _selectedOfflineMap);
+            await JS.InvokeVoidAsync("clearSavedPolygon");
+        }
+        
+        Drone.Toast($"Zone '{region.Name}' deleted.", MavlinkService.ToastLevel.Success, "🗑️");
+        StateHasChanged();
+    }
+
+    public class SavedRegion
+    {
+        public string Name { get; set; } = "";
+        public string CoordsJson { get; set; } = "";
+    }
+
+    private string AvatarInitials
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(operatorName)) return "OP";
+            var parts = operatorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2)
+            {
+                return $"{parts[0][0]}{parts[1][0]}".ToUpper();
+            }
+            if (parts.Length == 1 && parts[0].Length >= 2)
+            {
+                return parts[0].Substring(0, 2).ToUpper();
+            }
+            return parts[0].Substring(0, 1).ToUpper();
+        }
+    }
+
+    private void ToggleProfileMenu()
+    {
+        isProfileMenuOpen = !isProfileMenuOpen;
+    }
+
+    private void ToggleEditName()
+    {
+        if (isEditingName)
+        {
+            SaveOperatorName();
+        }
+        else
+        {
+            tempOperatorName = operatorName;
+            isEditingName = true;
+        }
+    }
+
+    private void SaveOperatorName()
+    {
+        if (!string.IsNullOrWhiteSpace(tempOperatorName))
+        {
+            operatorName = tempOperatorName;
+            _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_operator_name", operatorName);
+        }
+        isEditingName = false;
+        Drone.Toast($"Operator profile updated: {operatorName}", MavlinkService.ToastLevel.Success, "👤");
+    }
+
+    private void HandleNameKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            SaveOperatorName();
+        }
+        else if (e.Key == "Escape")
+        {
+            isEditingName = false;
+        }
+    }
+
+    private void ClickMenuItem(string item)
+    {
+        if (item == "Operator Profile & Settings")
+        {
+            Navigation.NavigateTo("/operator-profile");
+        }
+        else if (item == "Manage License")
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        var key = await JS.InvokeAsync<string>("prompt", $"Your GCS Hardware ID:\n{License.HardwareId}\n\nEnter License Key:", "");
+                        if (key != null)
+                        {
+                            if (string.IsNullOrWhiteSpace(key))
+                            {
+                                Drone.Toast("License key cannot be empty", MavlinkService.ToastLevel.Warning, "⚠️");
+                            }
+                            else
+                            {
+                                License.SaveLicenseKey(key);
+                                if (License.IsActive)
+                                {
+                                    Drone.Toast($"Activated: {License.LicenseTier} ({License.RemainingDaysText})", MavlinkService.ToastLevel.Success, "🔑");
+                                }
+                                else
+                                {
+                                    Drone.Toast("Invalid or expired license key.", MavlinkService.ToastLevel.Error, "❌");
+                                }
+                                StateHasChanged();
+                            }
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[License] Prompt error: {ex.Message}");
+                }
+            });
+        }
+        else if (item == "Global Settings")
+        {
+            isSettingsModalOpen = true;
+        }
+        else
+        {
+            Drone.Toast($"{item} opened", MavlinkService.ToastLevel.Info, "⚙️");
+        }
+        isProfileMenuOpen = false;
+    }
+
+    private void CloseSettingsModal()
+    {
+        isSettingsModalOpen = false;
+    }
+
+    private void SaveGlobalSettings()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_units", settingsUnitSystem);
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_log_rate", settingsLogRate);
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_voice_alerts", settingsVoiceAlerts.ToString());
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_auto_save_logs", settingsAutoSaveLogs.ToString());
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_auto_reconnect", settingsAutoReconnect.ToString());
+
+                await InvokeAsync(() =>
+                {
+                    isSettingsModalOpen = false;
+                    Drone.Toast("Global Settings saved successfully!", MavlinkService.ToastLevel.Success, "⚙️");
+                    StateHasChanged();
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Settings] Save error: {ex.Message}");
+            }
+        });
+    }
+
+    private void PurgeOfflineStorage()
+    {
+        try
+        {
+            AirspaceSvc.InvalidateCache();
+            MetadataSvc.PurgeCache();
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await JS.InvokeVoidAsync("localStorage.removeItem", "gcs_offline_map");
+                    await JS.InvokeVoidAsync("localStorage.removeItem", "gcs_live_map_cache");
+                    await JS.InvokeVoidAsync("localStorage.removeItem", "gcs_saved_regions");
+                    await JS.InvokeVoidAsync("clearSavedPolygon");
+                    await InvokeAsync(() =>
+                    {
+                        _selectedOfflineMap = "";
+                        _isLiveMapCache = false;
+                        savedRegions.Clear();
+                        offlineMaps.Clear();
+                        Drone.Toast("Map cache, parameter dictionary, and saved regions purged!", MavlinkService.ToastLevel.Success, "🗑️");
+                        StateHasChanged();
+                    });
+                }
+                catch { }
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Purge] Error: {ex.Message}");
+            Drone.Toast("Error purging cache.", MavlinkService.ToastLevel.Error, "❌");
+        }
+        isProfileMenuOpen = false;
+    }
+
+    private bool IsOnDashboard => string.IsNullOrEmpty(Navigation.ToBaseRelativePath(Navigation.Uri));
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
     public void Dispose()
     {
         _autoDetectTimer?.Dispose();
@@ -565,5 +1357,6 @@
         Drone.OnRcChannelsUpdated -= OnRcUpdated;
         _dotnetRef?.Dispose();
         Vehicle.OnAutoSnap -= HandleVehicleAutoSnap;
+        Navigation.LocationChanged -= OnLocationChanged;
     }
 }
