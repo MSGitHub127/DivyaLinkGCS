@@ -350,4 +350,34 @@ public sealed class ParameterMetadataService
 
     private string CachePath(ArduPilotVehicleType v) =>
         Path.Combine(_cacheDir, $"apm.pdef.{v}.xml");
+
+    public void PurgeCache()
+    {
+        try
+        {
+            if (Directory.Exists(_cacheDir))
+            {
+                foreach (var file in Directory.GetFiles(_cacheDir))
+                {
+                    try { File.Delete(file); } catch { }
+                }
+                _log.LogInformation("[Metadata] Parameter metadata cache directory purged.");
+            }
+            _loadLock.Wait();
+            try
+            {
+                _cache.Clear();
+                MetadataLoaded = false;
+                MetadataStatus = "Not loaded (purged)";
+            }
+            finally
+            {
+                _loadLock.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[Metadata] Failed to purge parameter metadata cache.");
+        }
+    }
 }

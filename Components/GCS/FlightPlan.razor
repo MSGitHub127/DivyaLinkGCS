@@ -1,0 +1,648 @@
+@page "/flightplan"
+@using BlazorApp3
+@using System.Text.Json
+@inject MavlinkService Drone
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<InputFile id="importFile" OnChange="HandleImport" style="display:none" accept=".json" />
+
+@* ─────────────────────────────────────────────────────────────────────────────
+   OUTER SHELL — unchanged from original so HUD + positioning are unaffected
+   ───────────────────────────────────────────────────────────────────────────── *@
+<div class="flex flex-col h-full gap-4 pt-5 px-5 pb-[10px] bg-transparent w-full max-w-[500px] mx-auto overflow-hidden">
+
+    @* ── HUD (240px) — DO NOT TOUCH ─────────────────────────────────────────── *@
+    <div class="h-[240px] w-full rounded-lg overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-[#333] shrink-0 bg-black">
+        <Hud />
+    </div>
+
+    @* ── FLIGHT PLAN EDITOR PANEL ────────────────────────────────────────────── *@
+    <div class="flex-1 flex flex-col min-h-0 bg-[#0d1117] border border-[#30363d] rounded-[10px] overflow-hidden shadow-[0_8px_40px_rgba(0,0,0,0.6)]"
+         style="font-family:'JetBrains Mono','Courier New',monospace;">
+
+        @* ── PANEL HEADER ─────────────────────────────────────────────────────── *@
+        <div class="flex items-center gap-[6px] px-[10px] py-[6px] bg-[#161b22] border-b border-[#21262d] shrink-0">
+            <span class="text-[0.9rem] font-bold text-[#c9d1d9] tracking-[0.07em] flex-1 uppercase">
+                ≋ FLIGHT PLAN EDITOR
+            </span>
+            <button class="bg-transparent border border-[#21262d] rounded-[4px] px-[7px] py-[3px] text-[0.8rem] font-bold uppercase tracking-[0.2em] text-[#8b949e] cursor-pointer transition-all hover:border-[#58a6ff] hover:text-[#58a6ff]"
+                    @onclick="SetHomeToDrone">
+                SYNC HOME
+            </button>
+            <button class="bg-transparent border border-[#21262d] rounded-[4px] px-[7px] py-[3px] text-[0.8rem] font-bold uppercase tracking-[0.2em] text-[#8b949e] cursor-pointer transition-all hover:border-[#58a6ff] hover:text-[#58a6ff]"
+                    @onclick="CenterMapOnDrone">
+                CENTER
+            </button>
+        </div>
+
+        @* ── MISSION METRICS TICKER — flat single row, no card padding waste ──── *@
+        <div class="grid grid-cols-4 border-b border-[#21262d] shrink-0">
+            @* Speed *@
+            <div class="py-[5px] text-center border-r border-[#21262d] bg-[#0d1117]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">SPEED</div>
+                <div class="text-[0.80rem] font-bold text-[#00f2ff]">
+                    @Drone.State.GroundSpeed.ToString("0.0")<span class="text-[0.7rem] text-[#484f58] ml-[2px]">m/s</span>
+                </div>
+            </div>
+            @* Distance *@
+            <div class="py-[5px] text-center border-r border-[#21262d] bg-[#161b22]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">DISTANCE</div>
+                <div class="text-[0.80rem] font-bold text-[#c9d1d9]">
+                    @CalculateTotalDistance().ToString("0")<span class="text-[0.7rem] text-[#484f58] ml-[2px]">m</span>
+                </div>
+            </div>
+            @* Est. Time *@
+            <div class="py-[5px] text-center border-r border-[#21262d] bg-[#0d1117]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">EST.TIME</div>
+                <div class="text-[0.80rem] font-bold text-[#f0b429]">
+                    ~@((CalculateTotalDistance() / 5 / 60).ToString("0"))<span class="text-[0.7rem] text-[#484f58] ml-[2px]">min</span>
+                </div>
+            </div>
+            @* Default Alt (editable) *@
+            <div class="py-[5px] text-center bg-[#161b22]">
+                <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58] mb-[2px]">DEF.ALT</div>
+                <div class="flex items-center justify-center gap-[2px]">
+                    <input type="number"
+                           @bind="globalAlt"
+                           @bind:after="ApplyGlobalAlt"
+                           class="bg-transparent border-none outline-none w-[44px] text-center font-bold text-[0.80rem] text-[#f0b429] p-0"
+                           style="font-family:inherit;" />
+                    <span class="text-[0.7rem] text-[#484f58]">m</span>
+                </div>
+            </div>
+        </div>
+
+        @* ── WAYPOINTS SECTION — flex-1 so it fills space above footer ────────── *@
+        <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
+
+            @* Waypoint sub-header *@
+            <div class="flex items-center px-[10px] py-[5px] bg-[#161b22] border-b border-[#21262d] shrink-0">
+                <span class="text-[0.8rem] font-bold uppercase tracking-[0.2em] text-[#8b949e]">WAYPOINTS</span>
+                <span class="text-[0.8rem] font-bold text-[#58a6ff] bg-[rgba(88,166,255,0.10)] border border-[rgba(88,166,255,0.27)] rounded-[3px] px-[5px] py-0 ml-[5px]">
+                    @(MissionItems.Count > 0 ? MissionItems.Count - 1 : 0)
+                </span>
+                <div class="flex-1"></div>
+                @* Import *@
+                <button class="bg-transparent border border-[#21262d] rounded-[3px] w-[22px] h-[22px] flex items-center justify-center text-[#8b949e] text-[0.8rem] cursor-pointer transition-all hover:text-[#3fb950] hover:border-[#3fb950] ml-[4px]"
+                        @onclick='() => JS.InvokeVoidAsync("triggerFilePicker", "importFile")'
+                        title="Import Mission">
+                    <i class="bi bi-folder2-open"></i>
+                </button>
+                @* Export *@
+                <button class="bg-transparent border border-[#21262d] rounded-[3px] w-[22px] h-[22px] flex items-center justify-center text-[#8b949e] text-[0.8rem] cursor-pointer transition-all hover:text-[#58a6ff] hover:border-[#58a6ff] ml-[4px]"
+                        @onclick="ExportWaypoints"
+                        title="Export Mission">
+                    <i class="bi bi-download"></i>
+                </button>
+                @* Clear all — only shown when waypoints exist *@
+                @if (MissionItems.Count > 1)
+                {
+                    <button class="bg-transparent border border-[#21262d] rounded-[3px] w-[22px] h-[22px] flex items-center justify-center text-[#8b949e] text-[0.8rem] cursor-pointer transition-all hover:text-[#ff7b72] hover:border-[#ff7b72] ml-[4px]"
+                            @onclick="ClearAllWaypoints"
+                            title="Clear All">
+                        <i class="bi bi-trash3"></i>
+                    </button>
+                }
+            </div>
+
+            @* ── WAYPOINT ROWS — fixed-height 304px viewport (8 × 38px) ────────── *@
+            <div id="waypoint-list-container" class="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-[4px] [&::-webkit-scrollbar-thumb]:bg-[#30363d] [&::-webkit-scrollbar-thumb]:rounded-[3px]">
+
+                @if (MissionItems.Count <= 1)
+                {
+                    @* Empty state centred in the 304px zone *@
+                    <div class="h-full flex flex-col items-center justify-center gap-[6px]">
+                        <div class="text-[1.4rem] opacity-[0.2] text-[#c9d1d9]">◌</div>
+                        <div class="text-[0.7rem] font-bold uppercase tracking-[0.2em] text-[#484f58]">
+                            Tap the map to add waypoints
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    @foreach (var mi in MissionItems.Where(x => !x.IsHome))
+{
+    @* Determine command badge colour inline *@
+    var cmdColor = mi.Command switch {
+        "TAKEOFF" => "#3fb950",
+        "LOITER"  => "#f0b429",
+        "RTL"     => "#ff7b72",
+        "LAND"    => "#a78bfa",
+        _         => "#58a6ff"   // WAYPOINT
+    };
+    var isActive = activeWpIndex == mi.Index;
+    var rowBg    = isActive
+        ? "rgba(88,166,255,0.05)"
+        : mi.Index % 2 == 0 ? "#0d1117" : "#161b22";
+
+    @* ── SINGLE-ROW HIGH-DENSITY WAYPOINT ENTRY (38px) ─────── *@
+    <div class="border-b border-[#21262d] cursor-default transition-colors"
+                             style="display:grid; grid-template-columns:26px 68px 1fr 52px 22px;
+                                    align-items:center; gap:4px;
+                                    padding:0 8px; height:38px;
+                                    background:@rowBg;"
+                             @onclick="() => activeWpIndex = mi.Index">
+
+                            @* Col 1: Index *@
+                            <span class="text-[0.9rem] font-bold text-[#484f58] text-right"
+                                  style="font-family:inherit;">
+                                @mi.Index.ToString("D2")
+                            </span>
+
+                           @* Col 2: Command badge — styled select so operator can change it *@
+                           <select class="w-full h-[22px] rounded-[3px] border text-[0.65rem] font-bold uppercase tracking-[0.06em] text-center cursor-pointer outline-none focus:outline-none appearance-none"
+                                style="background:@(cmdColor + "18"); border-color:@(cmdColor + "40"); color:@cmdColor; font-family:inherit; padding:0 2px;"
+                                value="@mi.Command"
+                                @onchange="@(e => { 
+                                mi.Command = e.Value?.ToString() ?? "WAYPOINT"; 
+                                if (mi.Command == "LAND") { mi.Alt = 0; } 
+                                TriggerMapRedraw(); 
+                                })"
+                                @onclick:stopPropagation="true">
+                                <option value="WAYPOINT">WAYPOINT</option>
+                                <option value="TAKEOFF">TAKEOFF</option>
+                                <option value="LOITER">LOITER</option>
+                                <option value="LAND">LAND</option>
+                                <option value="RTL">RTL</option>
+                            </select>
+
+                            @* Col 3: Lat / Lng coordinates *@
+                            <div class="overflow-hidden">
+                                <div class="text-[0.9rem] text-[#8b949e] font-mono whitespace-nowrap overflow-hidden text-ellipsis">
+                                    @mi.Lat.ToString("F5")° @mi.Lng.ToString("F5")°
+                                </div>
+                            </div>
+
+                            @* Col 4: Altitude *@
+                            <div class="flex items-center justify-end gap-[2px] pr-[2px]">
+                                <input type="number"
+                                       class="bg-transparent border-none outline-none text-right text-[0.78rem] font-bold text-[#c9d1d9] p-0 w-[36px]"
+                                       style="font-family:inherit;"
+                                       @bind="mi.Alt"
+                                       @bind:after="() => globalAlt = (int)mi.Alt"
+                                       @onclick:stopPropagation="true" />
+                                <span class="text-[0.58rem] text-[#484f58]">m</span>
+                            </div>
+
+                            @* Col 5: Delete button — visible on row active/hover via CSS *@
+                            <button class="bg-transparent border-none rounded-[3px] w-[18px] h-[18px] flex items-center justify-center text-[0.65rem] cursor-pointer transition-all text-[#484f58] hover:text-[#ff7b72]"
+                                    @onclick:stopPropagation="true"
+                                    @onclick="() => RemoveItem(mi)">
+                                ✕
+                            </button>
+
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+
+        @* ── PINNED FOOTER — UPLOAD + START ──────────────────────────────────── *@
+        <div class="grid grid-cols-2 border-t border-[#30363d] shrink-0">
+
+            @* UPLOAD *@
+            <button class="flex items-center justify-center gap-[6px] py-[11px] border-r border-[#30363d] text-[0.7rem] font-bold uppercase tracking-[0.2em] cursor-pointer transition-all
+                           @(isUploading ? "bg-[#161b22] text-[#484f58] cursor-wait" : "bg-[#161b22] text-[#8b949e] hover:bg-[#1e2430] hover:text-[#c9d1d9]")"
+                    style="font-family:inherit;"
+                    @onclick="UploadMission"
+                    disabled="@isUploading">
+                @if (isUploading)
+                {
+                    <i class="bi bi-arrow-repeat animate-spin text-[0.9rem]"></i>
+                    <span>UPLOADING…</span>
+                }
+                else
+                {
+                    <span class="text-[0.9rem]">⬆</span>
+                    <span>UPLOAD</span>
+                }
+            </button>
+
+            @* START — locked until uploaded *@
+            <button class="flex items-center justify-center gap-[6px] py-[11px] text-[0.7rem] font-bold uppercase tracking-[0.2em] transition-all
+                           @(isUploaded ? "bg-[rgba(63,185,80,0.13)] text-[#3fb950] cursor-pointer hover:brightness-110" : "bg-[#0d1117] text-[#484f58] cursor-not-allowed")"
+                    style="font-family:inherit;"
+                    @onclick="StartMission"
+                    disabled="@(!isUploaded)">
+                <span class="text-[0.9rem]">@(isUploaded ? "▶" : "▶")</span>
+                <span>START</span>
+            </button>
+
+        </div>
+
+    </div>
+</div>
+
+@code {
+    // Note: Kept static so JSInterop AddWaypointFromMap continues to function globally. 
+    // For multi-user deployment, migrate this to a scoped StateService.
+    private static List<MissionItem> MissionItems = new();
+    private static event Action? OnMissionChanged;
+    
+    private bool isUploaded = false;
+    private bool isUploading = false;
+    private static int globalAlt = 50;
+    private static int activeWpIndex = -1;
+
+    public class MissionItem
+    {
+        public int Index { get; set; }
+        public string Command { get; set; } = "WAYPOINT";
+        public double Lat { get; set; }
+        public double Lng { get; set; }
+        public double Alt { get; set; } = 50;
+        public bool IsHome { get; set; } = false;
+    }
+
+    private bool _lastLinkHealthy = false;
+    private DateTime _lastJsUpdateUtc = DateTime.MinValue;
+    private readonly TimeSpan _jsMinPeriod = TimeSpan.FromMilliseconds(200);
+    private DateTime _lastFlightPlanRender = DateTime.MinValue;
+    private bool _jumpedToDrone = false;
+
+    private static bool HasValidGps(double lat, double lon)
+    {
+        if (double.IsNaN(lat) || double.IsNaN(lon)) return false;
+        if (Math.Abs(lat) < 0.000001 && Math.Abs(lon) < 0.000001) return false;
+        if (lat < -90 || lat > 90) return false;
+        if (lon < -180 || lon > 180) return false;
+        return true;
+    }
+
+    private void HandleTelemetryUpdated()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            // 1. Update drone marker on the map
+            await TryUpdateDroneMarkerAsync();
+
+            // 2. Auto-initialize home waypoint if it is at (0,0) and we get a valid GPS lock
+            var home = MissionItems.FirstOrDefault(x => x.IsHome);
+            if (home != null && home.Lat == 0 && home.Lng == 0)
+            {
+                var lat = Drone.State.Latitude;
+                var lon = Drone.State.Longitude;
+                if (HasValidGps(lat, lon))
+                {
+                    home.Lat = lat;
+                    home.Lng = lon;
+                    TriggerMapRedraw();
+                }
+            }
+
+            // 3. Check for link health changes
+            bool healthy = Drone.IsLinkHealthy;
+            bool healthChanged = (healthy != _lastLinkHealthy);
+            if (healthChanged)
+            {
+                _lastLinkHealthy = healthy;
+            }
+
+            // 4. Rate-limit Blazor UI re-render for telemetry grid
+            var now = DateTime.UtcNow;
+            if (!healthChanged && (now - _lastFlightPlanRender).TotalMilliseconds < 250) return;
+            _lastFlightPlanRender = now;
+            StateHasChanged();
+        });
+    }
+
+    private async Task TryUpdateDroneMarkerAsync()
+    {
+        var lat = Drone.State.Latitude;
+        var lon = Drone.State.Longitude;
+        var heading = Drone.State.Yaw;
+        if (!HasValidGps(lat, lon)) return;
+
+        var now = DateTime.UtcNow;
+        if (now - _lastJsUpdateUtc < _jsMinPeriod) return;
+        _lastJsUpdateUtc = now;
+
+        var extra = new
+        {
+            alt = (double)Drone.State.Altitude,
+            spd = (double)Drone.State.GroundSpeed,
+            bat = (int)Drone.State.BatteryPercent,
+            hdop = Drone.State.SatCount > 0
+                ? Math.Max(0.5, 5.0 - Drone.State.SatCount * 0.3)
+                : 5.0
+        };
+
+        try
+        {
+            if (!_jumpedToDrone)
+            {
+                await JS.InvokeVoidAsync("jumpToDrone", lat, lon, heading, extra);
+                _jumpedToDrone = true;
+                return;
+            }
+            await JS.InvokeVoidAsync("updateMapPos", lat, lon, heading, extra);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Map telemetry update error: {ex.Message}");
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        OnMissionChanged += TriggerMapRedraw;
+        Drone.OnTelemetryUpdated += HandleTelemetryUpdated;
+
+        double initLat = 0;
+        double initLng = 0;
+        if (HasValidGps(Drone.State.Latitude, Drone.State.Longitude))
+        {
+            initLat = Drone.State.Latitude;
+            initLng = Drone.State.Longitude;
+        }
+
+        if (!MissionItems.Any())
+        {
+            MissionItems.Add(new MissionItem { IsHome = true, Index = 0, Command = "WAYPOINT", Lat = initLat, Lng = initLng, Alt = 0 });
+        }
+        else
+        {
+            var home = MissionItems.FirstOrDefault(x => x.IsHome);
+            if (home != null && home.Lat == 0 && home.Lng == 0 && initLat != 0)
+            {
+                home.Lat = initLat;
+                home.Lng = initLng;
+            }
+        }
+        TriggerMapRedraw();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("initMap", Drone.State.Latitude, Drone.State.Longitude);
+
+                // Registers a global browser event interceptor for Ctrl + Z
+                await JS.InvokeVoidAsync("eval", @"
+                    window._flightPlanUndoHandler = function(e) {
+                        if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+                            e.preventDefault();
+                            DotNet.invokeMethodAsync('BlazorApp3', 'TriggerUndoFromJS');
+                        }
+                    };
+                    window.addEventListener('keydown', window._flightPlanUndoHandler);
+                ");
+            }
+            catch { }
+        }
+    }
+
+    [JSInvokable]
+    public static void AddWaypointFromMap(double lat, double lng)
+    {
+        if (MissionItems.Count == 0)
+        {
+            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = 0, IsHome = true });
+        }
+        else if (MissionItems.Count == 1 && MissionItems[0].Lat == 0 && MissionItems[0].Lng == 0)
+        {
+            MissionItems[0].Lat = lat;
+            MissionItems[0].Lng = lng;
+        }
+        else
+        {
+            // Dynamically uses the current globalAlt value instead of a hardcoded 50
+            MissionItems.Add(new MissionItem { Lat = lat, Lng = lng, Alt = globalAlt, IsHome = false });
+        }
+        Resequence();
+    }
+
+    [JSInvokable]
+    public static void TriggerUndoFromJS()
+    {
+        // Scenario A: If a specific waypoint row is currently selected, remove it
+        if (activeWpIndex > 0)
+        {
+            var selectedItem = MissionItems.FirstOrDefault(x => x.Index == activeWpIndex);
+            if (selectedItem != null && !selectedItem.IsHome)
+            {
+                MissionItems.Remove(selectedItem);
+                activeWpIndex = MissionItems.LastOrDefault(x => !x.IsHome)?.Index ?? -1;
+                Resequence();
+                return;
+            }
+        }
+
+        // Scenario B (Fallback): If no row is selected, delete the absolute last added waypoint
+        var lastItem = MissionItems.LastOrDefault(x => !x.IsHome);
+        if (lastItem != null)
+        {
+            MissionItems.Remove(lastItem);
+            activeWpIndex = MissionItems.LastOrDefault(x => !x.IsHome)?.Index ?? -1;
+            Resequence();
+        }
+    }
+
+    private static void Resequence()
+    {
+        for (int i = 0; i < MissionItems.Count; i++)
+        {
+            MissionItems[i].Index = i;
+            MissionItems[i].IsHome = (i == 0);
+        }
+        OnMissionChanged?.Invoke();
+    }
+
+    [JSInvokable]
+    public static void UpdateWaypointPosition(int listIndex, double newLat, double newLng)
+    {
+        if (listIndex >= 0 && listIndex < MissionItems.Count)
+        {
+            MissionItems[listIndex].Lat = newLat;
+            MissionItems[listIndex].Lng = newLng;
+            OnMissionChanged?.Invoke();
+        }
+    }
+
+    private void ApplyGlobalAlt()
+    {
+        foreach (var wp in MissionItems.Where(x => !x.IsHome)) wp.Alt = globalAlt;
+        TriggerMapRedraw();
+    }
+
+    private void TriggerMapRedraw() => InvokeAsync(async () =>
+    {
+        try
+        {
+            isUploaded = false;
+            StateHasChanged();
+            await JS.InvokeVoidAsync("drawMission", MissionItems);
+
+            // Snaps the viewport scrollbar to the bottom row after the new DOM element renders
+            await JS.InvokeVoidAsync("eval", @"
+                setTimeout(() => {
+                    var el = document.getElementById('waypoint-list-container');
+                    if (el) el.scrollTop = el.scrollHeight;
+                }, 30);
+            ");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Map Redraw Error: {ex.Message}");
+        }
+    });
+
+    private async Task CenterMapOnDrone()
+    {
+        await JS.InvokeVoidAsync("jumpToDrone", Drone.State.Latitude, Drone.State.Longitude, Drone.State.Yaw);
+    }
+
+    private void SetHomeToDrone()
+    {
+        var home = MissionItems.FirstOrDefault(x => x.IsHome);
+        if (home != null)
+        {
+            home.Lat = Drone.State.Latitude;
+            home.Lng = Drone.State.Longitude;
+            TriggerMapRedraw();
+        }
+    }
+
+    private void RemoveItem(MissionItem item)
+    {
+        if (!item.IsHome)
+        {
+            MissionItems.Remove(item);
+            Resequence();
+        }
+    }
+
+    private void ClearAllWaypoints()
+    {
+        var home = MissionItems.FirstOrDefault(x => x.IsHome);
+        MissionItems.Clear();
+        if (home != null) MissionItems.Add(home);
+        OnMissionChanged?.Invoke();
+    }
+
+    private double CalculateTotalDistance()
+    {
+        double total = 0;
+        for (int i = 0; i < MissionItems.Count - 1; i++)
+            total += GetHaversineDistance(MissionItems[i], MissionItems[i + 1]);
+        return total;
+    }
+
+    // Optimized Haversine Math
+    private double GetHaversineDistance(MissionItem w1, MissionItem w2)
+    {
+        const double R = 6371000;
+        const double Deg2Rad = Math.PI / 180.0;
+        
+        double lat1Rad = w1.Lat * Deg2Rad;
+        double lat2Rad = w2.Lat * Deg2Rad;
+        double dLat = (w2.Lat - w1.Lat) * Deg2Rad;
+        double dLng = (w2.Lng - w1.Lng) * Deg2Rad;
+        
+        double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                   Math.Cos(lat1Rad) * Math.Cos(lat2Rad) * Math.Sin(dLng / 2) * Math.Sin(dLng / 2);
+                   
+        return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            }
+
+    private async Task HandleImport(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            using var stream = e.File.OpenReadStream();
+            var imported = await JsonSerializer.DeserializeAsync<List<MissionItem>>(stream);
+            if (imported != null)
+            {
+                MissionItems = imported;
+                Resequence();
+            }
+        }
+        catch { }
+    }
+
+    private async Task ExportWaypoints()
+    {
+        if (MissionItems.Count <= 1) return;
+        var json = JsonSerializer.Serialize(MissionItems, new JsonSerializerOptions { WriteIndented = true });
+        await JS.InvokeVoidAsync("downloadFile", "mission.json", json);
+    }
+
+    private async Task UploadMission()
+    {
+        if (MissionItems.Count > 1)
+        {
+            isUploading = true;
+            isUploaded = false; // Reset state tracking flags on new attempt
+            StateHasChanged();
+
+            // 1. Map our front-end model items into the service transfer objects
+            var waypoints = MissionItems.Select(mi => new WaypointModel
+            {
+                Index = mi.Index,
+                Command = mi.Command,
+                Lat = mi.Lat,
+                Lng = mi.Lng,
+                Alt = (int)mi.Alt,
+                IsHome = mi.IsHome
+            }).ToList();
+            
+            // 2. Await the full upload, download, and deep validation checking routine
+            bool success = await Drone.UploadMissionAsync(waypoints);
+            
+            if (success)
+            {
+                isUploaded = true;
+                // Green success styling triggers natively on the 'START' button block now!
+            }
+            else
+            {
+                isUploaded = false;
+                // No messy javascript alert calls here — the backend service automatically
+                // pushes specific red error toasts with descriptive tracking logs to the HUD hud panel
+            }
+
+            isUploading = false;
+            StateHasChanged(); // Force immediate UI refresh pass to unlock action items
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        OnMissionChanged -= TriggerMapRedraw;
+        Drone.OnTelemetryUpdated -= HandleTelemetryUpdated;
+
+        try
+        {
+            await JS.InvokeVoidAsync("preserveMap");
+
+            // Destroys the global event hook when changing pages
+            await JS.InvokeVoidAsync("eval", @"
+                if (window._flightPlanUndoHandler) {
+                    window.removeEventListener('keydown', window._flightPlanUndoHandler);
+                    delete window._flightPlanUndoHandler;
+                }
+            ");
+        }
+        catch { }
+    }
+
+    private async Task StartMission()
+        {
+        // Guardrail: Ensure the drone is actually ready to fly before throwing it into AUTO
+        if (!isUploaded) return;
+        
+        // Uncomment/Modify this check based on how your MavlinkService exposes armed state
+        /* if (!Drone.State.IsArmed)
+        {
+            await JS.InvokeVoidAsync("alert", "Warning: Drone is disarmed. Please arm before starting mission.");
+            return;
+        }
+        */
+        
+        Drone.SetFlightMode("AUTO");
+}
+}

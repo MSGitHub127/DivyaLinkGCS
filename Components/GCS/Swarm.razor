@@ -1,0 +1,605 @@
+﻿@inject MavlinkService Drone
+@implements IDisposable
+
+@* ═══════════════════════════════════════════════════════════
+   SWARM COMMANDER  —  Large Font & Improved Readability
+   ═══════════════════════════════════════════════════════════ *@
+
+<div class="flex flex-col h-full bg-[#080a0f] text-[#c9d1d9] font-mono select-none overflow-hidden">
+
+    @* ── TOP HEADER BAR ── *@
+    <div class="shrink-0 flex items-center justify-between px-5 h-[50px] bg-[#0d1117] border-b border-[#21262d]">
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-[8px]">
+                <svg class="w-5 h-5 text-[#58a6ff]" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+                </svg>
+                <span class="text-[0.85rem] font-black tracking-[2px] text-white uppercase">Swarm Commander</span>
+            </div>
+            <div class="h-4 w-px bg-[#30363d]"></div>
+            <span class="text-[0.7rem] font-bold text-[#8b949e] tracking-widest">@GetTotalCount() NODES TRACKED</span>
+        </div>
+        <div class="flex items-center gap-3 pr-[40px]">
+            @if (GetTotalCount() > 0)
+            {
+                <span class="text-[0.65rem] font-black px-2 py-[4px] rounded-sm tracking-widest
+                        @(GetCriticalCount() > 0 ? "bg-[#490202] text-[#ff8080] border border-[#f85149]"
+                                          : GetAirborneCount() > 0 ? "bg-[#0d2a3d] text-[#58a6ff] border border-[#1f6feb]"
+                                          : "bg-[#0a1f0a] text-[#3fb950] border border-[#2ea043]")">
+                    @(GetCriticalCount() > 0 ? $"⚠ {GetCriticalCount()} CRITICAL"
+                                    : GetAirborneCount() > 0 ? $"↑ {GetAirborneCount()} AIRBORNE"
+                                    : "ALL GROUNDED")
+                </span>
+            }
+            <div class="flex items-center gap-[6px]">
+                <span class="w-[8px] h-[8px] rounded-full @(Drone.IsLinkHealthy ? "bg-[#3fb950] shadow-[0_0_6px_#3fb950]" : "bg-[#555]")"></span>
+                <span class="text-[0.65rem] font-bold text-[#8b949e] tracking-widest">@(Drone.IsLinkHealthy ? "LINK" : "NO LINK")</span>
+            </div>
+        </div>
+    </div>
+
+    @* ── FLEET SUMMARY STRIP ── *@
+    <div class="shrink-0 grid grid-cols-5 border-b border-[#21262d] bg-[#0b0d12]">
+        @{
+            var statCell = "flex flex-col items-center justify-center py-4 border-r border-[#21262d] last:border-r-0";
+        }
+        <div class="@statCell">
+            <span class="text-[1.8rem] font-black leading-none text-white">@GetTotalCount()</span>
+            <span class="text-[0.65rem] font-bold text-[#8b949e] tracking-widest mt-[4px]">NODES</span>
+        </div>
+        <div class="@statCell">
+            <span class="text-[1.8rem] font-black leading-none text-[#58a6ff]">@GetAirborneCount()</span>
+            <span class="text-[0.65rem] font-bold text-[#8b949e] tracking-widest mt-[4px]">AIRBORNE</span>
+        </div>
+        <div class="@statCell">
+            <span class="text-[1.8rem] font-black leading-none text-[#3fb950]">@GetArmedCount()</span>
+            <span class="text-[0.65rem] font-bold text-[#8b949e] tracking-widest mt-[4px]">ARMED</span>
+        </div>
+        <div class="@statCell">
+            <span class="text-[1.8rem] font-black leading-none @(GetAvgBattery() < 30 ? "text-[#f85149]" : GetAvgBattery() < 50 ? "text-[#d29922]" : "text-[#3fb950]")">
+                @(GetTotalCount() > 0 ? $"{GetAvgBattery()}%" : "--")
+            </span>
+            <span class="text-[0.65rem] font-bold text-[#8b949e] tracking-widest mt-[4px]">AVG BATT</span>
+        </div>
+        <div class="@statCell">
+            <span class="text-[1.8rem] font-black leading-none text-[#f0b429]">@GetCriticalCount()</span>
+            <span class="text-[0.65rem] font-bold text-[#8b949e] tracking-widest mt-[4px]">CRITICAL</span>
+        </div>
+    </div>
+
+    @* ── MAIN BODY: two-column layout ── *@
+    <div class="flex-1 flex flex-row min-h-0 overflow-hidden">
+
+        @* ══ LEFT PANEL: FLEET ROSTER ══ *@
+        <div class="flex-1 flex flex-col min-w-0 overflow-hidden border-r border-[#21262d]">
+
+            @* Roster header row - WIDENED COLUMNS *@
+            <div class="shrink-0 grid items-center px-4 py-[8px] text-[0.68rem] font-black text-[#6e7681] tracking-widest border-b border-[#21262d] bg-[#0d1117]"
+                 style="grid-template-columns: 16px 46px 64px 1fr 60px 52px 52px 36px;">
+                <div></div>
+                <div>SYS</div>
+                <div>STATE</div>
+                <div>MODE</div>
+                <div>ALT</div>
+                <div>BATT</div>
+                <div>SPD</div>
+                <div class="text-center">SEL</div>
+            </div>
+
+            @* Roster body *@
+            <div class="flex-1 overflow-y-auto overflow-x-hidden" style="scrollbar-width:thin;scrollbar-color:#30363d transparent;">
+                @if (GetTotalCount() == 0)
+                {
+                    <div class="flex flex-col items-center justify-center h-full gap-3 text-[#30363d]">
+                        <svg class="w-12 h-12 opacity-40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                            <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81a19.79 19.79 0 01-3.07-8.67A2 2 0 012 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91" />
+                        </svg>
+                        <div class="flex flex-col items-center gap-1">
+                            <span class="text-[0.85rem] font-black tracking-wider text-[#444c56]">NO NODES DETECTED</span>
+                            <span class="text-[0.7rem] text-[#30363d]">Waiting for MAVLink heartbeats…</span>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    @foreach (var node in GetAllNodes())
+                    {
+                        var isPrimary = node.SystemId == Drone.State.SystemId && Drone.State.HasVehicleId;
+                        var isTarget = Drone.target_sysid == node.SystemId;
+                        var isSelected = _selectedSysId == node.SystemId;
+                        var isCritical = node.BatteryPercent is > 0 and < 15 || IsNodeStale(node);
+                        var isAirborne = node.Altitude > 1.5f;
+                        var rowBg = isSelected ? "bg-[rgba(88,166,255,0.10)]" : isCritical ? "bg-[rgba(248,81,73,0.05)]" : "hover:bg-[#161b22]";
+                        var leftBorder = isSelected ? "border-l-2 border-l-[#58a6ff]" : isCritical ? "border-l-2 border-l-[#f85149]" : "border-l-2 border-l-transparent";
+
+                        <div class="grid items-center px-4 h-[44px] border-b border-[#161b22] cursor-pointer transition-colors duration-75 @rowBg @leftBorder"
+                             style="grid-template-columns: 16px 46px 64px 1fr 60px 52px 52px 36px;"
+                             @onclick="() => SelectNode(node.SystemId)">
+
+                            <div class="flex items-center">
+                                <span class="w-[6px] h-[6px] rounded-full @(isAirborne ? "bg-[#58a6ff] shadow-[0_0_4px_#58a6ff]" : "bg-[#30363d]")"></span>
+                            </div>
+
+                            <div class="text-[0.85rem] font-black @(isPrimary ? "text-[#f0b429]" : isSelected ? "text-white" : "text-[#8b949e]")">
+                                @node.SystemId.ToString("D3")
+                                @if (isPrimary)
+                                {
+                                    <span class="text-[0.55rem] text-[#f0b429] ml-[2px]">★</span>
+                                }
+                            </div>
+
+                            <div>
+                                <span class="text-[0.65rem] px-[6px] py-[3px] rounded-[3px] font-black
+                                            @(node.IsArmed ? "bg-[rgba(248,81,73,0.15)] text-[#ff8080] border border-[#f85149]" : "bg-[rgba(46,160,67,0.10)] text-[#3fb950] border border-[#2ea043]")">
+                                    @(node.IsArmed ? "ARMED" : "SAFE")
+                                </span>
+                            </div>
+
+                            <div class="text-[0.75rem] font-bold truncate" style="color:@GetModeColor(node.FlightMode);">
+                                @(string.IsNullOrEmpty(node.FlightMode) || node.FlightMode == "Unknown" ? "---" : node.FlightMode)
+                            </div>
+
+                            <div class="text-[0.8rem] @(isAirborne ? "text-[#58a6ff] font-bold" : "text-[#8b949e]")">
+                                @node.Altitude.ToString("0.0")<span class="text-[0.6rem] ml-[2px] text-[#555]">m</span>
+                            </div>
+
+                            <div class="text-[0.8rem] font-bold @(node.BatteryPercent < 15 ? "text-[#f85149]" : node.BatteryPercent < 30 ? "text-[#d29922]" : "text-[#3fb950]")">
+                                @(node.BatteryPercent > 0 ? $"{node.BatteryPercent}%" : "--")
+                            </div>
+
+                            <div class="text-[0.75rem] font-bold text-[#8b949e]">
+                                @node.GroundSpeed.ToString("0.0")
+                            </div>
+
+                            <div class="flex justify-center">
+                                <div class="w-[16px] h-[16px] rounded-full border-2 flex items-center justify-center
+                                            @(isTarget ? "border-[#58a6ff]" : "border-[#444c56]")"
+                                     @onclick:stopPropagation="true"
+                                     @onclick="() => SetPrimaryTarget(node.SystemId)">
+                                    @if (isTarget)
+                                    {
+                                        <div class="w-[6px] h-[6px] rounded-full bg-[#58a6ff]"></div>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+
+        @* ══ RIGHT PANEL: COMMAND CONSOLE ══ *@
+        <div class="w-[240px] shrink-0 flex flex-col bg-[#0b0d12] overflow-y-auto overflow-x-hidden" style="scrollbar-width:thin;scrollbar-color:#30363d transparent;">
+
+            @* ── GLOBAL BROADCAST section ── *@
+            <div class="px-4 pt-4 pb-3">
+                <div class="text-[0.65rem] font-black text-[#6e7681] tracking-[2px] mb-3 flex items-center gap-2">
+                    <div class="flex-1 h-px bg-[#21262d]"></div>
+                    BROADCAST
+                    <div class="flex-1 h-px bg-[#21262d]"></div>
+                </div>
+
+                <div class="flex items-center gap-1 mb-2">
+                    <div class="flex-1 flex items-center bg-[#0d1117] border border-[#30363d] h-[34px] px-2 gap-1 rounded-sm">
+                        <input type="number" class="flex-1 min-w-0 bg-transparent border-none text-[#58a6ff] text-[0.95rem] font-black text-right outline-none w-full"
+                               @bind="_takeoffAlt" min="2" max="120" />
+                        <span class="text-[1rem] font-bold text-[#555] shrink-0">m</span>
+                    </div>
+                </div>
+
+                <button class="w-full h-[34px] mb-2 text-[0.72rem] font-black tracking-wider border-none rounded-sm
+                    bg-[#1f6feb] text-white hover:bg-[#388bfd] active:bg-[#1158c7] transition-colors cursor-pointer
+                    flex items-center justify-center gap-2"
+                        @onclick="CmdBroadcastTakeoff">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+                    TAKEOFF ALL
+                </button>
+
+                <div class="grid grid-cols-2 gap-2 mb-2">
+                    <button class="h-[32px] text-[0.68rem] font-black tracking-wider border border-[rgba(248,81,73,0.4)] rounded-sm
+                        bg-[rgba(248,81,73,0.08)] text-[#ff8080] hover:bg-[rgba(248,81,73,0.18)] transition-colors cursor-pointer"
+                            @onclick="() => CmdBroadcastArm(true)">
+                        ARM ALL
+                    </button>
+                    <button class="h-[32px] text-[0.68rem] font-black tracking-wider border border-[rgba(46,160,67,0.4)] rounded-sm
+                        bg-[rgba(46,160,67,0.08)] text-[#3fb950] hover:bg-[rgba(46,160,67,0.18)] transition-colors cursor-pointer"
+                            @onclick="() => CmdBroadcastArm(false)">
+                        DISARM ALL
+                    </button>
+                </div>
+
+                <button class="w-full h-[32px] mb-2 text-[0.72rem] font-black tracking-wider rounded-sm
+                    border border-[rgba(210,153,34,0.4)] bg-[rgba(210,153,34,0.08)] text-[#d29922]
+                    hover:bg-[rgba(210,153,34,0.18)] transition-colors cursor-pointer flex items-center justify-center gap-2"
+                        @onclick="CmdBroadcastRTL">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
+                    RTL ALL
+                </button>
+
+                <button class="w-full h-[32px] text-[0.72rem] font-black tracking-wider rounded-sm
+                    border border-[rgba(88,166,255,0.4)] bg-[rgba(88,166,255,0.06)] text-[#58a6ff]
+                    hover:bg-[rgba(88,166,255,0.15)] transition-colors cursor-pointer flex items-center justify-center gap-2"
+                        @onclick="CmdBroadcastLand">
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
+                    LAND ALL
+                </button>
+            </div>
+
+            @* ── BROADCAST MODE section ── *@
+            <div class="px-4 pb-3 border-t border-[#21262d] pt-3">
+                <div class="text-[0.65rem] font-black text-[#6e7681] tracking-[2px] mb-2 flex items-center gap-2">
+                    <div class="flex-1 h-px bg-[#21262d]"></div>
+                    SET MODE ALL
+                    <div class="flex-1 h-px bg-[#21262d]"></div>
+                </div>
+                <div class="flex gap-2">
+                    <select class="flex-1 min-w-0 bg-[#0d1117] border border-[#30363d] text-[#c9d1d9] font-bold text-[0.7rem] h-[30px] px-2 rounded-sm outline-none
+                            hover:border-[#58a6ff] transition-colors [&>
+                        option]:bg-[#0d1117] cursor-pointer"
+                        @bind="_broadcastMode">
+                        <option value="">-- MODE --</option>
+                        <option>STABILIZE</option>
+                        <option>LOITER</option>
+                        <option>ALT_HOLD</option>
+                        <option>GUIDED</option>
+                        <option>AUTO</option>
+                        <option>POSHOLD</option>
+                        <option>RTL</option>
+                        <option>LAND</option>
+                        <option>BRAKE</option>
+                        <option>SMART_RTL</option>
+                    </select>
+                    <button class="w-[44px] h-[30px] bg-[#1f6feb] border-none rounded-sm text-white text-[0.68rem] font-black
+                        hover:bg-[#388bfd] transition-colors cursor-pointer shrink-0"
+                            @onclick="CmdBroadcastMode">
+                        SET
+                    </button>
+                </div>
+            </div>
+
+            @* ── NODE-SPECIFIC section ── *@
+            @if (_selectedSysId.HasValue)
+            {
+                var selNode = GetNodeBySysId(_selectedSysId.Value);
+                if (selNode != null)
+                {
+                    <div class="px-4 pb-3 border-t border-[#21262d] pt-3">
+                        <div class="text-[0.65rem] font-black text-[#58a6ff] tracking-[2px] mb-2 flex items-center gap-2">
+                            <div class="flex-1 h-px bg-[#21262d]"></div>
+                            NODE @selNode.SystemId.ToString("D3")
+                            <div class="flex-1 h-px bg-[#21262d]"></div>
+                        </div>
+
+                        <div class="bg-[#0d1117] border border-[#21262d] p-3 mb-3 text-[0.7rem] rounded-sm leading-[2]">
+                            <div class="flex justify-between">
+                                <span class="text-[#6e7681] font-bold">MODE</span>
+                                <span class="font-black" style="color:@GetModeColor(selNode.FlightMode);">@(selNode.FlightMode ?? "---")</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-[#6e7681] font-bold">ALT</span>
+                                <span class="text-white font-bold">@selNode.Altitude.ToString("0.0") m</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-[#6e7681] font-bold">SPD</span>
+                                <span class="text-white font-bold">@selNode.GroundSpeed.ToString("0.0") m/s</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-[#6e7681] font-bold">BATT</span>
+                                <span class="font-bold @(selNode.BatteryPercent < 20 ? "text-[#f85149]" : "text-[#3fb950]")">
+                                    @selNode.BatteryPercent%  @selNode.Voltage.ToString("0.0")V
+                                </span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-[#6e7681] font-bold">GPS</span>
+                                <span class="text-[#58a6ff] font-bold">@selNode.SatCount SAT</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-[#6e7681] font-bold">HDNG</span>
+                                <span class="text-white font-bold">@selNode.HeadingDeg.ToString("0")°</span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2 mb-2">
+                            <button class="h-[30px] text-[0.68rem] font-black border border-[rgba(248,81,73,0.5)] rounded-sm
+                                        bg-[rgba(248,81,73,0.1)] text-[#ff8080] hover:bg-[rgba(248,81,73,0.2)] transition-colors cursor-pointer"
+                                    @onclick="() => CmdNodeArm(_selectedSysId.Value, true)">
+                                ARM
+                            </button>
+                            <button class="h-[30px] text-[0.68rem] font-black border border-[rgba(46,160,67,0.5)] rounded-sm
+                                        bg-[rgba(46,160,67,0.1)] text-[#3fb950] hover:bg-[rgba(46,160,67,0.2)] transition-colors cursor-pointer"
+                                    @onclick="() => CmdNodeArm(_selectedSysId.Value, false)">
+                                DISARM
+                            </button>
+                        </div>
+
+                        <button class="w-full h-[30px] mb-2 text-[0.68rem] font-black rounded-sm
+                                    border border-[rgba(88,166,255,0.4)] bg-[rgba(88,166,255,0.06)] text-[#58a6ff]
+                                    hover:bg-[rgba(88,166,255,0.16)] transition-colors cursor-pointer"
+                                @onclick="() => CmdNodeTakeoff(_selectedSysId.Value)">
+                            ↑ TAKEOFF (@_takeoffAlt m)
+                        </button>
+                        <button class="w-full h-[30px] mb-2 text-[0.68rem] font-black rounded-sm
+                                    border border-[rgba(210,153,34,0.4)] bg-[rgba(210,153,34,0.06)] text-[#d29922]
+                                    hover:bg-[rgba(210,153,34,0.16)] transition-colors cursor-pointer"
+                                @onclick="() => CmdNodeRTL(_selectedSysId.Value)">
+                            ⌂ RTL
+                        </button>
+                        <button class="w-full h-[30px] mb-2 text-[0.68rem] font-black rounded-sm
+                                    border border-[rgba(200,200,200,0.2)] bg-transparent text-[#8b949e]
+                                    hover:bg-[#161b22] hover:text-white transition-colors cursor-pointer"
+                                @onclick="() => CmdNodeLand(_selectedSysId.Value)">
+                            ↓ LAND
+                        </button>
+
+                        <div class="flex gap-2 mb-2">
+                            <select class="flex-1 min-w-0 bg-[#0d1117] border border-[#30363d] text-[#c9d1d9] font-bold text-[0.7rem] h-[30px] px-2 rounded-sm outline-none
+                                    hover:border-[#58a6ff] [&>
+                                option]:bg-[#0d1117] cursor-pointer"
+                                @bind="_nodeMode">
+                                <option value="">-- MODE --</option>
+                                <option>STABILIZE</option>
+                                <option>LOITER</option>
+                                <option>ALT_HOLD</option>
+                                <option>GUIDED</option>
+                                <option>AUTO</option>
+                                <option>POSHOLD</option>
+                                <option>RTL</option>
+                                <option>LAND</option>
+                                <option>BRAKE</option>
+                            </select>
+                            <button class="w-[44px] h-[30px] bg-[#1f6feb] border-none rounded-sm text-white text-[0.68rem] font-black
+                                        hover:bg-[#388bfd] transition-colors cursor-pointer shrink-0"
+                                    @onclick="() => CmdNodeMode(_selectedSysId.Value)">
+                                SET
+                            </button>
+                        </div>
+
+                        <button class="w-full h-[28px] text-[0.65rem] font-bold text-[#555] rounded-sm
+                                    border border-[#21262d] bg-transparent hover:bg-[#161b22] hover:text-[#ff8080]
+                                    hover:border-[#f85149] transition-colors cursor-pointer mt-2"
+                                @onclick="() => RemoveNode(_selectedSysId.Value)">
+                            REMOVE NODE
+                        </button>
+                    </div>
+                }
+            }
+
+            @* ── EMERGENCY section ── *@
+            <div class="px-4 pb-4 mt-auto pt-3 border-t border-[#21262d]">
+                <div class="text-[0.65rem] font-black text-[#f85149] tracking-[2px] mb-3 flex items-center gap-2">
+                    <div class="flex-1 h-px bg-[rgba(248,81,73,0.3)]"></div>
+                    CRITICAL
+                    <div class="flex-1 h-px bg-[rgba(248,81,73,0.3)]"></div>
+                </div>
+                <button class="w-full h-[36px] text-[0.72rem] font-black tracking-wider rounded-sm
+                    border border-[#f85149] bg-[rgba(248,81,73,0.1)] text-[#ff8080]
+                    hover:bg-[rgba(248,81,73,0.25)] active:bg-[rgba(248,81,73,0.4)]
+                    transition-colors cursor-pointer shadow-[0_0_15px_rgba(248,81,73,0.15)]"
+                        @onclick="CmdEmergencyDisarmAll">
+                    ⚡ EMERGENCY DISARM ALL
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    @* ── BOTTOM BATTERY HEATMAP STRIP ── *@
+    @if (GetTotalCount() > 0)
+    {
+        <div class="shrink-0 border-t border-[#21262d] bg-[#0b0d12] px-5 py-3">
+            <div class="text-[0.6rem] font-bold text-[#6e7681] tracking-widest mb-2">BATTERY HEATMAP</div>
+            <div class="flex gap-[4px] flex-wrap">
+                @foreach (var node in GetAllNodes())
+                {
+                    var pct = node.BatteryPercent;
+                    var fill = pct > 60 ? "#2ea043" : pct > 30 ? "#d29922" : pct > 15 ? "#f0b429" : pct > 0 ? "#f85149" : "#30363d";
+                    var isSelected = _selectedSysId == node.SystemId;
+
+                    <div class="flex flex-col items-center gap-[3px] cursor-pointer hover:brightness-125 transition-all"
+                         title="SYS @node.SystemId.ToString("D3") — @pct%"
+                         @onclick="() => SelectNode(node.SystemId)">
+                        <div class="w-[26px] h-[16px] rounded-[3px] border @(isSelected ? "border-[#58a6ff] scale-110" : "border-transparent")"
+                             style="background:@fill; opacity:@(pct > 0 ? "1" : "0.3");">
+                        </div>
+                        <span class="text-[0.55rem] font-bold font-mono" style="color:@fill;">@node.SystemId.ToString("D3")</span>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    // ── State ──────────────────────────────────────────────────────────────
+    private int   _takeoffAlt    = 10;
+    private string _broadcastMode = "";
+    private string _nodeMode      = "";
+    private byte? _selectedSysId  = null;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+    protected override void OnInitialized()
+    {
+        Drone.OnTelemetryUpdated += RefreshUi;
+    }
+
+    private DateTime _lastUiUpdate = DateTime.MinValue;
+    private void RefreshUi()
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastUiUpdate).TotalMilliseconds < 150) return; // ~7 Hz is plenty for a roster
+        _lastUiUpdate = now;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose() => Drone.OnTelemetryUpdated -= RefreshUi;
+
+    // ── Data helpers ──────────────────────────────────────────────────────
+
+    /// Build a unified, sorted list of all known nodes (primary + swarm dict).
+    private IEnumerable<DroneState> GetAllNodes()
+    {
+        var all = new List<DroneState>();
+        if (Drone.State.HasVehicleId)
+            all.Add(Drone.State);
+        foreach (var kvp in Drone.ActiveSwarm)
+            if (kvp.Key != Drone.State.SystemId)
+                all.Add(kvp.Value);
+        return all.OrderBy(n => n.SystemId);
+    }
+
+    private DroneState? GetNodeBySysId(byte sysId)
+    {
+        if (Drone.State.HasVehicleId && Drone.State.SystemId == sysId) return Drone.State;
+        Drone.ActiveSwarm.TryGetValue(sysId, out var node);
+        return node;
+    }
+
+    private static bool IsNodeStale(DroneState node)
+        => node.LastHeartbeat != DateTime.MinValue &&
+           (DateTime.UtcNow - node.LastHeartbeat).TotalSeconds > 10;
+
+    private int GetTotalCount()
+    {
+        int count = Drone.ActiveSwarm.Count;
+        if (Drone.State.HasVehicleId && !Drone.ActiveSwarm.ContainsKey(Drone.State.SystemId)) count++;
+        return count;
+    }
+
+    private int GetAirborneCount()   => GetAllNodes().Count(d => d.Altitude > 1.5f);
+    private int GetArmedCount()      => GetAllNodes().Count(d => d.IsArmed);
+    private int GetCriticalCount()   => GetAllNodes().Count(d => (d.BatteryPercent is > 0 and < 15) || IsNodeStale(d));
+
+    private int GetAvgBattery()
+    {
+        var nodes = GetAllNodes().Where(d => d.BatteryPercent > 0).ToList();
+        return nodes.Count == 0 ? 0 : (int)nodes.Average(d => (double)d.BatteryPercent);
+    }
+
+    private static string GetModeColor(string? mode) => mode?.ToUpper() switch
+    {
+        "RTL" or "LAND" or "SMART_RTL" => "#f85149",
+        "LOITER" or "POSHOLD"           => "#3fb950",
+        "AUTO" or "GUIDED"              => "#d946ef",
+        "STABILIZE" or "ALT_HOLD"       => "#f0b429",
+        "BRAKE"                         => "#ff8080",
+        _                               => "#58a6ff"
+    };
+
+    // ── Selection ─────────────────────────────────────────────────────────
+    private void SelectNode(byte sysId)
+    {
+        _selectedSysId = (_selectedSysId == sysId) ? null : sysId;
+    }
+
+    private void SetPrimaryTarget(byte sysId)
+    {
+        Drone.target_sysid = sysId;
+        Drone.Toast($"GCS target → SYS {sysId:D3}", MavlinkService.ToastLevel.Info, "🎯");
+    }
+
+    // ── BROADCAST commands ────────────────────────────────────────────────
+    private void CmdBroadcastArm(bool arm)
+    {
+        Drone.BroadcastArmRequest(arm);
+        Drone.Toast(
+            arm ? $"BROADCAST → ARM ALL ({GetTotalCount()} nodes)"
+                : $"BROADCAST → DISARM ALL ({GetTotalCount()} nodes)",
+            arm ? MavlinkService.ToastLevel.Warning : MavlinkService.ToastLevel.Success,
+            arm ? "🔴" : "🟢");
+    }
+
+    private void CmdBroadcastTakeoff()
+    {
+        if (_takeoffAlt < 2) { Drone.Toast("Takeoff altitude must be ≥ 2 m", MavlinkService.ToastLevel.Error, "⚠️"); return; }
+        Drone.BroadcastFlightMode("GUIDED");
+        Task.Delay(600).ContinueWith(_ =>
+        {
+            Drone.BroadcastCommand(MAVLink.MAV_CMD.TAKEOFF, 0, 0, 0, 0, 0, 0, _takeoffAlt);
+            Drone.Toast($"BROADCAST → TAKEOFF ALL to {_takeoffAlt} m", MavlinkService.ToastLevel.Warning, "🚀");
+        });
+    }
+
+    private void CmdBroadcastRTL()
+    {
+        Drone.BroadcastFlightMode("RTL");
+        Drone.Toast($"BROADCAST → RTL ALL ({GetTotalCount()} nodes)", MavlinkService.ToastLevel.Warning, "🏠");
+    }
+
+    private void CmdBroadcastLand()
+    {
+        Drone.BroadcastFlightMode("LAND");
+        Drone.Toast($"BROADCAST → LAND ALL ({GetTotalCount()} nodes)", MavlinkService.ToastLevel.Info, "🛬");
+    }
+
+    private void CmdBroadcastMode()
+    {
+        if (string.IsNullOrEmpty(_broadcastMode)) return;
+        Drone.BroadcastFlightMode(_broadcastMode);
+        Drone.Toast($"BROADCAST → MODE {_broadcastMode}", MavlinkService.ToastLevel.Info, "✈️");
+        _broadcastMode = "";
+    }
+
+    private void CmdEmergencyDisarmAll()
+    {
+        // Force-disarm: param2 = 21196 (magic override key)
+        var req = new MAVLink.mavlink_command_long_t
+        {
+            target_system    = 0, // broadcast
+            target_component = 0,
+            command          = (ushort)MAVLink.MAV_CMD.COMPONENT_ARM_DISARM,
+            param1           = 0,   // disarm
+            param2           = 21196f // force
+        };
+        // Access SendCommandToNode via broadcast with force flag via unicast to each known node
+        foreach (var node in GetAllNodes())
+            Drone.ArmNode(node.SystemId, false, force: true);
+        Drone.Toast($"⚡ EMERGENCY DISARM ALL — {GetTotalCount()} nodes", MavlinkService.ToastLevel.Error, "⚡");
+    }
+
+    // ── PER-NODE commands ─────────────────────────────────────────────────
+    private void CmdNodeArm(byte sysId, bool arm)
+    {
+        Drone.ArmNode(sysId, arm);
+        Drone.Toast($"SYS {sysId:D3} → {(arm ? "ARM" : "DISARM")}",
+            arm ? MavlinkService.ToastLevel.Warning : MavlinkService.ToastLevel.Success,
+            arm ? "🔴" : "🟢");
+    }
+
+    private void CmdNodeTakeoff(byte sysId)
+    {
+        if (_takeoffAlt < 2) { Drone.Toast("Takeoff altitude must be ≥ 2 m", MavlinkService.ToastLevel.Error, "⚠️"); return; }
+        Drone.SetFlightModeForNode(sysId, "GUIDED");
+        Task.Delay(600).ContinueWith(_ =>
+        {
+            Drone.SendCommandToNode(sysId, MAVLink.MAV_CMD.TAKEOFF, 0, 0, 0, 0, 0, 0, _takeoffAlt);
+            Drone.Toast($"SYS {sysId:D3} → TAKEOFF {_takeoffAlt} m", MavlinkService.ToastLevel.Warning, "🚀");
+        });
+    }
+
+    private void CmdNodeRTL(byte sysId)
+    {
+        Drone.SetFlightModeForNode(sysId, "RTL");
+        Drone.Toast($"SYS {sysId:D3} → RTL", MavlinkService.ToastLevel.Warning, "🏠");
+    }
+
+    private void CmdNodeLand(byte sysId)
+    {
+        Drone.SetFlightModeForNode(sysId, "LAND");
+        Drone.Toast($"SYS {sysId:D3} → LAND", MavlinkService.ToastLevel.Info, "🛬");
+    }
+
+    private void CmdNodeMode(byte sysId)
+    {
+        if (string.IsNullOrEmpty(_nodeMode)) return;
+        Drone.SetFlightModeForNode(sysId, _nodeMode);
+        Drone.Toast($"SYS {sysId:D3} → MODE {_nodeMode}", MavlinkService.ToastLevel.Info, "✈️");
+        _nodeMode = "";
+    }
+
+    private void RemoveNode(byte sysId)
+    {
+        Drone.RemoveSwarmNode(sysId);
+        if (_selectedSysId == sysId) _selectedSysId = null;
+        Drone.Toast($"SYS {sysId:D3} removed from roster", MavlinkService.ToastLevel.Info, "🗑️");
+    }
+}
