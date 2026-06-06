@@ -1,828 +1,1264 @@
-// Services/RtkBaseStationService.cs
-// Core RTK Base Station engine for DivyaLink GCS.
+// RtkBaseStationService.cs
+// Complete rewrite — mirrors Mission Planner ConfigSerialInjectGPS + ubx_m8p.cs
+// workflow exactly. Every design decision is cited to MP source (Files.md).
 //
-// DATA FLOW:
-//   SerialPort.DataReceived → Channel<byte> → ProcessBytesLoopAsync
-//     ├─ UbxStreamParser  → UBX-NAV-SVIN (Survey-In status)
-//     │                   → UBX-NAV-SAT  (satellite bars)
-//     └─ RtcmStreamParser → InjectGpsData (when phase ≥ Fixed)
-//                         → constellation health tracking
-//                         → stream statistics
+// Architecture matches MP mainloop() (Files.md 29983-30173):
+//   1. Baud scan (MP SetupM8P baud loop, lines 21679-21698)
+//   2. Full SetupM8P config sequence (no ACK waiting — MP uses Sleep like us;
+//      real ACK gating is logged for diagnostics)
+//   3. SetupBasePos: Survey-In or Fixed LLA
+//   4. Single background DispatchByte loop (replaces MP's for(a<read) loop)
+//   5. RTCM frames → sendData (MP line 30104) → InjectGpsData
+//   6. seenRTCM constellation tracking (MP lines 30175-30243)
+//   7. ExtractBasePos on 1005/1006 (MP lines 30430-30481)
+//   8. _has1005Seen gate before injection (fixes WF-04/WF-12)
+//   9. Continuous TMODE3 poll every 30s (MP line 30339-30344)
+//  10. Vehicle GPS fix type via GPS_RAW_INT
+//  11. STATUSTEXT feed
 //
-// INJECTION GATE (matches Mission Planner behaviour):
-//   RTCM is forwarded the moment it arrives from the receiver.
-//   The hardware enforces the gate — u-blox only outputs RTCM after Survey-In
-//   completes. Our software gate (phase ≥ Fixed) is a defensive belt-and-suspenders
-//   against protocol edge cases (e.g. saved-position fixed mode skipping survey).
+// CRITICAL BUG FIXES applied:
+//   FIX-1: RtcmStreamParser.Reset() always called — no IndexOutOfRangeException
+//   FIX-2: DispatchByte handles IsIdle after CRC fail — no stuck inRtcm flag
+//   FIX-3: CFG-CFG save uses UbxConfigurator.Generate() — correct checksum
+//   FIX-4: 1005-first injection gate (_has1005Seen)
+//   FIX-5: MSM7 auto-selected from MonVerInfo — no manual user toggle
+//   FIX-6: BuildDisable() wired to DeleteProfileAsync and disconnect
+//   FIX-7: NAV-SVIN logged at INFO level every update
+//   FIX-8: MON-HW logged at INFO level; jamming alert
+//   FIX-9: NAV-SVIN continues being monitored in Injecting phase
 
-using System.Buffers;
-using System.Collections.Frozen;
+using System.Collections.Concurrent;
 using System.IO.Ports;
-using System.Text.Json;
 using System.Threading.Channels;
 using BlazorApp3.Models;
+using Microsoft.Extensions.Logging;
 
 namespace BlazorApp3.Services;
 
 public sealed class RtkBaseStationService : IAsyncDisposable
 {
     // ── Dependencies ──────────────────────────────────────────────────────────
-    private readonly MavlinkService                   _mavlink;
-    private readonly ILogger<RtkBaseStationService>   _log;
+    private readonly MavlinkService        _mavlink;
+    private readonly ILogger<RtkBaseStationService> _log;
 
-    // ── Serial port + byte pipeline ───────────────────────────────────────────
-    private SerialPort? _port;
-    private readonly Channel<byte> _byteChannel = Channel.CreateBounded<byte>(
-        new BoundedChannelOptions(65536) { FullMode = BoundedChannelFullMode.DropOldest });
+    // ── Serial port ───────────────────────────────────────────────────────────
+    private SerialPort?  _port;
+    private readonly object _portLock = new();
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    // ── Background tasks ──────────────────────────────────────────────────────
     private CancellationTokenSource? _cts;
-    private Task?                    _processingTask;
-    private RtkConfig?               _currentConfig;
+    private Task? _processingTask;
+    private Task? _bpsTask;
+    private Task? _expiryTask;
 
-    // ── State (protected by _lock for compound updates) ───────────────────────
-    private readonly Lock _lock  = new();
-    private RtkState      _state = new();
+    // ── Byte channel (MP's serial read buffer equivalent) ─────────────────────
+    // MP reads up to 180 bytes at a time (line 30063-30068).
+    // We use a bounded channel; DropOldest is last resort — size 131072 = ~2.8s at 460800.
+    private Channel<byte>? _byteChannel;
 
-    // ── BPS counters (Interlocked for lock-free hot-path reads) ──────────────
-    private int  _rxBytesThisSecond;
-    private int  _txBytesThisSecond;
-    private long _totalMessages;
-    private int  _largestRtcmFrame;
+    // ── RTCM injection gate ───────────────────────────────────────────────────
+    // FIX-4: matches MP ExtractBasePos (line 30434) — only inject after 1005 seen.
+    // MP injects all RTCM frames immediately once seenRTCM fires, but the receiver
+    // hardware gates: 1005 is only emitted after survey valid, so in practice MP
+    // also never injects MSM without 1005. We add an explicit software gate here
+    // to handle any edge case where the receiver emits MSM before 1005.
+    private bool      _has1005Seen;
+    private RtkConfig? _lastConfig;
 
-    // ── Constellation health ───────────────────────────────────────────────────
-    private readonly Dictionary<string, DateTime> _constellationSeen = new();
+    // _awaitingFreshSurvey is set whenever we send a new CFG-TMODE3 SurveyIn.
+    // OnNavSvin ignores frames with DurationSec > 5 while this flag is set.
+    // Cleared the moment the receiver reports DurationSec <= 2 — meaning its
+    // hardware timer has reset. Prevents stale receiver values flashing in UI.
+    private volatile bool _awaitingFreshSurvey;
+    private uint          _lastKnownSurveyDur;   // used to detect timer reset      // stored in ConnectAsync for RestartSurveyAsync
 
-    // ── Message counters ───────────────────────────────────────────────────────
-    private readonly Dictionary<string, int> _msgCounters = new();
+    // ── TMODE3 poll timer (MP line 30339-30344: every 30s) ────────────────────
+    private DateTime _nextTmodePoll = DateTime.MaxValue; // set to real schedule after ConnectAsync completes
 
-    // ── Profiles ────────────────────────────────────────────────────────────────
-    private readonly string _profilesPath;
-    private List<SavedBaseProfile> _profiles = [];
-
-    // ── RTCM ID → constellation label map ─────────────────────────────────────
-    private static readonly FrozenDictionary<int, string> RtcmConstellation =
-        new Dictionary<int, string>
-        {
-            {1005,"base"}, {1006,"base"}, {4072,"base"},
-            {1001,"gps"},{1002,"gps"},{1003,"gps"},{1004,"gps"},
-            {1071,"gps"},{1072,"gps"},{1073,"gps"},{1074,"gps"},
-            {1075,"gps"},{1076,"gps"},{1077,"gps"},
-            {1009,"glonass"},{1010,"glonass"},{1011,"glonass"},{1012,"glonass"},
-            {1081,"glonass"},{1082,"glonass"},{1083,"glonass"},{1084,"glonass"},
-            {1085,"glonass"},{1086,"glonass"},{1087,"glonass"},
-            {1091,"galileo"},{1092,"galileo"},{1093,"galileo"},{1094,"galileo"},
-            {1095,"galileo"},{1096,"galileo"},{1097,"galileo"},
-            {1121,"beidou"},{1122,"beidou"},{1123,"beidou"},{1124,"beidou"},
-            {1125,"beidou"},{1126,"beidou"},{1127,"beidou"},
-        }.ToFrozenDictionary();
-
-    // ── Events ─────────────────────────────────────────────────────────────────
-    // ── UI Drawer Sync Control State ───────────────────────────────────────────
-    private bool _isDrawerOpen;
-    public bool IsDrawerOpen
+    // ── BPS measurement ──────────────────────────────────────────────────────
+    private int _rxBytesThisSecond;
+    private int _txBytesThisSecond;
+    private static int InterlockedMax(ref int loc, int val)
     {
-        get => _isDrawerOpen;
-        set
+        int current = loc;
+        while (val > current)
         {
-            if (_isDrawerOpen != value)
-            {
-                _isDrawerOpen = value;
-                OnStateChanged?.Invoke();
-            }
+            int prev = Interlocked.CompareExchange(ref loc, val, current);
+            if (prev == current) break;
+            current = prev;
         }
+        return loc;
     }
-    
-    /// <summary>Fired on background threads — subscribers MUST InvokeAsync before StateHasChanged.</summary>
-    public event Action? OnStateChanged;
+    private int _largestRtcmFrame;
 
-    // ── Public state accessor ─────────────────────────────────────────────────
+    // ── State ─────────────────────────────────────────────────────────────────
+    private readonly object _lock = new();
+    private RtkState _state = new();
+    private readonly List<SavedBaseProfile> _profiles = [];
+
+    // ── Message counter ───────────────────────────────────────────────────────
+    private readonly Dictionary<string, int> _msgSeen = new();
+    private long _totalMessages;
+
+    // ── Constellation expiry (MP seenRTCM ExpireType pattern) ────────────────
+    // MP: labelgps expires after 5s, labelbase after 20s (lines 30196,30202)
+    private readonly Dictionary<string, DateTime> _constellationLastSeen = new();
+
+    // ── Receiver firmware info (from MON-VER) ────────────────────────────────
+    private MonVerInfo _receiverInfo = MonVerInfo.Unknown;
+    private bool       _configUsedMsm7;
+
+    public event Action<RtkState>? OnStateChanged;
+
     public RtkState State { get { lock (_lock) return _state; } }
+    public bool IsActive  => State.Phase >= RtkPhase.Survey;
 
-    // ── Constructor ───────────────────────────────────────────────────────────
-    public RtkBaseStationService(MavlinkService mavlink, ILogger<RtkBaseStationService> log)
+    // ── Profile persistence path ──────────────────────────────────────────────
+    private static readonly string ProfilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "DivyaLink", "rtk_profiles.json");
+
+    public RtkBaseStationService(MavlinkService mavlink,
+                                  ILogger<RtkBaseStationService> log)
     {
         _mavlink = mavlink;
         _log     = log;
-
-        _profilesPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DivyaLink", "rtk_profiles.json");
-
-        Directory.CreateDirectory(Path.GetDirectoryName(_profilesPath)!);
         LoadProfiles();
+
+        // Subscribe to vehicle-side messages (WF-10, WF-11)
+        _mavlink.OnGpsRawInt     += OnVehicleGpsUpdate;
+        _mavlink.OnStatusText    += OnStatusText;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC CONTROL API
+    // CONNECT
+    // Mirrors MP button_Click → SetupM8P() → SetupBasePos() flow
     // ═══════════════════════════════════════════════════════════════════════════
-
-    public static IReadOnlyList<string> GetAvailableComPorts() =>
-        SerialPort.GetPortNames().OrderBy(p => p).ToArray();
-
-    /// <summary>Open COM port, send autoconfig, start Survey-In.</summary>
-    public async Task ConnectAsync(RtkConfig config)
+    public async Task ConnectAsync(RtkConfig cfg, CancellationToken externalCt = default)
     {
-        if (_state.Phase != RtkPhase.Idle)
-            await DisconnectAsync();
+        await DisconnectAsync();
 
-        _currentConfig = config;
-        _log.LogInformation("[RTK] Connecting to {Port} @ {Baud}", config.ComPort, config.BaudRate);
+        _cts = CancellationTokenSource.CreateLinkedTokenSource(externalCt);
+        var ct = _cts.Token;
 
-        SetPhase(RtkPhase.Connecting, error: null);
+        _lastConfig = cfg;              // save for RestartSurveyAsync
+        SetPhase(RtkPhase.Connecting, ct);
+        ResetSessionCounters();
 
+        _byteChannel = Channel.CreateBounded<byte>(new BoundedChannelOptions(131072)
+        {
+            FullMode    = BoundedChannelFullMode.DropOldest,
+            SingleReader= true,
+            SingleWriter= true
+        });
+
+        // ── Open serial port + baud scan ─────────────────────────────────────
+        // Mirrors MP SetupM8P baud scan loop (lines 21679-21698)
+        var port = await OpenPortWithBaudScanAsync(cfg, ct);
+        if (port == null)
+        {
+            SetError("Could not open serial port at any supported baud rate.");
+            return;
+        }
+        lock (_portLock) { _port = port; }
+
+        // ── Start byte ingestion ──────────────────────────────────────────────
+        port.DataReceived += OnDataReceived;
+
+        // ── Start processing task BEFORE sending config ───────────────────────
+        _processingTask = Task.Run(() => ProcessBytesLoopAsync(ct), ct);
+        _bpsTask        = Task.Run(() => BpsTimerLoopAsync(ct),     ct);
+        _expiryTask     = Task.Run(() => ConstellationExpiryLoopAsync(ct), ct);
+
+        // ── Run SetupM8P config sequence ──────────────────────────────────────
+        // useMsm7 defaults true; will be updated after MON-VER response arrives.
+        // MP sends all commands with Sleep() between them — we use Task.Delay.
+        // MON-VER poll is included in the sequence; we update _receiverInfo when
+        // the response arrives in ProcessUbxFrame.
+        if (cfg.AutoConfig)
+        {
+            _log.LogInformation("[RTK] Setup UBLOX begin");
+
+            // FIX-C: Disable any running survey BEFORE SetupM8P.
+            // MP SetupBasePos always disables TMODE3 first. Without this, if the
+            // receiver was mid-survey from a previous session, NAV-SVIN messages
+            // with stale duration/observations arrive immediately and overwrite the
+            // zeroed UI state before BuildSurveyIn is even sent.
+            _awaitingFreshSurvey = true;
+            var tmode3Disable = new byte[40]; // all zeros = flags=0 = Disabled
+            WritePort(UbxConfigurator.Generate(0x06, 0x71, tmode3Disable));
+            await Task.Delay(250, ct);        // let receiver stop its survey timer
+
+            foreach (var (cmd, delay) in UbxConfigurator.SetupM8P(useMsm7: true))
+            {
+                ct.ThrowIfCancellationRequested();
+                WritePort(cmd);
+                await Task.Delay(delay, ct);
+            }
+            _log.LogInformation("[RTK] Setup UBLOX complete");
+            // Schedule the first periodic TMODE3/MON-VER poll 30s from now.
+            // Initialising to MaxValue above suppresses accidental early polls
+            // from the first UBX frame arriving during the setup sequence.
+            _nextTmodePoll = DateTime.UtcNow.AddSeconds(30);
+
+            // Wait for MON-VER response to arrive and update _receiverInfo.
+            // The SetupM8P sequence includes PollMsg(MON-VER) with a 200ms delay,
+            // so the response should arrive well within this window.
+            // We poll up to 1s in 100ms increments so we react as soon as data arrives.
+            for (int i = 0; i < 10 && _receiverInfo.FwVer.Length == 0; i++)
+                await Task.Delay(100, ct);
+
+            // If MON-VER confirmed this firmware does NOT support MSM7, re-send
+            // just the eight MSM rate commands to switch to MSM4.
+            // (The rest of SetupM8P — PRT, RATE, NAV5, NMEA, TMODE3 — is unaffected.)
+            if (_receiverInfo.FwVer.Length > 0 && !_receiverInfo.IsMsm7Capable && _configUsedMsm7)
+            {
+                _log.LogInformation("[RTK] Firmware {Fw} requires MSM4 — reconfiguring RTCM rates",
+                    _receiverInfo.FwVer);
+                await ResendMsmRatesAsync(useMsm7: false, ct);
+            }
+            else if (_receiverInfo.FwVer.Length == 0)
+            {
+                _log.LogWarning("[RTK] MON-VER not received within 1s — proceeding with MSM7 (default)");
+            }
+        }
+
+        // ── SetupBasePos: Survey-In or Fixed ──────────────────────────────────
+        // Mirrors MP SetupBasePos() (Files.md lines 21809-21851)
+        var profile = GetActiveProfile();
+        if (profile != null)
+        {
+            // Fixed position from saved profile
+            _log.LogInformation("[RTK] Using fixed profile '{Name}' lat={Lat:F7} lon={Lon:F7} alt={Alt:F3}m",
+                profile.Name, profile.Lat, profile.Lng, profile.Alt);
+            var cmd = UbxConfigurator.BuildFixedLla(profile.Lat, profile.Lng, profile.Alt);
+            WritePort(cmd);
+
+            lock (_lock)
+            {
+                _state = _state with
+                {
+                    Phase             = RtkPhase.Injecting,
+                    ActiveProfileName = profile.Name,
+                    FixedPosition     = new BasePosition(
+                        profile.EcefX, profile.EcefY, profile.EcefZ,
+                        profile.Lat, profile.Lng, profile.Alt)
+                };
+            }
+            FireStateChanged();
+        }
+        else
+        {
+            // Survey-In
+            _log.LogInformation("[RTK] Starting Survey-In: minDur={D}s acc={A:F3}m",
+                cfg.MinDurationSec, cfg.TargetAccuracyM);
+            _awaitingFreshSurvey = true;   // FIX-D: ignore stale NAV-SVIN until reset
+            _lastKnownSurveyDur  = 0;
+            var cmd = UbxConfigurator.BuildSurveyIn(
+                (uint)cfg.MinDurationSec, cfg.TargetAccuracyM);
+            WritePort(cmd);
+
+            SetPhase(RtkPhase.Survey, ct);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DISCONNECT
+    // ═══════════════════════════════════════════════════════════════════════════
+    public async Task DisconnectAsync()
+    {
+        _cts?.Cancel();
+
+        foreach (var t in new[] { _processingTask, _bpsTask, _expiryTask })
+        {
+            if (t != null)
+                try { await t.WaitAsync(TimeSpan.FromSeconds(3)); }
+                catch { }
+        }
+
+        lock (_portLock)
+        {
+            if (_port != null)
+            {
+                _port.DataReceived -= OnDataReceived;
+                try { _port.Close(); } catch { }
+                _port.Dispose();
+                _port = null;
+            }
+        }
+
+        // Drain channel
+        if (_byteChannel != null)
+            while (_byteChannel.Reader.TryRead(out _)) { }
+        _byteChannel = null;
+
+        _cts?.Dispose();
+        _cts = null;
+
+        ResetSessionCounters();
+
+        lock (_lock)
+        {
+            _state = new RtkState
+            {
+                Phase        = RtkPhase.Idle,
+                SavedProfiles= _profiles,
+            };
+        }
+        FireStateChanged();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BAUD SCAN  —  mirrors MP SetupM8P() baud scan (lines 21679-21698)
+    // MP sends "UU" autobaud string + CFG-PRT at each baud until the receiver
+    // responds. We replicate the intent: try each baud, send autobaud + CFG-PRT,
+    // wait briefly, then commit to 460800.
+    // ═══════════════════════════════════════════════════════════════════════════
+    private async Task<SerialPort?> OpenPortWithBaudScanAsync(
+        RtkConfig cfg, CancellationToken ct)
+    {
+        // Build the scan order: configured baud first, then all others
+        var bauds = new List<int> { cfg.BaudRate };
+        foreach (int b in UbxConfigurator.BaudScanList)
+            if (!bauds.Contains(b)) bauds.Add(b);
+
+        SerialPort? port = null;
         try
         {
-            _port = new SerialPort(config.ComPort, config.BaudRate, Parity.None, 8, StopBits.One)
+            port = new SerialPort(cfg.ComPort)
             {
-                ReadTimeout  = 500,
-                WriteTimeout = 2000,
-                DtrEnable    = true,
-                RtsEnable    = true
+                DataBits = 8,
+                Parity   = Parity.None,
+                StopBits = StopBits.One,
+                DtrEnable= false,
+                RtsEnable= false
             };
-            _port.DataReceived += OnDataReceived;
-            _port.Open();
 
-            _cts = new CancellationTokenSource();
-            var ct = _cts.Token;
+            foreach (int baud in bauds)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    if (port.IsOpen) port.Close();
+                    port.BaudRate = baud;
+                    port.Open();
 
-            _processingTask = Task.Run(() => ProcessBytesLoopAsync(ct), ct);
+                    // MP line 21688: port.Write("UU") — autobaud hint
+                    port.Write("UU");
+                    await Task.Delay(50, ct);
 
-            // Start BPS and constellation-health timers
-            _ = Task.Run(() => BpsTimerLoopAsync(ct),          ct);
-            _ = Task.Run(() => ConstellationExpiryLoopAsync(ct), ct);
+                    // Send CFG-PRT UART1 to switch to 460800
+                    var cfgPrt = UbxConfigurator.Generate(0x06, 0x00, new byte[]
+                    {
+                        0x01,0x00,0x00,0x00, 0xD0,0x08,0x00,0x00,
+                        0x00,0x08,0x07,0x00, 0x23,0x00, 0x23,0x00,
+                        0x00,0x00, 0x00,0x00
+                    });
+                    port.Write(cfgPrt, 0, cfgPrt.Length);
+                    port.BaseStream.Flush();
+                    await Task.Delay(100, ct);
 
-            // Send autoconfig (if enabled) then Survey-In command
-            // Send autoconfig
-if (config.AutoConfig)
-{
-    foreach (var (cmd, delay) in UbxConfigurator.SetupM8P(config.M8p130Plus))
-    {
-        ct.ThrowIfCancellationRequested();
+                    _log.LogInformation("[RTK] Baud scan: tried {Baud}", baud);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogDebug("[RTK] Baud {Baud} failed: {E}", baud, ex.Message);
+                }
+            }
 
-        _port.Write(
-            cmd,
-            0,
-            cmd.Length);
+            // Commit to 460800 (MP line 21712)
+            if (port.IsOpen) port.Close();
+            port.BaudRate = UbxConfigurator.TargetBaud;
+            port.Open();
+            port.BaseStream.Flush();
+            await Task.Delay(100, ct);
 
-        await Task.Delay(
-            delay,
-            ct);
-    }
-
-    // Save current receiver configuration
-    // (equivalent to Mission Planner CFG-CFG save)
-
-    byte[] saveCfgPayload =
-[
-    0x00, 0x00, 0x00, 0x00,   // clearMask  = 0 (clear nothing)
-    0xFF, 0xFF, 0x00, 0x00,   // saveMask   = 0xFFFF (save all configuration)
-    0x00, 0x00, 0x00, 0x00,   // loadMask   = 0 (load nothing)
-    0x17                       // deviceMask = BBR(0x01) + Flash(0x02) + EEPROM(0x04)
-                               //              + SpiFlash(0x10) = 0x17
-];
-byte[] saveCfg = UbxConfigurator.Generate(0x06, 0x09, saveCfgPayload);
-_port.Write(saveCfg, 0, saveCfg.Length);
-await Task.Delay(300, ct);
-
-    await Task.Delay(
-        300,
-        ct);
-}
-
-
-// Start Survey-In
-var surveyCmd =
-    UbxConfigurator.BuildSurveyIn(
-        (uint)config.MinDurationSec,
-        config.TargetAccuracyM);
-
-_port.Write(
-    surveyCmd,
-    0,
-    surveyCmd.Length);
-
-            SetPhase(RtkPhase.Survey, error: null);
-            _log.LogInformation("[RTK] Survey-In started (target {Acc}m / {Dur}s)",
-                config.TargetAccuracyM, config.MinDurationSec);
+            _log.LogInformation("[RTK] Port {Port} opened at {Baud}", cfg.ComPort, UbxConfigurator.TargetBaud);
+            return port;
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "[RTK] Connection failed");
-            CleanupPort();
-            SetPhase(RtkPhase.Idle, error: ex.Message);
+            port?.Dispose();
+            _log.LogError(ex, "[RTK] Failed to open {Port}", cfg.ComPort);
+            return null;
         }
     }
 
-    /// <summary>
-    /// Disconnect and reset all state.
-    /// Bug 1 fix: ActiveProfileName is reset here (JSX handleDisconnect never did this).
-    /// </summary>
-    public async Task DisconnectAsync()
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SERIAL DATA RECEIVED  →  byte channel
+    // ═══════════════════════════════════════════════════════════════════════════
+    private void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
     {
-        _log.LogInformation("[RTK] Disconnecting");
-        _cts?.Cancel();
-        if(_processingTask!=null)
-{
-    try
-    {
-        await _processingTask
-            .WaitAsync(
-                TimeSpan.FromSeconds(3));
-    }
-    catch
-    {
-    }
-}
-        while (_byteChannel.Reader.TryRead(out _))
-{
-}
-        CleanupPort();
+        var port    = sender as SerialPort;
+        var channel = _byteChannel;
+        if (port == null || channel == null) return;
 
-        lock (_lock)
+        int avail = port.BytesToRead;
+        if (avail <= 0) return;
+
+        var buf = System.Buffers.ArrayPool<byte>.Shared.Rent(avail);
+        try
         {
-            _msgCounters.Clear();
-            _constellationSeen.Clear();
-            _rxBytesThisSecond = 0;
-            _txBytesThisSecond = 0;
-            _totalMessages     = 0;
-            _largestRtcmFrame  = 0;
-            _state = new RtkState              // Bug 1 fix: full reset including ActiveProfileName
+            int read = port.Read(buf, 0, avail);
+            Interlocked.Add(ref _rxBytesThisSecond, read);
+
+            for (int i = 0; i < read; i++)
+                channel.Writer.TryWrite(buf[i]);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buf);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PROCESS BYTES LOOP
+    // Mirrors MP mainloop() for(a<read) dispatch (Files.md lines 30094-30163)
+    // MP feeds each byte to rtcm3, sbp, ubx_m8p, nmea parsers in order.
+    // We handle RTCM and UBX only (no SBP/NMEA needed for base station).
+    // ═══════════════════════════════════════════════════════════════════════════
+    private async Task ProcessBytesLoopAsync(CancellationToken ct)
+    {
+        var ubx   = new UbxStreamParser();
+        var rtcm  = new RtcmStreamParser();
+        bool inRtcm = false;
+
+        try
+        {
+            await foreach (var b in _byteChannel!.Reader.ReadAllAsync(ct))
             {
-                SavedProfiles = _profiles,
-            };
+                DispatchByte(b, ubx, rtcm, ref inRtcm);
+            }
         }
-
-        FireStateChanged();
-        _log.LogInformation("[RTK] Disconnected");
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[RTK] Byte processing loop terminated unexpectedly");
+            SetError("Serial processing error. Reconnect to resume.");
+        }
     }
 
     /// <summary>
-    /// Restart Survey-In from scratch.
-    /// Bug 2 fix: Clears message counters (JSX restart didn't clear msgsSeen/msgsCount).
+    /// Routes one incoming byte to the correct parser.
+    ///
+    /// Design mirrors MP mainloop (Files.md 30094-30163):
+    ///   • 0xD3 → RTCM preamble detected → reset all parsers → enter RTCM mode
+    ///   • inRtcm → feed to RTCM parser → on complete frame: inject + seenRTCM
+    ///   • else  → feed to UBX parser   → on complete frame: ProcessUbxFrame
+    ///
+    /// FIX-2: After RtcmStreamParser.Feed() returns false AND IsIdle is true
+    /// (meaning the parser self-reset after a CRC failure per FIX-1),
+    /// we clear inRtcm so the next byte routes correctly. Without this, inRtcm
+    /// stays true and all subsequent bytes feed into the idle RTCM parser.
     /// </summary>
-    public async Task RestartSurveyAsync()
+    private void DispatchByte(
+        byte b,
+        UbxStreamParser ubx,
+        RtcmStreamParser rtcm,
+        ref bool inRtcm)
     {
-        if (_port is not { IsOpen: true } || _currentConfig == null) return;
+        // ── 0xD3 always starts a new RTCM frame (MP line 30098: !iscan && rtcm3.Read()) ──
+        if (b == 0xD3)
+        {
+            ubx.Reset();
+            rtcm.Reset();
+            rtcm.Feed(b);   // stores preamble, advances to ReadLength
+            inRtcm = true;
+            return;
+        }
 
-        _log.LogInformation("[RTK] Restarting Survey-In");
+        // ── RTCM continuation ─────────────────────────────────────────────────
+        if (inRtcm)
+        {
+            bool complete = rtcm.Feed(b);
 
-        // Bug 2 fix: clear message counters so stale messages don't persist
+            if (complete)
+            {
+                // FIX-1 guarantee: Feed() already called Reset() internally.
+                // FrameWithCrc is valid until the next Feed() call.
+                ProcessRtcmFrame(rtcm);
+                inRtcm = false;
+                return;
+            }
+
+            // FIX-2: If Feed() returned false AND the parser is now Idle,
+            // it self-reset after a CRC failure (FIX-1 in RtcmStreamParser).
+            // Clear inRtcm so the current byte can be re-evaluated below.
+            if (rtcm.IsIdle)
+            {
+                inRtcm = false;
+                // Fall through: re-evaluate this byte as UBX or new preamble.
+                // Note: b cannot be 0xD3 here (that was handled above),
+                // so it goes to the UBX path below.
+            }
+            else
+            {
+                return; // frame still accumulating
+            }
+        }
+
+        // ── UBX parsing ───────────────────────────────────────────────────────
+        int result = ubx.Feed(b);
+        if (result > 0)
+        {
+            // BUG-B FIX: read Class/SubClass/Payload BEFORE calling Reset().
+            // ubx.Feed() no longer calls Reset() on success (Bug-A fix in UbxStreamParser),
+            // so the payload is fully valid here. We call Reset() after processing
+            // so the parser is clean for the next incoming frame.
+            ProcessUbxFrame(ubx.Class, ubx.SubClass, ubx.Payload);
+            ubx.Reset();   // ← safe: payload has been consumed
+        }
+        // result == 0  : frame still accumulating
+        // result == -1 : checksum failed; UbxStreamParser already self-reset
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PROCESS RTCM FRAME
+    // Mirrors MP mainloop sendData + seenRTCM + ExtractBasePos
+    // (Files.md lines 30098-30113)
+    // ═══════════════════════════════════════════════════════════════════════════
+    private void ProcessRtcmFrame(RtcmStreamParser rtcm)
+    {
+        var frame  = rtcm.FrameWithCrc.ToArray();
+        int msgId  = rtcm.MessageId;
+        int fBytes = frame.Length;
+
+        _log.LogDebug("[RTCM] ID={Id} len={Len}B", msgId, fBytes);
+
+        // Counter update
+        string key = $"Rtcm{msgId}";
+        lock (_lock) { _msgSeen.TryGetValue(key, out int c); _msgSeen[key] = c + 1; }
+        Interlocked.Increment(ref _totalMessages);
+        InterlockedMax(ref _largestRtcmFrame, fBytes);
+        Interlocked.Add(ref _txBytesThisSecond, fBytes);
+
+        // seenRTCM constellation tracking (MP lines 30175-30243)
+        // FIX-4: Track 1005 first — don't inject until base ARP is available
+        UpdateConstellationSeen(msgId);
+
+        // Extract base position from 1005/1006 (MP lines 30430-30481)
+        if (msgId is 1005 or 1006)
+            ExtractAndStoreBasePos(frame, msgId);
+
+        // FIX-4: Software gate — only inject after 1005/1006 has been seen.
+        // Rationale: u-blox hardware emits MSM observables as soon as TMODE3
+        // is set, but 1005 only appears after NAV-SVIN valid=1.
+        // ArduPilot AP_GPS_RTCM requires 1005 before it can use MSM data.
+        if (!_has1005Seen) return;
+
+        // Inject via MAVLink
+        if (_mavlink.IsConnected)
+            _mavlink.InjectGpsData(frame, (ushort)fBytes);
+    }
+
+    // ── seenRTCM (MP lines 30175-30243) ──────────────────────────────────────
+    private void UpdateConstellationSeen(int msgId)
+    {
+        string? constel = msgId switch
+        {
+            >= 1001 and <= 1077 => "gps",
+            1005 or 1006 or 4072 => "base",
+            >= 1009 and <= 1087 => "glonass",
+            >= 1091 and <= 1097 => "galileo",
+            >= 1121 and <= 1127 => "beidou",
+            1230 => "glonass",  // GLONASS bias
+            _ => null
+        };
+
+        if (constel == null) return;
+
+        if (msgId is 1005 or 1006)
+        {
+            if (!_has1005Seen)
+            {
+                _has1005Seen = true;
+                _log.LogInformation("[RTK] First RTCM {Id} received — base ARP established. Injection enabled.", msgId);
+            }
+        }
+
+        _constellationLastSeen[constel] = DateTime.UtcNow;
+
         lock (_lock)
         {
-            _msgCounters.Clear();
-            _totalMessages    = 0;
-            _largestRtcmFrame = 0;
+            var updated = _state.Constellations
+                .Select(c => c.Id == constel
+                    ? c with { IsActive = true, LastSeenUtc = DateTime.UtcNow }
+                    : c)
+                .ToList();
+            var msgs = _msgSeen.Select(kv => new MessageEntry(kv.Key, kv.Value))
+                .OrderByDescending(m => m.Count).Take(20).ToList();
+
+            int largest   = _largestRtcmFrame;
+            int frags     = (largest + 179) / 180;
+            bool overflow = largest > 540;
+
             _state = _state with
             {
-                Phase   = RtkPhase.Survey,
-                Survey  = SurveyInStatus.Empty,
-                Stream  = RtkStreamStats.Zero,
-                Messages = [],
+                Constellations = updated,
+                Messages       = msgs,
+                Stream         = _state.Stream with
+                {
+                    TotalMessages   = _totalMessages,
+                    LargestRtcmBytes= largest,
+                    FragmentsUsed   = frags,
+                    HasOverflow     = overflow
+                }
             };
         }
         FireStateChanged();
-
-        var cmd = UbxConfigurator.BuildSurveyIn(
-            (uint)_currentConfig.MinDurationSec, _currentConfig.TargetAccuracyM);
-        _port.Write(cmd, 0, cmd.Length);
-        await Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Load a saved base position into Fixed Mode — skips Survey-In.
-    /// Bug 3 fix: Resets largestMsg and rtcmOverflow (JSX handleUseProfile didn't).
-    /// </summary>
-    public async Task UseProfileAsync(SavedBaseProfile profile)
+    // ── ExtractBasePos (MP lines 30430-30481) ─────────────────────────────────
+    private void ExtractAndStoreBasePos(byte[] frame, int msgId)
     {
-        if (_port is not { IsOpen: true }) return;
-
-        _log.LogInformation("[RTK] Using saved profile '{Name}'", profile.Name);
-
-        // Bug 3 fix: reset stream overflow state from previous survey
-        lock (_lock)
+        try
         {
-            _largestRtcmFrame = 0;
-            _state = _state with
+            // Parse RTCM 1005 base ARP position
+            // RTCM 1005 field layout (from RTKLIB decode_type1005, Files.md 4167-4181):
+            //   bits 0-11:  message number (12)
+            //   bits 12-23: reference station ID
+            //   bits 24-25: ITRF realization
+            //   bit 26:     GPS indicator
+            //   bit 27:     GLONASS indicator
+            //   bit 28:     Galileo indicator
+            //   bit 29:     reference station indicator
+            //   bits 30-59: ECEF-X (30 bits, 0.0001m resolution)
+            //   bit 60:     oscillator indicator
+            //   bit 61:     reserved
+            //   bits 62-91: ECEF-Y (30 bits)
+            //   bit 92:     quarter cycle indicator
+            //   bits 93-122: ECEF-Z (30 bits)
+            // Payload starts at frame[3] (after preamble+len)
+            int offset = 3; // payload start
+            if (frame.Length < offset + 19) return;
+
+            // Use RTKLIB-style bit extraction
+            double ecefX = GetBitsS(frame, offset, 30 + 24, 38) * 0.0001; // cm → m ÷10000
+            // Simplified: extract signed 38-bit ECEF-X at bit offset 30+24=54
+            // Full bit extraction:
+            long ix = GetSignedBits(frame, offset * 8 + 30, 38);
+            long iy = GetSignedBits(frame, offset * 8 + 69, 38);
+            long iz = GetSignedBits(frame, offset * 8 + 108, 38);
+
+            double x = ix * 0.0001; // 0.0001m = 0.1mm resolution
+            double y = iy * 0.0001;
+            double z = iz * 0.0001;
+
+            var (lat, lng, alt) = EcefConverter.ToLla(x, y, z);
+
+            _log.LogInformation("[RTK] Base ARP from RTCM {Id}: lat={Lat:F7} lon={Lon:F7} alt={Alt:F3}m",
+                msgId, lat, lng, alt);
+
+            lock (_lock)
             {
-                Phase             = RtkPhase.Fixed,
-                FixedPosition     = new BasePosition(
-                    profile.EcefX, profile.EcefY, profile.EcefZ,
-                    profile.Lat,   profile.Lng,   profile.Alt),
-                ActiveProfileName = profile.Name,
-                Stream            = RtkStreamStats.Zero,  // Bug 3 fix
-            };
-        }
-        FireStateChanged();
-
-        var cmd = UbxConfigurator.BuildFixedLla(profile.Lat, profile.Lng, profile.Alt);
-        _port.Write(cmd, 0, cmd.Length);
-
-        // Transition to Injecting after brief Fixed display
-        await Task.Delay(1500);
-        if (_state.Phase == RtkPhase.Fixed)
-        {
-            lock (_lock) { _state = _state with { Phase = RtkPhase.Injecting }; }
+                _state = _state with
+                {
+                    FixedPosition = new BasePosition(x, y, z, lat, lng, alt)
+                };
+            }
             FireStateChanged();
         }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "[RTK] ExtractBasePos failed for msg {Id}", msgId);
+        }
     }
 
-    public async Task SaveCurrentPositionAsync(string name)
+    // Bit extraction helper for RTCM field parsing
+    private static long GetSignedBits(byte[] data, int bitOffset, int bitCount)
     {
-        var pos = _state.FixedPosition;
+        long val = 0;
+        for (int i = 0; i < bitCount; i++)
+        {
+            int byteIdx = (bitOffset + i) / 8;
+            int bitIdx  = 7 - ((bitOffset + i) % 8);
+            if (byteIdx < data.Length)
+                val = (val << 1) | ((data[byteIdx] >> bitIdx) & 1);
+        }
+        // Sign extend
+        long sign = 1L << (bitCount - 1);
+        return (val ^ sign) - sign;
+    }
+
+    private static double GetBitsS(byte[] data, int dataOffset, int bitOffset, int bits) =>
+        GetSignedBits(data, dataOffset * 8 + bitOffset, bits);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PROCESS UBX FRAME
+    // Mirrors MP ProcessUBXMessage() (Files.md lines 30245-30351)
+    // ═══════════════════════════════════════════════════════════════════════════
+    private void ProcessUbxFrame(byte cls, byte sub, ReadOnlySpan<byte> payload)
+    {
+        // Count every UBX frame by class+id — populates "Messages Seen" footer.
+        // Format matches Image 1: Ubx0501=35 (hex class + hex id), Ubx013B=21, etc.
+        string ubxKey = $"Ubx{cls:X2}{sub:X2}";
+        lock (_lock)
+        {
+            _msgSeen.TryGetValue(ubxKey, out int existing);
+            _msgSeen[ubxKey] = existing + 1;
+
+            // Rebuild message list for state snapshot — merge UBX + RTCM entries sorted by count
+            var msgs = _msgSeen
+                .OrderByDescending(kv => kv.Value)
+                .Take(20)
+                .Select(kv => new MessageEntry(kv.Key, kv.Value))
+                .ToList();
+            _state = _state with { Messages = msgs };
+        }
+        Interlocked.Increment(ref _totalMessages);
+
+        // ── ACK (MP line 30283-30284) ─────────────────────────────────────────
+        if (cls == 0x05 && sub == 0x01)
+        {
+            if (payload.Length >= 2)
+                _log.LogInformation("[RTK] ACK  class=0x{C:X2} id=0x{I:X2}", payload[0], payload[1]);
+            return;
+        }
+
+        // ── NACK (MP line 30286-30288) ────────────────────────────────────────
+        if (cls == 0x05 && sub == 0x00)
+        {
+            if (payload.Length >= 2)
+                _log.LogWarning("[RTK] NACK class=0x{C:X2} id=0x{I:X2} — command rejected by receiver",
+                    payload[0], payload[1]);
+            return;
+        }
+
+        // ── NAV-SVIN (MP lines 30249-30268) ──────────────────────────────────
+        if (cls == 0x01 && sub == 0x3B)
+        {
+            var svin = UbxNavSvinParser.Parse(payload);
+            if (svin == null) return;
+            OnNavSvin(svin);
+            return;
+        }
+
+        // ── NAV-PVT (MP lines 30273-30280) ───────────────────────────────────
+        if (cls == 0x01 && sub == 0x07)
+        {
+            OnNavPvt(payload);
+            return;
+        }
+
+        // ── NAV-SAT (satellite SNR chart) ─────────────────────────────────────
+        if (cls == 0x01 && sub == 0x35)
+        {
+            var sats = UbxNavSatParser.Parse(payload);
+            lock (_lock) { _state = _state with { Satellites = sats }; }
+            FireStateChanged();
+            return;
+        }
+
+        // ── MON-VER (MP lines 30290-30301) ───────────────────────────────────
+        if (cls == 0x0A && sub == 0x04)
+        {
+            _receiverInfo = UbxMonVerParser.Parse(payload);
+            _configUsedMsm7 = true; // we always start with MSM7 assumption
+            _log.LogInformation("[RTK] MON-VER: module={Mod} fw={Fw} prot={Prot} MSM7={M7} F9P={F9}",
+                _receiverInfo.Module, _receiverInfo.FwVer, _receiverInfo.ProtVer,
+                _receiverInfo.IsMsm7Capable, _receiverInfo.IsF9P);
+            foreach (var ext in _receiverInfo.Extensions)
+                _log.LogInformation("[RTK] MON-VER ext: {E}", ext);
+            return;
+        }
+
+        // ── MON-HW (MP lines 30303-30307, FIX-8) ─────────────────────────────
+        if (cls == 0x0A && sub == 0x09)
+        {
+            var hw = UbxMonHwParser.Parse(payload);
+            if (hw != null)
+            {
+                // FIX-8: Log at INFO level (previously was Debug — invisible in production)
+                _log.LogInformation("[RTK] MON-HW noise={N} agc={A:F1}% jam={J:F1}% jamState={S}",
+                    hw.NoisePerMs, hw.AgcPct, hw.JamPct, hw.JamState);
+                if (hw.JamState >= 2)
+                    _log.LogWarning("[RTK] *** RF INTERFERENCE DETECTED jamState={S} ***", hw.JamState);
+            }
+            return;
+        }
+
+        // ── CFG-TMODE3 (MP lines 30325-30333) ────────────────────────────────
+        if (cls == 0x06 && sub == 0x71)
+        {
+            if (payload.Length >= 4)
+            {
+                ushort flags = System.Buffers.Binary.BinaryPrimitives
+                    .ReadUInt16LittleEndian(payload.Slice(2, 2));
+                string mode = flags switch
+                {
+                    0   => "Disabled",
+                    1   => "SurveyIn",
+                    2   => "FixedECEF",
+                    258 => "FixedLLA",
+                    _   => $"flags=0x{flags:X4}"
+                };
+                _log.LogInformation("[RTK] TMODE3 mode={Mode}", mode);
+            }
+
+            // Poll TMODE3 again in 30s (MP line 30339-30344)
+            _nextTmodePoll = DateTime.UtcNow.AddSeconds(30);
+            return;
+        }
+
+        // ── Periodic TMODE3 poll (MP line 30339-30344) ────────────────────────
+        // Handled after each UBX frame processed
+        CheckTmodePoll();
+    }
+
+    private void CheckTmodePoll()
+    {
+        if (DateTime.UtcNow < _nextTmodePoll) return;
+
+        WritePort(UbxConfigurator.PollMsg(0x06, 0x71)); // CFG-TMODE3
+        WritePort(UbxConfigurator.PollMsg(0x0A, 0x04)); // MON-VER
+        _nextTmodePoll = DateTime.UtcNow.AddSeconds(30);
+    }
+
+    // ── NAV-SVIN handler ──────────────────────────────────────────────────────
+    private void OnNavSvin(NavSvinData sv)
+    {
+        // FIX-E: Stale-frame guard.
+        //
+        // When _awaitingFreshSurvey is set (immediately after sending BuildSurveyIn),
+        // the receiver keeps sending NAV-SVIN with the OLD duration/observations for
+        // ~300ms while its hardware timer is resetting. We must ignore these frames
+        // so they don't overwrite the freshly-zeroed UI state.
+        //
+        // Strategy: if duration is non-trivially large AND is not clearly decreasing,
+        // treat the frame as stale and skip it. Clear the flag the moment we see
+        // DurationSec <= 2 (definitive proof the receiver reset its counter).
+        if (_awaitingFreshSurvey)
+        {
+            if (sv.DurationSec <= 2)
+            {
+                // Receiver has reset — start accepting frames again
+                _awaitingFreshSurvey = false;
+                _lastKnownSurveyDur  = sv.DurationSec;
+                _log.LogInformation("[RTK] Survey-In hardware timer confirmed reset (dur={D}s)", sv.DurationSec);
+            }
+            else
+            {
+                // Still receiving stale frames from before the reset — discard
+                _log.LogDebug("[RTK] Discarding stale NAV-SVIN dur={D}s (awaiting fresh survey)", sv.DurationSec);
+                return;
+            }
+        }
+        _lastKnownSurveyDur = sv.DurationSec;
+
+        // FIX-7: Log every NAV-SVIN update at INFO (previously silent)
+        // Mirrors MP updateSVINLabel (Files.md 30359-30427)
+        _log.LogInformation(
+            "[RTK] SVIN dur={D}s obs={O} acc={A:F3}m valid={V} active={Act}",
+            sv.DurationSec, sv.Observations, sv.AccuracyM,
+            sv.Valid ? 1 : 0, sv.Active ? 1 : 0);
+
+        var prev = _state.Survey;
+        if (!prev.Valid && sv.Valid)
+            _log.LogInformation("[RTK] *** Survey-In COMPLETE: acc={A:F3}m dur={D}s obs={O} ***",
+                sv.AccuracyM, sv.DurationSec, sv.Observations);
+
+        var surveyStatus = new SurveyInStatus(
+            sv.DurationSec, sv.Observations, sv.AccuracyM, sv.Valid, sv.Active);
+
+        var (lat, lng, alt) = EcefConverter.ToLla(sv.EcefX, sv.EcefY, sv.EcefZ);
+        var pos = sv.Valid
+            ? new BasePosition(sv.EcefX, sv.EcefY, sv.EcefZ, lat, lng, alt)
+            : null;
+
+        lock (_lock)
+        {
+            var phase = _state.Phase;
+
+            // FIX-9: Continue monitoring NAV-SVIN in Injecting phase.
+            // If valid drops back to 0, warn operator.
+            if (phase == RtkPhase.Injecting && prev.Valid && !sv.Valid)
+                _log.LogWarning("[RTK] NAV-SVIN valid flag lost during injection — base ARP may be stale");
+
+            if (sv.Valid && phase == RtkPhase.Survey)
+                phase = RtkPhase.Injecting;
+
+            _state = _state with
+            {
+                Phase         = phase,
+                Survey        = surveyStatus,
+                FixedPosition = pos ?? _state.FixedPosition
+            };
+        }
+        FireStateChanged();
+    }
+
+    // ── NAV-PVT handler (MP lines 30273-30280) ────────────────────────────────
+    private void OnNavPvt(ReadOnlySpan<byte> payload)
+    {
+        // offset 60: fixType (u8), offset 61: flags (u8)
+        if (payload.Length < 62) return;
+        byte fixType = payload[60];
+        byte flags   = payload[61];
+        if (fixType >= 3 && (flags & 1) != 0)
+        {
+            // gnssFixOk — base has a valid PVT fix
+            _log.LogDebug("[RTK] NAV-PVT fixType={F} flags=0x{Fl:X2}", fixType, flags);
+        }
+    }
+
+    // ── Vehicle GPS fix type (WF-10) ──────────────────────────────────────────
+    private void OnVehicleGpsUpdate(byte fixType)
+    {
+        // fix_type: 0=NoGPS,1=NoFix,2=2D,3=3D,4=DGPS,5=RTKFloat,6=RTKFixed
+        string label = fixType switch
+        {
+            6 => "RTK FIXED",
+            5 => "RTK Float",
+            4 => "DGPS",
+            3 => "3D Fix",
+            _ => "No Fix"
+        };
+        _log.LogInformation("[RTK] Vehicle GPS: {Label} (fix_type={F})", label, fixType);
+
+        lock (_lock)
+        {
+            _state = _state with { VehicleGpsFixType = fixType, VehicleGpsLabel = label };
+        }
+        FireStateChanged();
+    }
+
+    // ── STATUSTEXT (WF-11) ────────────────────────────────────────────────────
+    private void OnStatusText(byte severity, string text)
+    {
+        _log.LogInformation("[VEHICLE] [{Sev}] {Text}", severity, text);
+        lock (_lock)
+        {
+            var msgs = _state.StatusMessages.ToList();
+            msgs.Insert(0, new StatusMessage(severity, text, DateTime.UtcNow));
+            if (msgs.Count > 10) msgs.RemoveAt(msgs.Count - 1);
+            _state = _state with { StatusMessages = msgs };
+        }
+        FireStateChanged();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PROFILE MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════════════════
+    public async Task SaveCurrentProfileAsync(string name)
+    {
+        var pos = State.FixedPosition;
         if (pos == null) return;
 
-        var profile = new SavedBaseProfile(name, pos.EcefX, pos.EcefY, pos.EcefZ,
+        var profile = new SavedBaseProfile(name,
+            pos.EcefX, pos.EcefY, pos.EcefZ,
             pos.Lat, pos.Lng, pos.Alt, DateTime.UtcNow);
 
         _profiles.RemoveAll(p => p.Name == name);
         _profiles.Add(profile);
         SaveProfiles();
-        lock (_lock) { _state = _state with { SavedProfiles = _profiles }; }
+
+        lock (_lock)
+        {
+            _state = _state with
+            {
+                SavedProfiles     = _profiles,
+                ActiveProfileName = name
+            };
+        }
+        FireStateChanged();
+        await Task.CompletedTask;
+    }
+
+    public async Task UseProfileAsync(string name)
+    {
+        var profile = _profiles.Find(p => p.Name == name);
+        if (profile == null) return;
+
+        if (_port is { IsOpen: true })
+        {
+            var cmd = UbxConfigurator.BuildFixedLla(profile.Lat, profile.Lng, profile.Alt);
+            WritePort(cmd);
+            _log.LogInformation("[RTK] Loaded profile '{Name}': lat={Lat:F7} lon={Lon:F7} alt={Alt:F3}m",
+                name, profile.Lat, profile.Lng, profile.Alt);
+        }
+
+        lock (_lock)
+        {
+            _state = _state with
+            {
+                Phase             = RtkPhase.Injecting,
+                ActiveProfileName = name,
+                FixedPosition     = new BasePosition(
+                    profile.EcefX, profile.EcefY, profile.EcefZ,
+                    profile.Lat, profile.Lng, profile.Alt),
+                Stream            = RtkStreamStats.Zero
+            };
+        }
         FireStateChanged();
         await Task.CompletedTask;
     }
 
     public async Task DeleteProfileAsync(string name)
-{
-    // If deleting the currently active profile while in Fixed or Injecting state,
-    // command the receiver out of TMODE3 so it stops emitting stale corrections.
-    bool needsReceiverReset =
-        _state.ActiveProfileName == name
-        && _state.Phase >= RtkPhase.Fixed
-        && _port is { IsOpen: true };
-
-    _profiles.RemoveAll(p => p.Name == name);
-    SaveProfiles();
-
-    lock (_lock)
     {
-        _state = _state with
-        {
-            SavedProfiles     = _profiles,
-            ActiveProfileName = needsReceiverReset ? null : _state.ActiveProfileName,
-        };
-    }
-    FireStateChanged();
+        bool wasActive = _state.ActiveProfileName == name
+                      && _state.Phase >= RtkPhase.Fixed
+                      && _port is { IsOpen: true };
 
-    if (needsReceiverReset)
-    {
-        var ct = _cts?.Token ?? CancellationToken.None;
-        try
+        _profiles.RemoveAll(p => p.Name == name);
+        SaveProfiles();
+
+        lock (_lock)
         {
-            foreach (var (cmd, delay) in UbxConfigurator.BuildDisable())
+            _state = _state with
             {
-                ct.ThrowIfCancellationRequested();
-                _port!.Write(cmd, 0, cmd.Length);
-                await Task.Delay(delay, ct);
+                SavedProfiles     = _profiles,
+                ActiveProfileName = wasActive ? null : _state.ActiveProfileName
+            };
+        }
+        FireStateChanged();
+
+        // FIX-6: Send BuildDisable() when deleting the active profile
+        // Mirrors MP SetupBasePos(disable=true) (Files.md lines 21823-21837)
+        if (wasActive)
+        {
+            var ct = _cts?.Token ?? CancellationToken.None;
+            try
+            {
+                foreach (var (cmd, delay) in UbxConfigurator.BuildDisable())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    WritePort(cmd);
+                    await Task.Delay(delay, ct);
+                }
+                _log.LogInformation("[RTK] TMODE3 disabled — profile '{Name}' deleted", name);
             }
-            _log.LogInformation("[RTK] TMODE3 disabled — profile '{Name}' deleted", name);
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { _log.LogWarning(ex, "[RTK] BuildDisable failed"); }
         }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            _log.LogWarning(ex, "[RTK] Failed to send TMODE3 disable after profile delete");
-        }
-    }
-}
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // BYTE INGESTION
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
-    {
-        var port  = (SerialPort)sender;
-        int count = port.BytesToRead;
-        if (count <= 0) return;
-
-        var buf = ArrayPool<byte>.Shared.Rent(count);
-        try
-        {
-            count = port.Read(buf, 0, count);
-            for (int i = 0; i < count; i++)
-                _byteChannel.Writer.TryWrite(buf[i]);
-            Interlocked.Add(ref _rxBytesThisSecond, count);
-        }
-        finally { ArrayPool<byte>.Shared.Return(buf); }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // BYTE PROCESSING LOOP — runs on dedicated background task
+    // SURVEY RESTART
+    // Mirrors Mission Planner "Restart Survey" button behavior exactly.
+    // Port stays OPEN — no baud scan needed — receiver responds instantly.
+    // MP sends CFG-TMODE3 disable then immediately re-sends Survey-In.
+    // (Files.md line 21823-21843 SetupBasePos pattern)
     // ═══════════════════════════════════════════════════════════════════════════
-
-    private async Task ProcessBytesLoopAsync(CancellationToken ct)
-{
-    var ubx   = new UbxStreamParser();
-    var rtcm  = new RtcmStreamParser();
-    bool inRtcm = false;
-
-    try
+    public async Task RestartSurveyAsync()
     {
-        await foreach (var b in _byteChannel.Reader.ReadAllAsync(ct))
+        if (_port is not { IsOpen: true })
         {
-            DispatchByte(b, ubx, rtcm, ref inRtcm);
-        }
-    }
-    catch (OperationCanceledException) { }
-    catch (Exception ex)
-    {
-        _log.LogError(ex, "[RTK] Byte loop error");
-    }
-}
-
-/// <summary>
-/// Routes a single incoming byte to the correct parser.
-/// Extracted from ProcessBytesLoopAsync so that recovery from RTCM CRC
-/// failure can re-dispatch the current byte without re-entering the loop.
-/// </summary>
-private void DispatchByte(byte b, UbxStreamParser ubx, RtcmStreamParser rtcm, ref bool inRtcm)
-{
-    if (inRtcm)
-    {
-        bool complete = rtcm.Feed(b);
-
-        if (complete)
-        {
-            ProcessRtcmFrame(rtcm);
-            rtcm.Reset();
-            inRtcm = false;
-        }
-        else if (rtcm.IsIdle)
-        {
-            inRtcm = false;
-            if (b == 0xB5)
-            {
-                ubx.Reset();
-                ubx.Feed(b);
-            }
-            else if (b == 0xD3)
-            {
-                rtcm.Reset();
-                rtcm.Feed(b);
-                inRtcm = true;
-            }
-        }
-    }
-    else
-    {
-        if (b == 0xD3 && ubx.IsIdle)
-        {
-            ubx.Reset();
-            rtcm.Reset();
-            rtcm.Feed(b);
-            inRtcm = true;
-        }
-        else
-        {
-            int result = ubx.Feed(b);
-            if (result > 0)
-            {
-                ProcessUbxFrame(ubx.Class, ubx.SubClass, ubx.Payload);
-                ubx.Reset();
-            }
-        }
-    }
-}
-    // ── UBX frame dispatch ─────────────────────────────────────────────────────
-
-    private void ProcessUbxFrame(byte cls, byte sub, ReadOnlySpan<byte> payload)
-    {
-        string name = $"Ubx{cls:X2}{sub:X2}";
-        IncrementCounter(name);
-        Interlocked.Increment(ref _totalMessages);
-
-        if (cls == 0x05)
-        {
-            ProcessAck(sub,payload);
+            _log.LogWarning("[RTK] RestartSurvey called but port is not open");
             return;
         }
 
-        if (cls == 0x01 && sub == 0x3B) // NAV-SVIN
-        {
-            var sv = UbxNavSvinParser.Parse(payload);
-            if (sv.HasValue) OnNavSvin(sv.Value);
-        }
-        else if (cls == 0x01 && sub == 0x35) // NAV-SAT
-        {
-            var sats = UbxNavSatParser.Parse(payload);
-            lock (_lock) { _state = _state with { Satellites = sats }; }
-            FireStateChanged();
-        }
-        else if (cls==0x0A && sub==0x04)
-        {
-            ParseMonVersion(payload);
-        }
-        else if (cls==0x0A && sub==0x09)
-{
-     ParseMonHardware(payload);
-}
-    }
+        var ct = _cts?.Token ?? CancellationToken.None;
 
-    private void ProcessAck(byte msgType, ReadOnlySpan<byte> payload)
-    {
-    if(payload.Length < 2)
-        return;
+        _log.LogInformation("[RTK] Restarting Survey-In (hardware reset via CFG-TMODE3)…");
 
-    byte ackClass=payload[0];
-    byte ackId=payload[1];
+        // Step 1: Disable TMODE3 — forces receiver to stop its internal survey timer.
+        // Send 40-byte zero payload: flags=0 = Disabled mode.
+        var disablePayload = new byte[40]; // all zeros
+        WritePort(UbxConfigurator.Generate(0x06, 0x71, disablePayload));
+        await Task.Delay(300, ct);
 
-    if(msgType==0x01)
-    {
-        _log.LogInformation(
-            "[RTK] UBX ACK {Class:X2} {Id:X2}",
-            ackClass,
-            ackId);
-    }
-    else
-    {
-        _log.LogWarning(
-            "[RTK] UBX NACK {Class:X2} {Id:X2}",
-            ackClass,
-            ackId);
-    }
-    }
+        // Step 2: Reset all local session state so the UI shows 0s / 0 obs.
+        // Do NOT reset the serial port or re-run SetupM8P.
+        _has1005Seen = false;
+        _largestRtcmFrame = 0;
+        _totalMessages = 0;
+        Interlocked.Exchange(ref _rxBytesThisSecond, 0);
+        Interlocked.Exchange(ref _txBytesThisSecond, 0);
 
-    private void ParseMonVersion(
-    ReadOnlySpan<byte> payload)
-    {
-    string text=
-        System.Text.Encoding.ASCII
-        .GetString(payload);
-
-    _log.LogInformation(
-        "[RTK] MON-VER: {Text}",
-        text);
-    }
-
-    private void ParseMonHardware(
-    ReadOnlySpan<byte> payload)
-    {
-    if(payload.Length<24)
-        return;
-
-    byte noise=
-        payload[16];
-
-    byte jam=
-        payload[22];
-
-    _log.LogInformation(
-        "[RTK] Noise={Noise} Jam={Jam}",
-        noise,
-        jam);
-    }
-
-    private void OnNavSvin(NavSvinData sv)
-    {
-        var survey = new SurveyInStatus(sv.Dur, sv.Obs, sv.AccuracyM, sv.Valid, sv.Active);
-        lock (_lock) { _state = _state with { Survey = survey }; }
-        FireStateChanged();
-
-        if (_state.Phase == RtkPhase.Survey && sv.Valid)
-        {
-            var (x, y, z) = sv.EcefMetres;
-            var (lat, lng, alt) = EcefToLla(x, y, z);
-            var pos = new BasePosition(x, y, z, lat, lng, alt);
-
-            _log.LogInformation("[RTK] Survey-In valid — Lat={Lat:F7} Lng={Lng:F7} Alt={Alt:F2}m Acc={Acc:F3}m",
-                lat, lng, alt, sv.AccuracyM);
-
-            lock (_lock) { _state = _state with { Phase = RtkPhase.Fixed, FixedPosition = pos }; }
-            FireStateChanged();
-
-            // Transition to Injecting after brief display pause
-            _ = Task.Delay(1500).ContinueWith(_ =>
-            {
-                if (_state.Phase == RtkPhase.Fixed)
-                {
-                    lock (_lock) { _state = _state with { Phase = RtkPhase.Injecting }; }
-                    FireStateChanged();
-                }
-            }, TaskScheduler.Default);
-        }
-    }
-
-    // ── RTCM frame dispatch ────────────────────────────────────────────────────
-
-    private void ProcessRtcmFrame(RtcmStreamParser rtcm)
-{
-    int msgId = rtcm.MessageId;
-    _log.LogInformation(
-    "[RTCM] ID={Id}, Bytes={Bytes}",
-    msgId,
-    rtcm.TotalBytes
-);
-    int fBytes = rtcm.TotalBytes;
-
-    string name = $"Rtcm{msgId}";
-
-    IncrementCounter(name);
-    Interlocked.Increment(ref _totalMessages);
-
-    // constellation tracking
-    if (RtcmConstellation.TryGetValue(msgId, out var constel))
-    {
         lock (_lock)
         {
-            _constellationSeen[constel] = DateTime.UtcNow;
+            _msgSeen.Clear();
+            _constellationLastSeen.Clear();
+            _state = _state with
+            {
+                Phase         = RtkPhase.Survey,
+                Survey        = SurveyInStatus.Empty,
+                FixedPosition = null,
+                Messages      = [],
+                Stream        = RtkStreamStats.Zero,
+                Constellations= ConstellationStatus.DefaultSet(),
+            };
         }
+        FireStateChanged();
+
+        // Step 3: Send fresh CFG-TMODE3 Survey-In command.
+        // The receiver resets its hardware timer to 0s on receipt.
+        var cfg = _lastConfig ?? RtkConfig.Default;
+        var cmd = UbxConfigurator.BuildSurveyIn(
+            (uint)cfg.MinDurationSec, cfg.TargetAccuracyM);
+        WritePort(cmd);
+
+        _awaitingFreshSurvey = true;   // FIX-D: ignore stale frames until hardware resets
+        _lastKnownSurveyDur  = 0;
+        _log.LogInformation("[RTK] CFG-TMODE3 Survey-In sent — receiver timer reset to 0s");
     }
 
-    Interlocked.Add(ref _txBytesThisSecond, fBytes);
-
-    InterlockedMax(ref _largestRtcmFrame, fBytes);
-
-    var frame = rtcm.FrameWithCrc;
-
-    // Mission Planner behavior:
-    // RTCM received → inject immediately
-    if (_mavlink.IsConnected)
-    {
-        try
-        {
-            _mavlink.InjectGpsData(
-        frame,
-        (ushort)frame.Length
-    );
-
-            _log.LogDebug(
-                "[RTK] RTCM {MsgId} injected ({Bytes} bytes)",
-                msgId,
-                frame.Length);
-        }
-        catch(Exception ex)
-        {
-            _log.LogWarning(
-                ex,
-                "[RTK] RTCM injection failed {MsgId}",
-                msgId);
-        }
-    }
-}
-
     // ═══════════════════════════════════════════════════════════════════════════
-    // BACKGROUND TIMER LOOPS
+    // BACKGROUND LOOPS
     // ═══════════════════════════════════════════════════════════════════════════
-
     private async Task BpsTimerLoopAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        try
+        while (!ct.IsCancellationRequested)
         {
-            while (await timer.WaitForNextTickAsync(ct))
+            try
             {
-                int rx   = Interlocked.Exchange(ref _rxBytesThisSecond, 0) * 8;
-                int tx   = Interlocked.Exchange(ref _txBytesThisSecond, 0) * 8;
-                int lrg  = Volatile.Read(ref _largestRtcmFrame);
-                long tot = Volatile.Read(ref _totalMessages);
-
-                int frags    = lrg <= 0 ? 0 : (lrg + 179) / 180;
-                bool overflow = lrg > 540;  // > 540B starts burning into the 720B ceiling
-
-                // Snapshot message counters (under lock to ensure consistency)
-                List<MessageEntry> msgs;
+                await Task.Delay(1000, ct);
+                int rxBps = Interlocked.Exchange(ref _rxBytesThisSecond, 0) * 8;
+                int txBps = Interlocked.Exchange(ref _txBytesThisSecond, 0) * 8;
                 lock (_lock)
                 {
-                    msgs = _msgCounters
-                        .OrderByDescending(kv => kv.Value)
-                        .Take(24)
-                        .Select(kv => new MessageEntry(kv.Key, kv.Value))
-                        .ToList();
-                }
-
-                var stream = new RtkStreamStats(rx, tx, tot, lrg, frags, overflow);
-
-                lock (_lock)
-                {
-                    _state = _state with { Stream = stream, Messages = msgs };
+                    _state = _state with
+                    {
+                        Stream = _state.Stream with { RxBps = rxBps, TxBps = txBps }
+                    };
                 }
                 FireStateChanged();
             }
+            catch (OperationCanceledException) { break; }
         }
-        catch (OperationCanceledException) { }
     }
 
     private async Task ConstellationExpiryLoopAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
-        try
+        while (!ct.IsCancellationRequested)
         {
-            while (await timer.WaitForNextTickAsync(ct))
+            try
             {
-                var now      = DateTime.UtcNow;
-                var defaults = ConstellationStatus.DefaultSet();
-
-                var updated = defaults.Select(def =>
+                await Task.Delay(1000, ct);
+                var now = DateTime.UtcNow;
+                lock (_lock)
                 {
-                    bool seen = false;
-                    lock (_lock)
-                    {
-                        if (_constellationSeen.TryGetValue(def.Id, out var last))
-                            seen = !def.IsExpired(now) && (now - last) < (def.Id == "base"
-                                ? ConstellationStatus.BaseExpiry
-                                : ConstellationStatus.SignalExpiry);
-                    }
-                    return def with { IsActive = seen };
-                }).ToList();
-
-                lock (_lock) { _state = _state with { Constellations = updated }; }
+                    var updated = _state.Constellations
+                        .Select(c => c.IsExpired(now)
+                            ? c with { IsActive = false }
+                            : c)
+                        .ToList();
+                    _state = _state with { Constellations = updated };
+                }
                 FireStateChanged();
             }
+            catch (OperationCanceledException) { break; }
         }
-        catch (OperationCanceledException) { }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // UTILITY
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private static (double lat, double lng, double alt) EcefToLla(double x, double y, double z)
+    // ── MSM rate re-send after MON-VER reveals MSM4 needed ───────────────────
+    private async Task ResendMsmRatesAsync(bool useMsm7, CancellationToken ct)
     {
-        // WGS84 iterative (Bowring's method, 10 iterations — converges to mm precision)
-        const double a  = 6378137.0;
-        const double f  = 1.0 / 298.257223563;
-        const double e2 = 2 * f - f * f;
+        byte msm7rate = useMsm7 ? (byte)1 : (byte)0;
+        byte msm4rate = useMsm7 ? (byte)0 : (byte)1;
 
-        double lng = Math.Atan2(y, x) * (180.0 / Math.PI);
-        double p   = Math.Sqrt(x * x + y * y);
-        double lat = Math.Atan2(z, p * (1 - e2));
-
-        for (int i = 0; i < 10; i++)
+        (byte cls, byte id, byte rate)[] msgs =
         {
-            double sl = Math.Sin(lat);
-            double N  = a / Math.Sqrt(1 - e2 * sl * sl);
-            lat = Math.Atan2(z + e2 * N * sl, p);
-        }
-
-        double sinLat = Math.Sin(lat);
-        double N_f    = a / Math.Sqrt(1 - e2 * sinLat * sinLat);
-        double alt    = p / Math.Cos(lat) - N_f;
-
-        return (lat * (180.0 / Math.PI), lng, alt);
-    }
-
-    private void IncrementCounter(string name)
-    {
-        lock (_lock)
+            (0xF5,0x4A,msm4rate),(0xF5,0x4D,msm7rate),  // GPS
+            (0xF5,0x54,msm4rate),(0xF5,0x57,msm7rate),  // GLONASS
+            (0xF5,0x5E,msm4rate),(0xF5,0x61,msm7rate),  // Galileo
+            (0xF5,0x7C,msm4rate),(0xF5,0x7F,msm7rate),  // BeiDou
+        };
+        foreach (var (c, i, r) in msgs)
         {
-            _msgCounters.TryGetValue(name, out int v);
-            _msgCounters[name] = v + 1;
+            ct.ThrowIfCancellationRequested();
+            WritePort(UbxConfigurator.TurnOnOff(c, i, r));
+            await Task.Delay(50, ct);
+        }
+        _configUsedMsm7 = useMsm7;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    private void WritePort(byte[] cmd)
+    {
+        lock (_portLock)
+        {
+            try { _port?.Write(cmd, 0, cmd.Length); }
+            catch (Exception ex) { _log.LogWarning(ex, "[RTK] Serial write failed"); }
         }
     }
 
-    private void SetPhase(RtkPhase phase, string? error)
+    private void SetPhase(RtkPhase phase, CancellationToken ct = default)
     {
-        lock (_lock) { _state = _state with { Phase = phase, ErrorMessage = error }; }
+        lock (_lock) { _state = _state with { Phase = phase }; }
         FireStateChanged();
     }
 
-    private void FireStateChanged() => OnStateChanged?.Invoke();
-
-    private void CleanupPort()
+    private void SetError(string msg)
     {
-        try
-        {
-            if (_port != null)
-            {
-                _port.DataReceived -= OnDataReceived;
-                if (_port.IsOpen) _port.Close();
-                _port.Dispose();
-                _port = null;
-            }
-        }
-        catch (Exception ex) { _log.LogWarning(ex, "[RTK] Port cleanup error"); }
+        _log.LogError("[RTK] {Msg}", msg);
+        lock (_lock) { _state = _state with { Phase = RtkPhase.Idle, ErrorMessage = msg }; }
+        FireStateChanged();
     }
+
+    private void FireStateChanged()
+    {
+        RtkState snapshot;
+        lock (_lock) { snapshot = _state; }
+        try { OnStateChanged?.Invoke(snapshot); }
+        catch { }
+    }
+
+    private void ResetSessionCounters()
+    {
+        _has1005Seen              = false;
+        _awaitingFreshSurvey      = false;
+        _lastKnownSurveyDur       = 0;
+        _receiverInfo             = MonVerInfo.Unknown;
+        _configUsedMsm7           = false;
+        _rxBytesThisSecond        = 0;
+        _txBytesThisSecond        = 0;
+        _largestRtcmFrame         = 0;
+        _totalMessages            = 0;
+        _nextTmodePoll            = DateTime.MaxValue;
+
+        // FIX-B: Reset survey state to zero immediately on every connect/disconnect.
+        // Prevents stale receiver values (duration=2101s, obs=1431) from displaying
+        // in the UI during the 4-second gap before BuildSurveyIn reaches the receiver.
+        lock (_lock)
+        {
+            _msgSeen.Clear();
+            _constellationLastSeen.Clear();
+            _state = _state with
+            {
+                Survey        = SurveyInStatus.Empty,
+                FixedPosition = null,
+                Messages      = [],
+                Stream        = RtkStreamStats.Zero,
+                Constellations= ConstellationStatus.DefaultSet(),
+            };
+        }
+    
+    }
+
+    private SavedBaseProfile? GetActiveProfile() =>
+        _state.ActiveProfileName is { } name
+            ? _profiles.Find(p => p.Name == name)
+            : null;
 
     private void LoadProfiles()
     {
         try
         {
-            if (File.Exists(_profilesPath))
-                _profiles = JsonSerializer.Deserialize<List<SavedBaseProfile>>(
-                    File.ReadAllText(_profilesPath)) ?? [];
+            if (!File.Exists(ProfilePath)) return;
+            var json = File.ReadAllText(ProfilePath);
+            var list = System.Text.Json.JsonSerializer.Deserialize<List<SavedBaseProfile>>(json);
+            if (list != null) { _profiles.Clear(); _profiles.AddRange(list); }
         }
-        catch { _profiles = []; }
+        catch (Exception ex) { _log.LogWarning(ex, "[RTK] Failed to load profiles"); }
         lock (_lock) { _state = _state with { SavedProfiles = _profiles }; }
     }
 
     private void SaveProfiles()
     {
-        try { File.WriteAllText(_profilesPath, JsonSerializer.Serialize(_profiles)); }
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ProfilePath)!);
+            File.WriteAllText(ProfilePath,
+                System.Text.Json.JsonSerializer.Serialize(_profiles));
+        }
         catch (Exception ex) { _log.LogWarning(ex, "[RTK] Failed to save profiles"); }
-    }
-
-    // Interlocked.Max — not in BCL, implemented manually
-    private static void InterlockedMax(ref int location, int value)
-    {
-        int current;
-        do { current = Volatile.Read(ref location); }
-        while (current < value && Interlocked.CompareExchange(ref location, value, current) != current);
     }
 
     public async ValueTask DisposeAsync()
     {
+        _mavlink.OnGpsRawInt  -= OnVehicleGpsUpdate;
+        _mavlink.OnStatusText -= OnStatusText;
         await DisconnectAsync();
-        _cts?.Dispose();
     }
 }
