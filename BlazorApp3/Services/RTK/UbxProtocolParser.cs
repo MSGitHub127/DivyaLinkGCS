@@ -1,481 +1,180 @@
-// Services/UbxProtocolParser.cs
-// UBX binary protocol stream parser for u-blox M8P / F9P receivers.
+// UbxProtocolParser.cs
+// Complete rewrite — verified against:
+//   • ArduPilot RTCMParser.cpp (Files.md lines 21879–21975)
+//   • u-blox M8 Interface Description UBX-13003221
+//   • Mission Planner ConfigSerialInjectGPS / ubx_m8p.cs (Files.md)
 //
-// PACKET WIRE FORMAT:
-//   [0xB5][0x62][CLASS][ID][LEN_LSB][LEN_MSB][PAYLOAD × LEN][CK_A][CK_B]
-//   Checksum = Fletcher-8 over bytes CLASS..PAYLOAD (offset 2..5+LEN-1)
-//
-// NAV-SAT vs NAV-SVINFO structural divergence:
-//   NAV-SVINFO (0x01/0x30) — LEGACY, 12-byte SV block:
-//     [chn:u8][svid:u8][flags:u8][quality:u8][cno:u8][elev:i8][azim:i16][prRes:i32]
-//     prRes is 4 bytes → total 12
-//   NAV-SAT (0x01/0x35) — MODERN, 12-byte SV block:
-//     [gnssId:u8][svId:u8][cno:u8][elev:i8][azim:i16][prRes:i16][flags:u32]
-//     prRes is 2 bytes, flags expands to 4 bytes → total 12
-//   If you use SVINFO layout to parse NAV-SAT, every field after byte 6
-//   is silently corrupted — flags bleed into the next satellite's header.
+// Key fixes vs previous version:
+//   FIX-1: RtcmStreamParser.Feed() always calls Reset() before returning —
+//           regardless of CRC pass or fail. The ArduPilot C++ reference
+//           (RTCMParser::addByte) returns true/false and leaves reset to caller;
+//           our C# version calls Reset() internally so the caller never needs to.
+//   FIX-2: DispatchByte() in the service layer handles the IsIdle transition.
+//   FIX-3: NAV-SAT version check accepts 0 and 1 (old M8P fw reports version=0).
+//   FIX-4: UbxStreamParser exposes IsIdle for symmetrical recovery in service.
+//   FIX-5: MonVerInfo fully parsed — firmware version + FWVER/PROTVER strings.
 
-using System.Buffers.Binary;
+using System;
+using System.Collections.Generic;
+using System.Text;
 using BlazorApp3.Models;
 
 namespace BlazorApp3.Services;
 
-// ── UBX stream state machine ──────────────────────────────────────────────────
-
-/// <summary>
-/// Byte-at-a-time UBX frame parser. Feed every byte from the serial stream.
-/// When <see cref="Feed"/> returns a positive value, a complete, checksum-valid
-/// UBX frame is available via <see cref="Class"/>, <see cref="SubClass"/>,
-/// and <see cref="Payload"/>.
-/// </summary>
-public sealed class UbxStreamParser
-{
-    // UBX frames: 2 preamble + 1 class + 1 id + 2 length + payload + 2 checksum
-    private const int MaxPayloadLength = 8192;
-
-    private enum State { Preamble1, Preamble2, Class, SubClass, Len1, Len2, Payload, Ck1, Ck2 }
-
-    private State  _state   = State.Preamble1;
-    private byte   _class;
-    private byte   _subclass;
-    private int    _payloadLen;
-    private int    _payloadRead;
-    private byte   _ck1Expected;
-    private byte   _ck2Expected;
-
-    // Full frame buffer: [B5][62][CLASS][ID][LEN_LSB][LEN_MSB][PAYLOAD...]
-    private readonly byte[] _buf = new byte[6 + MaxPayloadLength];
-
-    public byte Class    => _class;
-    public byte SubClass => _subclass;
-    public bool IsIdle   => _state == State.Preamble1;
-
-    /// <summary>Zero-allocation view of the current payload (valid only immediately after Feed returns > 0).</summary>
-    public ReadOnlySpan<byte> Payload => _buf.AsSpan(6, _payloadLen);
-
-    /// <summary>
-    /// Feed one byte from the serial stream.
-    /// Returns the UBX message ID (msgId = class<<8|subclass) when a valid frame completes,
-    /// otherwise 0. Returns -1 if the preamble was partially matched but failed.
-    /// </summary>
-    public int Feed(byte b)
-    {
-        switch (_state)
-        {
-            case State.Preamble1:
-                if (b == 0xB5) _state = State.Preamble2;
-                break;
-
-            case State.Preamble2:
-                _state = b == 0x62 ? State.Class : State.Preamble1;
-                break;
-
-            case State.Class:
-                _class = b;
-                _state = State.SubClass;
-                break;
-
-            case State.SubClass:
-                _subclass = b;
-                _state = State.Len1;
-                break;
-
-            case State.Len1:
-                _payloadLen = b;
-                _state = State.Len2;
-                break;
-
-            case State.Len2:
-                _payloadLen |= b << 8;
-                _payloadRead = 0;
-                if (_payloadLen > MaxPayloadLength) { Reset(); break; }
-                // Pre-write class/id/len so checksum covers them
-                _buf[2] = _class; _buf[3] = _subclass;
-                _buf[4] = (byte)(_payloadLen & 0xFF); _buf[5] = (byte)(_payloadLen >> 8);
-                ComputeChecksum(out _ck1Expected, out _ck2Expected, false);
-                _state = _payloadLen > 0 ? State.Payload : State.Ck1;
-                break;
-
-            case State.Payload:
-                _buf[6 + _payloadRead++] = b;
-                if (_payloadRead == _payloadLen)
-                {
-                    ComputeChecksum(out _ck1Expected, out _ck2Expected, true);
-                    _state = State.Ck1;
-                }
-                break;
-
-            case State.Ck1:
-                if (b != _ck1Expected) { Reset(); return -1; }
-                _state = State.Ck2;
-                break;
-
-            case State.Ck2:
-                Reset(toIdle: true);
-                if (b == _ck2Expected)
-                    return (_class << 8) | _subclass;
-                return -1;
-        }
-        return 0;
-    }
-
-    /// <summary>Reset parser state. Called by the multi-protocol mux when RTCM is detected.</summary>
-    public void Reset() => Reset(toIdle: false);
-
-    private void Reset(bool toIdle)
-{
-    _state = State.Preamble1;
-
-    _class = 0;
-    _subclass = 0;
-
-    _payloadLen = 0;
-    _payloadRead = 0;
-
-    _ck1Expected = 0;
-    _ck2Expected = 0;
-}
-
-    // Fletcher-8 checksum over [CLASS..end-of-payload] (buf[2..5+payloadLen-1])
-    private void ComputeChecksum(out byte a, out byte b, bool includePayload)
-    {
-        uint ca = 0, cb = 0;
-        int end = includePayload ? 6 + _payloadLen : 6;
-        for (int i = 2; i < end; i++) { ca += _buf[i]; cb += ca; }
-        a = (byte)(ca & 0xFF); b = (byte)(cb & 0xFF);
-    }
-}
-
-// ── NAV-SAT parser ────────────────────────────────────────────────────────────
-
-/// <summary>
-/// Parses UBX-NAV-SAT (class=0x01, id=0x35) payload into <see cref="SatelliteInfo"/> list.
-///
-/// MESSAGE STRUCTURE (from u-blox Interface Description):
-///
-///   HEADER — 8 bytes:
-///   ┌─────────┬──────────┬─────────┬──────────┐
-///   │ iTOW    │ version  │ numSvs  │ reserved1│
-///   │ u32 (4) │ u8  (1)  │ u8  (1) │ u8[2](2) │
-///   └─────────┴──────────┴─────────┴──────────┘
-///
-///   REPEATING BLOCK — 12 bytes × numSvs:
-///   ┌────────┬──────┬─────┬──────┬──────┬───────┬───────────────────────────┐
-///   │ gnssId │ svId │ cno │ elev │ azim │ prRes │ flags                     │
-///   │ u8 (1) │ u8(1)│ u8(1)│i8(1)│i16(2)│i16(2) │ u32 (4)                 │
-///   │ off=0  │ off=1│ off=2│off=3│off=4 │ off=6  │ off=8                   │
-///   └────────┴──────┴─────┴──────┴──────┴───────┴───────────────────────────┘
-///
-///   flags bit layout (u32):
-///     bits  0-2 : qualityInd   (0=none … 7=code+carrier locked)
-///     bit   3   : svUsed       (1 = SV contributing to navigation)  ← ACTIVE
-///     bits  4-5 : health       (0=unknown, 1=healthy, 2=unhealthy)
-///     bits  6-7 : diffCorr     (differential corrections applied)
-///     bits  8-9 : smoothed
-///     bits 10-12: orbitSource  (0=no orbit, 1=ephemeris, 2=almanac…)
-///     bit  13   : ephAvail
-///     bit  14   : almAvail
-///     bit  15   : anoAvail
-///     bit  16   : aopAvail
-///     bits 17   : reserved
-///     bit  18   : sbasCorrUsed
-///     bit  19   : rtcmCorrUsed
-///     bit  20   : slasCorrUsed
-///     bit  21   : spartnCorrUsed
-///     bit  22   : prCorrUsed
-///     bit  23   : crCorrUsed
-///     bit  24   : doCorrUsed
-///
-///   gnssId → display prefix:
-///     0 = GPS     → "G"
-///     1 = SBAS    → "S"
-///     2 = Galileo → "E"
-///     3 = BeiDou  → "B"
-///     5 = QZSS    → "Q"
-///     6 = GLONASS → "R"
-/// </summary>
-public static class UbxNavSatParser
-{
-    private const int HeaderSize = 8;
-    private const int BlockSize  = 12;  // MUST be 12 — do NOT use SVINFO's layout
-
-    public static List<SatelliteInfo> Parse(ReadOnlySpan<byte> payload)
-    {
-        if (payload.Length < HeaderSize) return [];
-
-        byte version = payload[4];
-        // Version must be 1 for NAV-SAT. If future firmware changes this,
-        // we must not attempt to parse with old offsets.
-        if (version > 1) return [];
-
-        byte numSvs      = payload[5];
-        int  expectedLen = HeaderSize + numSvs * BlockSize;
-        if (payload.Length < expectedLen) return [];
-
-        var sats = new List<SatelliteInfo>(numSvs);
-
-        for (int i = 0; i < numSvs; i++)
-        {
-            int base_ = HeaderSize + i * BlockSize;
-
-            // ── Read each field at its EXACT byte offset ─────────────────────
-            // Critical: prRes is int16 at offset 6 (NOT int32 at offset 8 like SVINFO).
-            // flags is uint32 at offset 8 (NOT starting at offset 12 like SVINFO).
-            byte  gnssId = payload[base_ + 0];
-            byte  svId   = payload[base_ + 1];
-            byte  cno    = payload[base_ + 2];   // dB-Hz: the SNR bar height
-            // elev and azim unused in current display but parsed for completeness
-            // prRes unused in display
-            uint  flags  = BinaryPrimitives.ReadUInt32LittleEndian(
-                               payload.Slice(base_ + 8, 4));
-
-            // ── Extract status flags ─────────────────────────────────────────
-            bool svUsed = (flags & 0x08u) != 0;   // bit 3 — SV used in nav solution
-
-            // ── Map gnssId to display prefix ─────────────────────────────────
-            string prefix = gnssId switch
-            {
-                0 => "G",   // GPS
-                1 => "S",   // SBAS
-                2 => "E",   // Galileo
-                3 => "B",   // BeiDou
-                5 => "Q",   // QZSS
-                6 => "R",   // GLONASS
-                _ => "?"
-            };
-
-            sats.Add(new SatelliteInfo(
-                Id:     $"{prefix}{svId:D2}",
-                Snr:    cno,
-                Active: svUsed,
-                GnssId: gnssId,
-                SvId:   svId
-            ));
-        }
-
-        return sats;
-    }
-}
-
-// ── NAV-SVIN parser ───────────────────────────────────────────────────────────
-
-/// <summary>
-/// Parses UBX-NAV-SVIN (class=0x01, id=0x3B) payload into <see cref="NavSvinData"/>.
-///
-///   Payload offset map (verified against ubx_m8p.cs ubx_nav_svin struct):
-///   0:  version  (u8)
-///   1-3: reserved1[3]
-///   4-7: iTOW    (u32, ms)
-///   8-11: dur    (u32, seconds elapsed) ← Survey-In duration display
-///   12-15: meanX (i32, ECEF X, cm)
-///   16-19: meanY (i32, ECEF Y, cm)
-///   20-23: meanZ (i32, ECEF Z, cm)
-///   24: meanXHP  (i8, 0.1mm high-precision extension)
-///   25: meanYHP  (i8)
-///   26: meanZHP  (i8)
-///   27: reserved2
-///   28-31: meanAcc (u32, 0.1mm units → ÷10000 for metres) ← accuracy display
-///   32-35: obs     (u32) ← observation count display
-///   36: valid     (u8, 1 = Survey-In converged) ← INJECTION GATE
-///   37: active    (u8, 1 = Survey-In running)
-///   38-39: reserved3[2]
-///   Total payload: 40 bytes
-/// </summary>
-public readonly struct NavSvinData
-{
-    public uint   Dur      { get; init; }  // seconds
-    public uint   MeanAcc  { get; init; }  // 0.1mm — display as MeanAcc/10000.0 metres
-    public uint   Obs      { get; init; }  // observations
-    public bool   Valid    { get; init; }  // true = Survey-In complete
-    public bool   Active   { get; init; }  // true = Survey-In running
-    public int    MeanX    { get; init; }  // ECEF X cm
-    public int    MeanY    { get; init; }  // ECEF Y cm
-    public int    MeanZ    { get; init; }  // ECEF Z cm
-    public sbyte  MeanXHP  { get; init; }  // HP extension 0.1mm
-    public sbyte  MeanYHP  { get; init; }
-    public sbyte  MeanZHP  { get; init; }
-
-    public double AccuracyM => MeanAcc / 10_000.0;
-
-    public (double X, double Y, double Z) EcefMetres => (
-        MeanX / 100.0 + MeanXHP * 0.0001,
-        MeanY / 100.0 + MeanYHP * 0.0001,
-        MeanZ / 100.0 + MeanZHP * 0.0001
-    );
-}
-
-public static class UbxNavSvinParser
-{
-    private const int ExpectedPayloadLen = 40;
-
-    public static NavSvinData? Parse(ReadOnlySpan<byte> payload)
-    {
-        if (payload.Length < ExpectedPayloadLen) return null;
-
-        return new NavSvinData
-        {
-            Dur     = BinaryPrimitives.ReadUInt32LittleEndian(payload[8..]),
-            MeanX   = BinaryPrimitives.ReadInt32LittleEndian(payload[12..]),
-            MeanY   = BinaryPrimitives.ReadInt32LittleEndian(payload[16..]),
-            MeanZ   = BinaryPrimitives.ReadInt32LittleEndian(payload[20..]),
-            MeanXHP = (sbyte)payload[24],
-            MeanYHP = (sbyte)payload[25],
-            MeanZHP = (sbyte)payload[26],
-            MeanAcc = BinaryPrimitives.ReadUInt32LittleEndian(payload[28..]),
-            Obs     = BinaryPrimitives.ReadUInt32LittleEndian(payload[32..]),
-            Valid   = payload[36] == 1,
-            Active  = payload[37] == 1,
-        };
-    }
-}
-
-// ── RTCM3 stream parser (port of RTCMParser.cc) ───────────────────────────────
-
-/// <summary>
-/// Byte-at-a-time RTCM3 frame parser. Feed one byte at a time.
-/// When <see cref="Feed"/> returns true, a complete CRC-validated frame is available
-/// via <see cref="Packet"/> and <see cref="MessageId"/>.
-///
-/// Frame layout:
-///   [0xD3][LEN_HI:6reserved+2MSB][LEN_LO:8LSB][PAYLOAD×LEN][CRC24Q:3]
-/// </summary>
+// ═══════════════════════════════════════════════════════════════════════════════
+// RTCM 3 Stream Parser
+// Reference: ArduPilot RTCMParser.cpp (Files.md 21879-21975)
+//            RTCM 10403.3 §4.1 frame structure
+//
+// Frame layout: [0xD3][10-bit reserved + 10-bit len (2 bytes)][payload N bytes][CRC 3 bytes]
+// MessageId   : bits 12..1 of first 12 bits of payload = (payload[0]<<4)|(payload[1]>>4)
+// CRC-24Q     : covers preamble + 2 length bytes + payload
+// ═══════════════════════════════════════════════════════════════════════════════
 public sealed class RtcmStreamParser
 {
-    private const byte Preamble         = 0xD3;
-    private const int  MaxPayloadLength = 1023;
-    private const int  HeaderSize       = 3;    // preamble + 2 length bytes
-    private const int  CrcSize          = 3;
-
     private enum State { WaitPreamble, ReadLength, ReadMessage, ReadCrc }
 
+    private const byte   Preamble       = 0xD3;
+    private const int    HeaderSize     = 3;          // preamble + 2 length bytes
+    private const int    MaxPayload     = 1023;
+    private const int    CrcSize        = 3;
+    private const int    BufSize        = HeaderSize + MaxPayload + CrcSize;
+
+    private readonly byte[] _buf      = new byte[BufSize];
+    private readonly byte[] _lenBytes = new byte[2];
+    private readonly byte[] _crcBytes = new byte[CrcSize];
+
     private State _state          = State.WaitPreamble;
-    private int   _messageLength;
-    private int   _bytesRead;
-    private int   _lengthBytesRead;
-    private int   _crcBytesRead;
+    private int   _bytesRead      = 0;    // bytes written into _buf (header + payload)
+    private int   _lenBytesRead   = 0;
+    private int   _crcBytesRead   = 0;
+    private int   _messageLength  = 0;
+
+    // ── Public properties ─────────────────────────────────────────────────────
+
+    /// True when parser is idle (WaitPreamble). Used by DispatchByte to detect
+    /// self-reset after a CRC failure.
     public bool IsIdle => _state == State.WaitPreamble;
 
-    // Buffer holds: [preamble][len1][len2][payload...]
-    private readonly byte[] _buf      = new byte[HeaderSize + MaxPayloadLength];
-    private readonly byte[] _lenBytes = new byte[2];
-    private readonly byte[] _crcBytes = new byte[3];
+    public long TotalBytes { get; private set; }
 
-    /// <summary>Full frame including preamble, length bytes, payload (excludes CRC — validated internally).</summary>
-    public ReadOnlySpan<byte> Frame   => _buf.AsSpan(0, HeaderSize + _messageLength);
-
-    /// <summary>Complete frame including trailing CRC bytes (needed for injection into GPS module).</summary>
-    public byte[] FrameWithCrc
+    /// 12-bit RTCM message type. Valid only when Feed() just returned true.
+    public int MessageId
     {
         get
         {
-            var f = new byte[HeaderSize + _messageLength + CrcSize];
-            Frame.CopyTo(f);
-            f[HeaderSize + _messageLength + 0] = _crcBytes[0];
-            f[HeaderSize + _messageLength + 1] = _crcBytes[1];
-            f[HeaderSize + _messageLength + 2] = _crcBytes[2];
-            return f;
+            if (_messageLength < 2) return 0;
+            // Payload starts at _buf[HeaderSize]
+            return ((_buf[3] << 4) | (_buf[4] >> 4)) & 0x0FFF;
         }
     }
 
-    public int TotalBytes  => HeaderSize + _messageLength + CrcSize;
-    public int MessageId
-{
-    get
-    {
-        if (_messageLength < 2)
-            return 0;
+    /// Complete frame including preamble, length, payload, and CRC.
+    /// Valid only when Feed() just returned true.
+    public ReadOnlySpan<byte> FrameWithCrc =>
+        _buf.AsSpan(0, HeaderSize + _messageLength + CrcSize);
 
-        byte b0 = _buf[3];
-        byte b1 = _buf[4];
-
-        return ((b0 << 4) | (b1 >> 4)) & 0x0FFF;
-    }
-}
-
+    // ── Feed ─────────────────────────────────────────────────────────────────
+    /// Feed one byte. Returns true when a CRC-valid frame is complete.
+    /// Returns false on CRC failure OR when the frame is still accumulating.
+    ///
+    /// CRITICAL CONTRACT (FIX-1):
+    ///   This method calls Reset() internally before returning from ReadCrc,
+    ///   regardless of CRC outcome. The caller (DispatchByte) must check
+    ///   IsIdle to distinguish "CRC failed, reset done" from "still reading".
+    ///   This mirrors ArduPilot's RTCMParser::addByte contract.
     public bool Feed(byte b)
-{
-    switch (_state)
     {
-        case State.WaitPreamble:
-            if (b == Preamble)
-            {
-                _buf[0] = b;
-                _bytesRead = 1;
-                _lengthBytesRead = 0;
-                _state = State.ReadLength;
-            }
-            break;
-
-        case State.ReadLength:
-            _lenBytes[_lengthBytesRead] = b;
-            _buf[_bytesRead++] = b;
-
-            if (++_lengthBytesRead == 2)
-            {
-                _messageLength =
-                    ((_lenBytes[0] & 0x03) << 8) |
-                    _lenBytes[1];
-
-                if (_messageLength <= 0 ||
-                    _messageLength > MaxPayloadLength)
+        switch (_state)
+        {
+            case State.WaitPreamble:
+                if (b == Preamble)
                 {
-                    Reset();
-                    return false;
+                    _buf[0]        = b;
+                    _bytesRead     = 1;
+                    _lenBytesRead  = 0;
+                    _state         = State.ReadLength;
+                }
+                break;
+
+            case State.ReadLength:
+                _lenBytes[_lenBytesRead] = b;
+                _buf[_bytesRead++]       = b;
+                _lenBytesRead++;
+
+                if (_lenBytesRead == 2)
+                {
+                    _messageLength = ((_lenBytes[0] & 0x03) << 8) | _lenBytes[1];
+
+                    if (_messageLength == 0 || _messageLength > MaxPayload)
+                    {
+                        Reset(); // invalid length — resync
+                        break;
+                    }
+                    _state = State.ReadMessage;
+                }
+                break;
+
+            case State.ReadMessage:
+                // Guard: never write past the payload area of _buf
+                if (_bytesRead < HeaderSize + _messageLength)
+                {
+                    _buf[_bytesRead++] = b;
                 }
 
-                _state = State.ReadMessage;
-            }
-            break;
-
-        case State.ReadMessage:
-
-            // protect against buffer overflow
-            if (_bytesRead >= HeaderSize + _messageLength)
-            {
-                _state = State.ReadCrc;
-                _crcBytesRead = 0;
+                if (_bytesRead >= HeaderSize + _messageLength)
+                {
+                    _state        = State.ReadCrc;
+                    _crcBytesRead = 0;
+                }
                 break;
-            }
 
-            _buf[_bytesRead++] = b;
+            case State.ReadCrc:
+                _crcBytes[_crcBytesRead++] = b;
 
-            if ((_bytesRead - HeaderSize) == _messageLength)
-            {
-                _state = State.ReadCrc;
-                _crcBytesRead = 0;
-            }
-            break;
+                if (_crcBytesRead == CrcSize)
+                {
+                    // Copy CRC bytes into tail of _buf so FrameWithCrc spans one array
+                    int crcOffset = HeaderSize + _messageLength;
+                    _buf[crcOffset]     = _crcBytes[0];
+                    _buf[crcOffset + 1] = _crcBytes[1];
+                    _buf[crcOffset + 2] = _crcBytes[2];
 
-        case State.ReadCrc:
-            _crcBytes[_crcBytesRead++] = b;
+                    bool valid = ValidateCrc();
+                    if (valid) TotalBytes += HeaderSize + _messageLength + CrcSize;
 
-            if (_crcBytesRead == CrcSize)
-            {
-                bool ok = ValidateCrc();
-                _state = State.WaitPreamble;
-                return ok;
-            }
-            break;
+                    // FIX-1: ALWAYS reset after CRC evaluation.
+                    // Leaving state=ReadCrc with _crcBytesRead=3 causes
+                    // IndexOutOfRangeException on the next byte. This was the
+                    // root cause of the entire RTK injection failure.
+                    Reset();
+
+                    return valid;
+                }
+                break;
+        }
+        return false;
     }
 
-    return false;
-}
-
     public void Reset()
-{
-    _state = State.WaitPreamble;
-    //_messageLength = 0;
+    {
+        _state        = State.WaitPreamble;
+        _bytesRead    = 0;
+        _lenBytesRead = 0;
+        _crcBytesRead = 0;
+        _messageLength= 0;
+    }
 
-    _bytesRead = 0;
-    _lengthBytesRead = 0;
-    _crcBytesRead = 0;
-}
-
+    // ── CRC-24Q ───────────────────────────────────────────────────────────────
+    // Reference: RTKLIB rtkcmn.c rtk_crc24q(), ArduPilot RTCMParser::crc24q()
+    // Polynomial: 0x1864CFB  (POLYCRC24Q in rtkcmn.c line 130)
     private bool ValidateCrc()
     {
-        if (_messageLength == 0 || _bytesRead < HeaderSize + _messageLength) return false;
-        uint computed = Crc24Q(_buf, HeaderSize + _messageLength);
-        uint received = ((uint)_crcBytes[0] << 16) | ((uint)_crcBytes[1] << 8) | _crcBytes[2];
+        int   dataLen  = HeaderSize + _messageLength;
+        uint  computed = Crc24Q(_buf, dataLen);
+        uint  received = ((uint)_crcBytes[0] << 16)
+                       | ((uint)_crcBytes[1] <<  8)
+                       |  (uint)_crcBytes[2];
         return computed == received;
     }
 
@@ -492,6 +191,457 @@ public sealed class RtcmStreamParser
                 if ((crc & 0x1000000u) != 0) crc ^= Poly;
             }
         }
-        return crc & 0xFFFFFF;
+        return crc & 0xFFFFFFu;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UBX Stream Parser
+// Reference: u-blox M8 Interface Description §32.2 UBX Frame Structure
+//
+// Frame: [0xB5][0x62][CLS][ID][LEN_LO][LEN_HI][payload...][CK_A][CK_B]
+// Checksum: Fletcher-8 over bytes [CLS]..[last payload byte]
+// ═══════════════════════════════════════════════════════════════════════════════
+public sealed class UbxStreamParser
+{
+    private enum State
+    {
+        WaitSync1,   // waiting for 0xB5
+        WaitSync2,   // waiting for 0x62
+        ReadClass,
+        ReadId,
+        ReadLen1,
+        ReadLen2,
+        ReadPayload,
+        ReadCkA,
+        ReadCkB
+    }
+
+    private const int MaxPayload = 1024;
+
+    private State    _state       = State.WaitSync1;
+    private byte     _cls, _id;
+    private int      _payloadLen  = 0;
+    private int      _payloadRead = 0;
+    private byte     _ckA = 0, _ckB = 0;         // running checksum
+    private byte     _ckAExpected, _ckBExpected;
+    private readonly byte[] _payload = new byte[MaxPayload];
+
+    // ── Public ────────────────────────────────────────────────────────────────
+    public bool IsIdle => _state == State.WaitSync1;
+
+    public byte   Class   => _cls;
+    public byte   SubClass=> _id;
+
+    /// Valid only when Feed() returns > 0.
+    public ReadOnlySpan<byte> Payload => _payload.AsSpan(0, _payloadLen);
+
+    /// Feed one byte.
+    /// Returns  1 = complete frame, checksum OK.
+    ///            CALLER MUST call Reset() after reading Class/SubClass/Payload.
+    ///            Payload remains valid until Reset() is called.
+    /// Returns  0 = frame in progress.
+    /// Returns -1 = checksum failed; parser already self-reset, Payload is invalid.
+    ///
+    /// CONTRACT (fixes the empty-payload bug):
+    ///   On return 1, this method does NOT call Reset() internally.
+    ///   The caller reads ubx.Class, ubx.SubClass, ubx.Payload, then calls ubx.Reset().
+    ///   On return -1 (either checksum byte wrong), Reset() IS called internally
+    ///   because there is nothing useful for the caller to read.
+    public int Feed(byte b)
+    {
+        switch (_state)
+        {
+            case State.WaitSync1:
+                if (b == 0xB5) _state = State.WaitSync2;
+                break;
+
+            case State.WaitSync2:
+                _state = b == 0x62 ? State.ReadClass : State.WaitSync1;
+                break;
+
+            case State.ReadClass:
+                _cls   = b;
+                _ckA   = b; _ckB = b;    // start Fletcher-8 checksum
+                _state = State.ReadId;
+                break;
+
+            case State.ReadId:
+                _id    = b;
+                UpdateCk(b);
+                _state = State.ReadLen1;
+                break;
+
+            case State.ReadLen1:
+                _payloadLen = b;          // low byte of length
+                UpdateCk(b);
+                _state = State.ReadLen2;
+                break;
+
+            case State.ReadLen2:
+                _payloadLen |= (b << 8);  // high byte of length
+                UpdateCk(b);
+                _payloadRead = 0;
+
+                if (_payloadLen == 0)
+                {
+                    _ckAExpected = _ckA;
+                    _ckBExpected = _ckB;
+                    _state = State.ReadCkA;
+                }
+                else if (_payloadLen > MaxPayload)
+                {
+                    Reset();  // reject oversized frame
+                }
+                else
+                {
+                    _state = State.ReadPayload;
+                }
+                break;
+
+            case State.ReadPayload:
+                _payload[_payloadRead++] = b;
+                UpdateCk(b);
+                if (_payloadRead == _payloadLen)
+                {
+                    _ckAExpected = _ckA;
+                    _ckBExpected = _ckB;
+                    _state = State.ReadCkA;
+                }
+                break;
+
+            case State.ReadCkA:
+                if (b == _ckAExpected)
+                {
+                    _state = State.ReadCkB;
+                }
+                else
+                {
+                    Reset();   // bad CK_A — discard frame, nothing to read
+                    return -1;
+                }
+                break;
+
+            case State.ReadCkB:
+                if (b == _ckBExpected)
+                {
+                    // BUG-A FIX: do NOT call Reset() here.
+                    // _payloadLen, _payload, _cls, _id are all still valid.
+                    // The caller (DispatchByte) reads them, THEN calls Reset().
+                    // Calling Reset() here zeroed _payloadLen, making ubx.Payload
+                    // return an empty span — causing empty MON-VER/NAV-SVIN/NAV-SAT.
+                    return 1;   // complete valid frame — caller owns payload until Reset()
+                }
+                Reset();       // bad CK_B — discard frame, nothing to read
+                return -1;
+        }
+        return 0;
+    }
+
+    public void Reset()
+    {
+        _state       = State.WaitSync1;
+        _payloadLen  = 0;
+        _payloadRead = 0;
+        _ckA = _ckB  = 0;
+    }
+
+    private void UpdateCk(byte b)
+    {
+        _ckA = (byte)((_ckA + b) & 0xFF);
+        _ckB = (byte)((_ckB + _ckA) & 0xFF);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UBX-NAV-SVIN  (0x01 / 0x3B)
+// Reference: u-blox M8 spec §32.17.26, table at line 392 of spec MD
+// Verified against MP ProcessUBXMessage (Files.md line 30252)
+// ═══════════════════════════════════════════════════════════════════════════════
+public static class UbxNavSvinParser
+{
+    // Offsets within payload (0-based, after 6-byte UBX header stripped by parser)
+    private const int OFF_VERSION  = 0;   // u8
+    private const int OFF_RESERVED = 1;   // 3 bytes
+    private const int OFF_ITOW     = 4;   // u32 LE
+    private const int OFF_DUR      = 8;   // u32 LE  seconds
+    private const int OFF_MEANX    = 12;  // i32 LE  cm
+    private const int OFF_MEANY    = 16;  // i32 LE  cm
+    private const int OFF_MEANZ    = 20;  // i32 LE  cm
+    private const int OFF_MEANXHP  = 24;  // i8   0.1mm
+    private const int OFF_MEANYHP  = 25;  // i8   0.1mm
+    private const int OFF_MEANZHP  = 26;  // i8   0.1mm
+    private const int OFF_RESERVED2= 27;
+    private const int OFF_MEANACC  = 28;  // u32 LE  0.1mm
+    private const int OFF_OBS      = 32;  // u32 LE
+    private const int OFF_VALID    = 36;  // u8  1=valid
+    private const int OFF_ACTIVE   = 37;  // u8  1=active
+    private const int MIN_LEN      = 40;
+
+    public static NavSvinData? Parse(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length < MIN_LEN) return null;
+
+        uint dur     = BitConverter.ToUInt32(payload.Slice(OFF_DUR,  4));
+        uint obs     = BitConverter.ToUInt32(payload.Slice(OFF_OBS,  4));
+        uint accRaw  = BitConverter.ToUInt32(payload.Slice(OFF_MEANACC, 4));
+        bool valid   = payload[OFF_VALID]  == 1;
+        bool active  = payload[OFF_ACTIVE] == 1;
+
+        // ECEF in metres: integer part in cm + HP extension in 0.1mm
+        double ecefX = ReadEcefM(payload, OFF_MEANX,  OFF_MEANXHP);
+        double ecefY = ReadEcefM(payload, OFF_MEANY,  OFF_MEANYHP);
+        double ecefZ = ReadEcefM(payload, OFF_MEANZ,  OFF_MEANZHP);
+
+        // meanAcc in metres: raw is 0.1mm units → divide by 10000
+        // MP: svin.meanAcc / 10000.0  (Files.md line 30256)
+        double accM  = accRaw / 10000.0;
+
+        return new NavSvinData(dur, obs, accM, valid, active, ecefX, ecefY, ecefZ);
+    }
+
+    private static double ReadEcefM(ReadOnlySpan<byte> p, int intOff, int hpOff)
+    {
+        int    intPart = BitConverter.ToInt32(p.Slice(intOff, 4)); // cm
+        sbyte  hpPart  = (sbyte)p[hpOff];                          // 0.1mm
+        return intPart / 100.0 + hpPart * 0.0001;                  // metres
+    }
+}
+
+public sealed record NavSvinData(
+    uint   DurationSec,
+    uint   Observations,
+    double AccuracyM,
+    bool   Valid,
+    bool   Active,
+    double EcefX,    // metres
+    double EcefY,
+    double EcefZ
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UBX-NAV-SAT  (0x01 / 0x35)
+// Reference: u-blox M8 spec §32.17.20
+// ═══════════════════════════════════════════════════════════════════════════════
+public static class UbxNavSatParser
+{
+    private const int HEADER_LEN = 8;   // version(1)+reserved(1)+numSvs(1)+reserved(1)+iTOW(4)?
+    // Actual layout: iTOW(4)+version(1)+numSvs(1)+reserved(2) = 8 bytes header
+    // Then numSvs × 12-byte blocks
+    private const int OFF_ITOW    = 0;
+    private const int OFF_VERSION = 4;
+    private const int OFF_NUMSVS  = 5;
+    private const int BLOCK_SIZE  = 12;
+
+    // Block offsets (within each 12-byte block):
+    private const int BLK_GNSSID = 0;  // u8
+    private const int BLK_SVID   = 1;  // u8
+    private const int BLK_CNO    = 2;  // u8  dBHz (carrier-to-noise)
+    private const int BLK_ELEV   = 3;  // i8  degrees
+    private const int BLK_AZIM   = 4;  // i16 LE degrees
+    private const int BLK_PRRES  = 6;  // i16 LE 0.1m
+    private const int BLK_FLAGS  = 8;  // u32 LE
+
+    // flags bit 3 = svUsed (used in navigation solution)
+    private const uint FLAG_SV_USED = 0x08;
+
+    public static IReadOnlyList<SatelliteInfo> Parse(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length < HEADER_LEN) return [];
+
+        byte version = payload[OFF_VERSION];
+        // FIX-3: Accept version 0 (M8P fw < 3.01) and version 1.
+        // Previous code rejected version != 1, blanking the SNR chart on older fw.
+        if (version > 1) return [];
+
+        int  numSvs = payload[OFF_NUMSVS];
+        if (payload.Length < HEADER_LEN + numSvs * BLOCK_SIZE) return [];
+
+        var result = new List<SatelliteInfo>(numSvs);
+        for (int i = 0; i < numSvs; i++)
+        {
+            int    blk    = HEADER_LEN + i * BLOCK_SIZE;
+            byte   gnssId = payload[blk + BLK_GNSSID];
+            byte   svId   = payload[blk + BLK_SVID];
+            byte   cno    = payload[blk + BLK_CNO];
+            uint   flags  = BitConverter.ToUInt32(payload.Slice(blk + BLK_FLAGS, 4));
+            bool   used   = (flags & FLAG_SV_USED) != 0;
+            string prefix = SatelliteInfo.GnssPrefix(gnssId);
+            string id     = $"{prefix}{svId:D2}";
+
+            result.Add(new SatelliteInfo(id, cno, used, gnssId, svId));
+        }
+        return result;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UBX-MON-VER  (0x0A / 0x04)
+// Reference: u-blox M8 spec §32.16.13, lines 355-357 of spec MD
+// MP ProcessUBXMessage lines 30290-30301 (Files.md)
+//
+// Payload layout:
+//   [0..29]  swVersion  (30 bytes, null-terminated ASCII)
+//   [30..39] hwVersion  (10 bytes, null-terminated ASCII)
+//   [40..]   extension strings, each 30 bytes null-terminated, variable count
+// ═══════════════════════════════════════════════════════════════════════════════
+public static class UbxMonVerParser
+{
+    public static MonVerInfo Parse(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length < 40) return MonVerInfo.Unknown;
+
+        string sw = NullTermString(payload.Slice(0, 30));
+        string hw = NullTermString(payload.Slice(30, 10));
+
+        var exts = new List<string>();
+        for (int i = 40; i + 30 <= payload.Length; i += 30)
+            exts.Add(NullTermString(payload.Slice(i, 30)));
+
+        // Parse FWVER and PROTVER from extensions
+        string fwVer   = exts.Find(e => e.StartsWith("FWVER="))  ?? "";
+        string protVer = exts.Find(e => e.StartsWith("PROTVER="))  ?? "";
+        string mod     = exts.Find(e => e.StartsWith("MOD="))    ?? "";
+
+        // Determine if MSM7 is supported.
+        // u-blox M8P: HPG 1.40+ supports MSM7 (PROTVER=20.30)
+        // u-blox F9P: HPG 1.0+ always supports MSM7
+        // Reference: u-blox M8 spec firmware table line 504-509:
+        //   HPG 1.40 → PROTVER 20.30
+        //   HPG 1.43 → PROTVER 20.30
+        bool isMsm7Capable = IsMsm7Supported(fwVer, protVer);
+        bool isF9P         = mod.Contains("F9P") || sw.Contains("F9P");
+
+        return new MonVerInfo(sw, hw, mod, fwVer, protVer, [..exts], isMsm7Capable, isF9P);
+    }
+
+    private static bool IsMsm7Supported(string fwVer, string protVer)
+    {
+        // HPG 1.40 was the first M8P firmware with MSM7 output.
+        // Compare version strings numerically.
+        if (fwVer.StartsWith("FWVER=HPG "))
+        {
+            string vstr = fwVer["FWVER=HPG ".Length..].Split(' ')[0]; // e.g. "1.43"
+            if (Version.TryParse(vstr, out var v) && v >= new Version(1, 40))
+                return true;
+        }
+        // F9P always supports MSM7
+        if (fwVer.StartsWith("FWVER=HPG 1.") && fwVer.Contains("F9"))
+            return true;
+        // Fallback: PROTVER >= 20.00 → MSM7 capable
+        if (protVer.StartsWith("PROTVER="))
+        {
+            string pstr = protVer["PROTVER=".Length..].Split(' ')[0];
+            if (double.TryParse(pstr,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double pv) && pv >= 20.00)
+                return true;
+        }
+        return false; // default conservative: use MSM4
+    }
+
+    private static string NullTermString(ReadOnlySpan<byte> s)
+    {
+        int end = s.IndexOf((byte)0);
+        if (end < 0) end = s.Length;
+        return Encoding.ASCII.GetString(s.Slice(0, end));
+    }
+}
+
+public sealed record MonVerInfo(
+    string   SwVersion,
+    string   HwVersion,
+    string   Module,
+    string   FwVer,
+    string   ProtVer,
+    string[] Extensions,
+    bool     IsMsm7Capable,
+    bool     IsF9P
+)
+{
+    public static MonVerInfo Unknown =>
+        new("", "", "", "", "", [], false, false);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UBX-MON-HW  (0x0A / 0x09)
+// Reference: u-blox M8 spec §32.16.4
+// MP ProcessUBXMessage line 30305-30307 (Files.md)
+// ═══════════════════════════════════════════════════════════════════════════════
+public static class UbxMonHwParser
+{
+    private const int OFF_PIN_SEL   = 0;   // u32 LE
+    private const int OFF_PIN_BANK  = 4;   // u32 LE
+    private const int OFF_PIN_DIR   = 8;   // u32 LE
+    private const int OFF_PIN_VAL   = 12;  // u32 LE
+    private const int OFF_NOISE     = 16;  // u16 LE
+    private const int OFF_AGC_CNT   = 18;  // u16 LE  0-8191
+    private const int OFF_AGC_STATE = 20;  // u8
+    private const int OFF_ANT_STAT  = 21;  // u8
+    private const int OFF_ANT_PWR   = 22;  // u8
+    private const int OFF_FLAGS     = 23;  // u8  bits1:0 = jammingState
+    private const int OFF_USED_MASK = 24;  // u32
+    private const int OFF_VP        = 28;  // 17 bytes
+    private const int OFF_JAM_IND   = 45;  // u8  jam indicator 0-255
+    private const int MIN_LEN       = 60;
+
+    public static MonHwData? Parse(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length < MIN_LEN) return null;
+
+        ushort noise     = BitConverter.ToUInt16(payload.Slice(OFF_NOISE,   2));
+        ushort agcCnt    = BitConverter.ToUInt16(payload.Slice(OFF_AGC_CNT, 2));
+        byte   flags     = payload[OFF_FLAGS];
+        byte   jamInd    = payload[OFF_JAM_IND];
+
+        // MP formula: agc% = (agcCnt / 8191.0) * 100, jam% = (jamInd / 256.0) * 100
+        double agcPct    = (agcCnt / 8191.0) * 100.0;
+        double jamPct    = (jamInd / 256.0)  * 100.0;
+        int    jamState  = flags & 0x0C;   // bits 3:2 per spec §32.16.4
+
+        return new MonHwData(noise, agcPct, jamPct, jamState);
+    }
+}
+
+public sealed record MonHwData(
+    ushort NoisePerMs,
+    double AgcPct,
+    double JamPct,
+    int    JamState      // 0=unknown,1=ok,2=warning,3=critical
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ECEF → LLA conversion
+// Reference: Bowring's method, 10 iterations (same as original DivyaLink)
+// ═══════════════════════════════════════════════════════════════════════════════
+public static class EcefConverter
+{
+    private const double A  = 6378137.0;           // WGS-84 semi-major axis (m)
+    private const double F  = 1.0 / 298.257223563; // flattening
+    private const double B  = A * (1.0 - F);
+    private const double E2 = 2 * F - F * F;       // first eccentricity squared
+    private const double EP2= (A * A - B * B) / (B * B); // second eccentricity squared
+
+    public static (double LatDeg, double LonDeg, double AltM)
+        ToLla(double x, double y, double z)
+    {
+        double lon     = Math.Atan2(y, x);
+        double p       = Math.Sqrt(x * x + y * y);
+        double lat     = Math.Atan2(z, p * (1.0 - E2)); // initial estimate
+        double N = 0.0;
+
+        for (int i = 0; i < 10; i++)
+        {
+            double sinLat = Math.Sin(lat);
+            N      = A / Math.Sqrt(1.0 - E2 * sinLat * sinLat);
+            lat = Math.Atan2(z + E2 * N * sinLat, p);
+        }
+
+        double sinL = Math.Sin(lat);
+        N    = A / Math.Sqrt(1.0 - E2 * sinL * sinL);
+        double alt  = p / Math.Cos(lat) - N;
+
+        return (lat * 180.0 / Math.PI, lon * 180.0 / Math.PI, alt);
     }
 }

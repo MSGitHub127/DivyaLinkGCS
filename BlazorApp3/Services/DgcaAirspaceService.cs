@@ -8,9 +8,12 @@ namespace BlazorApp3.Services;
 
 /// <summary>
 /// Fetches airspace zones from the DGCA DigitalSky portal and caches them.
-/// When no AuthToken is configured, returns mock GeoJSON that exactly mirrors
-/// the real DGCA DigitalSky API format: circular zones as GeoJSON Point features
-/// with a `radius` property (metres), not polygons.
+///
+/// When no AuthToken is configured, returns an EMPTY GeoJSON FeatureCollection
+/// so no zones are rendered on the map.
+///
+/// To enable live airspace data add to appsettings.json:
+///   "DgcaAirspace": { "AuthToken": "<your-token>" }
 /// </summary>
 public class DgcaAirspaceService
 {
@@ -50,8 +53,11 @@ public class DgcaAirspaceService
 
         if (!hasCreds)
         {
-            _logger.LogWarning("[DGCA] No AuthToken — returning MOCK airspace data (circular format).");
-            return GetMockGeoJson(minLat, minLon, maxLat, maxLon);
+            // No token configured — return empty so no zones appear on the map.
+            // Previously this returned mock zones; that behaviour is now disabled.
+            // To enable live airspace add "DgcaAirspace:AuthToken" to appsettings.json.
+            _logger.LogDebug("[DGCA] No AuthToken — airspace overlay disabled (returning empty).");
+            return EmptyGeoJson();
         }
 
         string regionKey = $"{CacheKey}_{Math.Round(minLat)}_{Math.Round(minLon)}";
@@ -108,8 +114,10 @@ public class DgcaAirspaceService
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("[DGCA] HTTP {Code} — falling back to mock.", response.StatusCode);
-                return GetMockGeoJson(minLat, minLon, maxLat, maxLon);
+                // API unavailable — return empty rather than showing fake zones.
+                _logger.LogWarning("[DGCA] HTTP {Code} — returning empty (no mock fallback).",
+                    response.StatusCode);
+                return EmptyGeoJson();
             }
 
             string body    = await response.Content.ReadAsStringAsync();
@@ -117,8 +125,8 @@ public class DgcaAirspaceService
 
             if (!geoJson.TrimStart().StartsWith("{"))
             {
-                _logger.LogWarning("[DGCA] Non-JSON response — falling back to mock.");
-                return GetMockGeoJson(minLat, minLon, maxLat, maxLon);
+                _logger.LogWarning("[DGCA] Non-JSON response — returning empty.");
+                return EmptyGeoJson();
             }
 
             _logger.LogInformation("[DGCA] Live airspace OK ({Bytes} bytes).", geoJson.Length);
@@ -126,8 +134,8 @@ public class DgcaAirspaceService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[DGCA] Fetch failed — falling back to mock.");
-            return GetMockGeoJson(minLat, minLon, maxLat, maxLon);
+            _logger.LogError(ex, "[DGCA] Fetch failed — returning empty.");
+            return EmptyGeoJson();
         }
     }
 
@@ -138,27 +146,16 @@ public class DgcaAirspaceService
         catch { return body; }
     }
 
-    // ── Mock GeoJSON ───────────────────────────────────────────────────────
-    //
-    // DGCA DigitalSky represents airspace zones as GeoJSON Point features
-    // with a `radius` property in metres — NOT as polygons.
-    // The Leaflet renderer (airspace.js `pointToLayer`) converts these to
-    // L.circle instances at the correct radius.
-    //
-    // Zone centres are offset from the bounding-box centre so they always
-    // appear near the current map view, regardless of location.
-
-    private static string GetMockGeoJson(double minLat, double minLon, double maxLat, double maxLon)
-    {
-        return $$"""
-{
-  "type": "FeatureCollection",
-  "features": []
-}
-""";
-    }
+    // ── Empty GeoJSON ──────────────────────────────────────────────────────
+    // Returned whenever airspace data is unavailable (no token, HTTP error,
+    // parse failure). Leaflet's airspace.loadZones() receives a FeatureCollection
+    // with zero features and clears any previously-rendered zones without throwing.
+    private static string EmptyGeoJson() =>
+        """{"type":"FeatureCollection","features":[]}""";
 
     // ── Zone classification ────────────────────────────────────────────────
+    // Kept intact — still used by the proximity-check path in airspace.js
+    // when processing LIVE data from DigitalSky.
 
     public static string ClassifyZone(string? zoneType) =>
         (zoneType ?? "").ToUpperInvariant() switch
@@ -172,4 +169,13 @@ public class DgcaAirspaceService
             var t when t.Contains("CTR")        => "YELLOW",
             _                                   => "GREEN"
         };
+
+    // ── GetMockGeoJson REMOVED ─────────────────────────────────────────────
+    // The private GetMockGeoJson() method that generated fake RED/YELLOW/GREEN
+    // circular zones has been deleted. If you need to restore it for development
+    // purposes, retrieve it from version control and guard it with:
+    //   #if DEBUG
+    //   private static string GetMockGeoJson(...) { ... }
+    //   #endif
+    // and update the no-token path above to call it only in DEBUG builds.
 }
