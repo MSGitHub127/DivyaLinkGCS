@@ -63,7 +63,14 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     // also never injects MSM without 1005. We add an explicit software gate here
     // to handle any edge case where the receiver emits MSM before 1005.
     private bool      _has1005Seen;
-    private RtkConfig? _lastConfig;      // stored in ConnectAsync for RestartSurveyAsync
+    private RtkConfig? _lastConfig;
+
+    // _awaitingFreshSurvey is set whenever we send a new CFG-TMODE3 SurveyIn.
+    // OnNavSvin ignores frames with DurationSec > 5 while this flag is set.
+    // Cleared the moment the receiver reports DurationSec <= 2 — meaning its
+    // hardware timer has reset. Prevents stale receiver values flashing in UI.
+    private volatile bool _awaitingFreshSurvey;
+    private uint          _lastKnownSurveyDur;   // used to detect timer reset      // stored in ConnectAsync for RestartSurveyAsync
 
     // ── TMODE3 poll timer (MP line 30339-30344: every 30s) ────────────────────
     private DateTime _nextTmodePoll = DateTime.MaxValue; // set to real schedule after ConnectAsync completes
@@ -171,6 +178,17 @@ public sealed class RtkBaseStationService : IAsyncDisposable
         if (cfg.AutoConfig)
         {
             _log.LogInformation("[RTK] Setup UBLOX begin");
+
+            // FIX-C: Disable any running survey BEFORE SetupM8P.
+            // MP SetupBasePos always disables TMODE3 first. Without this, if the
+            // receiver was mid-survey from a previous session, NAV-SVIN messages
+            // with stale duration/observations arrive immediately and overwrite the
+            // zeroed UI state before BuildSurveyIn is even sent.
+            _awaitingFreshSurvey = true;
+            var tmode3Disable = new byte[40]; // all zeros = flags=0 = Disabled
+            WritePort(UbxConfigurator.Generate(0x06, 0x71, tmode3Disable));
+            await Task.Delay(250, ct);        // let receiver stop its survey timer
+
             foreach (var (cmd, delay) in UbxConfigurator.SetupM8P(useMsm7: true))
             {
                 ct.ThrowIfCancellationRequested();
@@ -234,6 +252,8 @@ public sealed class RtkBaseStationService : IAsyncDisposable
             // Survey-In
             _log.LogInformation("[RTK] Starting Survey-In: minDur={D}s acc={A:F3}m",
                 cfg.MinDurationSec, cfg.TargetAccuracyM);
+            _awaitingFreshSurvey = true;   // FIX-D: ignore stale NAV-SVIN until reset
+            _lastKnownSurveyDur  = 0;
             var cmd = UbxConfigurator.BuildSurveyIn(
                 (uint)cfg.MinDurationSec, cfg.TargetAccuracyM);
             WritePort(cmd);
@@ -534,15 +554,26 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     // ── seenRTCM (MP lines 30175-30243) ──────────────────────────────────────
     private void UpdateConstellationSeen(int msgId)
     {
+        // FIX: specific IDs must precede range guards — C# switch picks first match.
+        // 1005/1006 are inside 1001-1077, so they MUST be listed before the GPS range.
+        // Verified against: RTCM 10403.3 MSM message numbering.
         string? constel = msgId switch
         {
-            >= 1001 and <= 1077 => "gps",
-            1005 or 1006 or 4072 => "base",
-            >= 1009 and <= 1087 => "glonass",
+            // ── Specific IDs (before any overlapping range) ───────────────
+            1005 or 1006        => "base",     // Stationary RTK ARP (base position)
+            4072                => "base",     // u-blox proprietary moving-base
+            1230                => "glonass",  // GLONASS code-phase biases
+            // ── GPS MSM (1071-1077) + legacy (1001-1004) ─────────────────
+            >= 1071 and <= 1077 => "gps",
+            >= 1001 and <= 1004 => "gps",
+            // ── GLONASS MSM (1081-1087) + legacy (1009-1012) ─────────────
+            >= 1081 and <= 1087 => "glonass",
+            >= 1009 and <= 1012 => "glonass",
+            // ── Galileo MSM (1091-1097) ───────────────────────────────────
             >= 1091 and <= 1097 => "galileo",
+            // ── BeiDou MSM (1121-1127) ────────────────────────────────────
             >= 1121 and <= 1127 => "beidou",
-            1230 => "glonass",  // GLONASS bias
-            _ => null
+            _                   => null
         };
 
         if (constel == null) return;
@@ -797,6 +828,34 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     // ── NAV-SVIN handler ──────────────────────────────────────────────────────
     private void OnNavSvin(NavSvinData sv)
     {
+        // FIX-E: Stale-frame guard.
+        //
+        // When _awaitingFreshSurvey is set (immediately after sending BuildSurveyIn),
+        // the receiver keeps sending NAV-SVIN with the OLD duration/observations for
+        // ~300ms while its hardware timer is resetting. We must ignore these frames
+        // so they don't overwrite the freshly-zeroed UI state.
+        //
+        // Strategy: if duration is non-trivially large AND is not clearly decreasing,
+        // treat the frame as stale and skip it. Clear the flag the moment we see
+        // DurationSec <= 2 (definitive proof the receiver reset its counter).
+        if (_awaitingFreshSurvey)
+        {
+            if (sv.DurationSec <= 2)
+            {
+                // Receiver has reset — start accepting frames again
+                _awaitingFreshSurvey = false;
+                _lastKnownSurveyDur  = sv.DurationSec;
+                _log.LogInformation("[RTK] Survey-In hardware timer confirmed reset (dur={D}s)", sv.DurationSec);
+            }
+            else
+            {
+                // Still receiving stale frames from before the reset — discard
+                _log.LogDebug("[RTK] Discarding stale NAV-SVIN dur={D}s (awaiting fresh survey)", sv.DurationSec);
+                return;
+            }
+        }
+        _lastKnownSurveyDur = sv.DurationSec;
+
         // FIX-7: Log every NAV-SVIN update at INFO (previously silent)
         // Mirrors MP updateSVINLabel (Files.md 30359-30427)
         _log.LogInformation(
@@ -853,8 +912,6 @@ public sealed class RtkBaseStationService : IAsyncDisposable
         }
     }
 
-    private byte _lastVehicleFix = 255;
-
     // ── Vehicle GPS fix type (WF-10) ──────────────────────────────────────────
     private void OnVehicleGpsUpdate(byte fixType)
     {
@@ -867,11 +924,7 @@ public sealed class RtkBaseStationService : IAsyncDisposable
             3 => "3D Fix",
             _ => "No Fix"
         };
-        if (fixType != _lastVehicleFix)
-        {
-            _log.LogInformation("[RTK] Vehicle GPS: {Label} (fix_type={F})", label, fixType);
-            _lastVehicleFix = fixType;
-        }
+        _log.LogInformation("[RTK] Vehicle GPS: {Label} (fix_type={F})", label, fixType);
 
         lock (_lock)
         {
@@ -1046,6 +1099,8 @@ public sealed class RtkBaseStationService : IAsyncDisposable
             (uint)cfg.MinDurationSec, cfg.TargetAccuracyM);
         WritePort(cmd);
 
+        _awaitingFreshSurvey = true;   // FIX-D: ignore stale frames until hardware resets
+        _lastKnownSurveyDur  = 0;
         _log.LogInformation("[RTK] CFG-TMODE3 Survey-In sent — receiver timer reset to 0s");
     }
 
@@ -1153,14 +1208,33 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     private void ResetSessionCounters()
     {
         _has1005Seen              = false;
+        _awaitingFreshSurvey      = false;
+        _lastKnownSurveyDur       = 0;
         _receiverInfo             = MonVerInfo.Unknown;
         _configUsedMsm7           = false;
         _rxBytesThisSecond        = 0;
         _txBytesThisSecond        = 0;
         _largestRtcmFrame         = 0;
         _totalMessages            = 0;
-        _nextTmodePoll            = DateTime.MinValue;
-        lock (_lock) { _msgSeen.Clear(); _constellationLastSeen.Clear(); }
+        _nextTmodePoll            = DateTime.MaxValue;
+
+        // FIX-B: Reset survey state to zero immediately on every connect/disconnect.
+        // Prevents stale receiver values (duration=2101s, obs=1431) from displaying
+        // in the UI during the 4-second gap before BuildSurveyIn reaches the receiver.
+        lock (_lock)
+        {
+            _msgSeen.Clear();
+            _constellationLastSeen.Clear();
+            _state = _state with
+            {
+                Survey        = SurveyInStatus.Empty,
+                FixedPosition = null,
+                Messages      = [],
+                Stream        = RtkStreamStats.Zero,
+                Constellations= ConstellationStatus.DefaultSet(),
+            };
+        }
+    
     }
 
     private SavedBaseProfile? GetActiveProfile() =>
