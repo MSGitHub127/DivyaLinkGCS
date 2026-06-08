@@ -318,14 +318,26 @@
                 {
                     <div class="flex-1 min-h-0 flex flex-col gap-2 p-3">
                         <div class="flex gap-1.5 flex-wrap shrink-0">
-                            @foreach (var c in _state?.Constellations ?? [])
+                            @if (_state?.Constellations != null)
                             {
-                                if (c is null) continue;
-                                <span class="text-[0.6rem] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border
-                                             @(c.IsActive ? "bg-[#3fb950]/15 text-[#3fb950] border-[#3fb950]/40"
-                                                          : "bg-[#21262d] text-[#484f58] border-[#21262d]")">
-                                    @c.Label
-                                </span>
+                                @foreach (var c in _state.Constellations)
+                                {
+                                    if (c is null) continue;
+
+                                    // Code execution context runs natively here
+                                    bool connected = _state.Phase > RtkPhase.Idle;
+        
+                                    string pillCss = c.IsActive ? "bg-[#3fb950]/20 text-[#3fb950] border-[#3fb950]/50"
+                                        : connected ? "bg-[#f85149]/10 text-[#f85149] border-[#f85149]/40"
+                                        : "bg-[#21262d] text-[#484f58] border-[#21262d]";
+
+                                    string dot = c.IsActive ? "● " : connected ? "○ " : "";
+
+                                    // Context automatically switches to HTML markup on the next line
+                                    <span class="text-[0.6rem] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border transition-all duration-500 @pillCss">
+                                        @dot@c.Label
+                                    </span>
+                                }
                             }
                         </div>
                         <div class="flex-1 min-h-0 bg-[#161b22] border border-[#21262d] rounded-lg p-2 relative">
@@ -596,7 +608,7 @@
             Console.WriteLine($"[rtkBaseMap] JS error: {ex.Message}");
         }
     }
-
+    
     private void OnRtkStateChanged(RtkState state)
     {
         InvokeAsync(async () =>

@@ -1885,6 +1885,9 @@
   .border-\[\#3fb950\]\/40 {
     border-color: color-mix(in oklab, #3fb950 40%, transparent);
   }
+  .border-\[\#3fb950\]\/50 {
+    border-color: color-mix(in oklab, #3fb950 50%, transparent);
+  }
   .border-\[\#8b949e\]\/40 {
     border-color: color-mix(in oklab, #8b949e 40%, transparent);
   }
@@ -2169,9 +2172,6 @@
   }
   .bg-\[\#3fb950\]\/10 {
     background-color: color-mix(in oklab, #3fb950 10%, transparent);
-  }
-  .bg-\[\#3fb950\]\/15 {
-    background-color: color-mix(in oklab, #3fb950 15%, transparent);
   }
   .bg-\[\#3fb950\]\/20 {
     background-color: color-mix(in oklab, #3fb950 20%, transparent);
