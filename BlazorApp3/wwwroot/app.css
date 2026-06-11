@@ -1,4 +1,4 @@
-/*! tailwindcss v4.2.2 | MIT License | https://tailwindcss.com */
+/*! tailwindcss v4.3.0 | MIT License | https://tailwindcss.com */
 @layer properties;
 @layer theme, base, components, utilities;
 @layer theme {
@@ -266,12 +266,6 @@
   .inset-0 {
     inset: calc(var(--spacing) * 0);
   }
-  .-start {
-    inset-inline-start: calc(var(--spacing) * -1);
-  }
-  .start {
-    inset-inline-start: var(--spacing);
-  }
   .start-0 {
     inset-inline-start: calc(var(--spacing) * 0);
   }
@@ -280,12 +274,6 @@
   }
   .start-100 {
     inset-inline-start: calc(var(--spacing) * 100);
-  }
-  .-end {
-    inset-inline-end: calc(var(--spacing) * -1);
-  }
-  .end {
-    inset-inline-end: var(--spacing);
   }
   .end-0 {
     inset-inline-end: calc(var(--spacing) * 0);
