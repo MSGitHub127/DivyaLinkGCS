@@ -68,7 +68,7 @@ A modern, real-time Ground Control Station (GCS) for UAV/Drone operations built 
 ### Project Structure
 
 ```
-BlazorApp3/
+DivyaLink/
 ├── Components/
 │   ├── Layout/
 │   │   └── MainLayout.razor          # Main application shell
@@ -96,7 +96,7 @@ BlazorApp3/
 ├── appsettings.json                  # Configuration (production)
 ├── appsettings.Development.json      # Configuration (development)
 ├── Program.cs                        # Application entry point
-└── BlazorApp3.csproj                 # Project file
+└── DivyaLink.csproj                 # Project file
 ```
 
 ---
