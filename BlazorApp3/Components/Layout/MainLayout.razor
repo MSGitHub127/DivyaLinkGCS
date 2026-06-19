@@ -337,10 +337,11 @@
         
         @* 1. THE DRAWER (Consolidated all visibility logic to inline styles, slides under header z-[90]) *@
         <div class="pointer-events-auto shrink-0 bg-[rgba(15,17,23,0.9)] backdrop-blur-xl border-r border-[rgba(255,255,255,0.1)] z-[90] transition-all duration-300 shadow-[20px_0_50px_rgba(0,0,0,0.3)] overflow-hidden flex flex-col h-full relative pt-[60px]"
-     style="@GetDrawerStyle()">
-             
+            style="@GetDrawerStyle()">
+         
             <button class="absolute top-[65px] right-[5px] bg-transparent border-none text-[rgba(255,255,255,0.7)] text-[26px] font-bold p-0 cursor-pointer z-[2000] leading-none transition-all duration-200 hover:text-[#ff3a3a] hover:scale-125" @onclick='() => HandleTabClick(activeTab)'>&times;</button>
-            <div class="w-full h-full p-0 box-border overflow-y-auto overflow-x-hidden">
+    
+            <div class="w-full h-full p-0 box-border overflow-y-auto overflow-x-hidden custom-scrollbar">
                 @if (activeTab == "Quick") { <Quick /> }
                 else if (activeTab == "Actions") { <Actions /> }
                 else if (activeTab == "Messages") { <Messages /> }
@@ -491,6 +492,31 @@
         pointer-events: auto;
     }
 
+    /* ── BEAUTIFUL MODERN DARK SCROLLBAR ── */
+    .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;               /* Ultra-thin scrollbar width */
+        height: 6px;              /* Thin horizontal bar height */
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-track {
+        background: #0d1117;      /* Blends perfectly into panel background */
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #30363d;      /* Subtle border contrast color */
+        border-radius: 20px;      /* Soft rounded capsule look */
+    }
+
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #58a6ff/40;   /* Glows down subtly to show active interaction hover */
+    }
+
+    /* Firefox fallback support compatibility layer */
+    .custom-scrollbar {
+        scrollbar-width: thin;
+        scrollbar-color: #30363d #0d1117;
+    }
+
     /* ── AIRSPACE WARNING BANNER ────────────────────────────────────────────
        Fixed just below the 60px header.
        Highest possible z-index below the header itself.
@@ -628,6 +654,7 @@
     .profile-dropdown-animate {
         animation: dropdownFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
     }
+
 </style>
 
 @code {

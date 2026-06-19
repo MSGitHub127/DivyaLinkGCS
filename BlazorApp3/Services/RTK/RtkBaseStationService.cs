@@ -552,26 +552,41 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     }
 
     // ── seenRTCM (MP lines 30175-30243) ──────────────────────────────────────
+    /// <summary>
+    /// Maps u-blox gnssId byte to the lowercase constellation ID used in
+    /// ConstellationStatus. Returns null for SBAS/QZSS (no pill).
+    /// Reference: u-blox M8 Interface Description §32.17.20 gnssId field.
+    /// </summary>
+    private static string? GnssIdToConstellationId(byte gnssId) => gnssId switch
+    {
+        0 => "gps",      // GPS
+        2 => "galileo",  // Galileo
+        3 => "beidou",   // BeiDou
+        6 => "glonass",  // GLONASS
+        _ => null        // SBAS(1), QZSS(5), NAVIC(7) — no pill
+    };
+
     private void UpdateConstellationSeen(int msgId)
     {
-        // FIX: specific IDs must precede range guards — C# switch picks first match.
-        // 1005/1006 are inside 1001-1077, so they MUST be listed before the GPS range.
-        // Verified against: RTCM 10403.3 MSM message numbering.
+        // BUG-2 FIX: specific IDs BEFORE range guards — first match wins in C# switch.
+        // 1005 and 1006 fall inside ">= 1001 and <= 1077", so they matched "gps"
+        // before the "base" arm was ever evaluated. _has1005Seen was NEVER set,
+        // permanently blocking RTCM injection and never lighting the BASE pill.
         string? constel = msgId switch
         {
-            // ── Specific IDs (before any overlapping range) ───────────────
-            1005 or 1006        => "base",     // Stationary RTK ARP (base position)
-            4072                => "base",     // u-blox proprietary moving-base
+            // ── Exact IDs first ─────────────────────────────────────────────
+            1005 or 1006        => "base",     // RTK base station ARP
+            4072                => "base",     // u-blox moving-base proprietary
             1230                => "glonass",  // GLONASS code-phase biases
-            // ── GPS MSM (1071-1077) + legacy (1001-1004) ─────────────────
+            // ── GPS MSM (1071-1077) + legacy (1001-1004) ──────────────────
             >= 1071 and <= 1077 => "gps",
             >= 1001 and <= 1004 => "gps",
             // ── GLONASS MSM (1081-1087) + legacy (1009-1012) ─────────────
             >= 1081 and <= 1087 => "glonass",
             >= 1009 and <= 1012 => "glonass",
-            // ── Galileo MSM (1091-1097) ───────────────────────────────────
+            // ── Galileo MSM (1091-1097) ──────────────────────────────────
             >= 1091 and <= 1097 => "galileo",
-            // ── BeiDou MSM (1121-1127) ────────────────────────────────────
+            // ── BeiDou MSM (1121-1127) ───────────────────────────────────
             >= 1121 and <= 1127 => "beidou",
             _                   => null
         };
@@ -755,7 +770,41 @@ public sealed class RtkBaseStationService : IAsyncDisposable
         if (cls == 0x01 && sub == 0x35)
         {
             var sats = UbxNavSatParser.Parse(payload);
-            lock (_lock) { _state = _state with { Satellites = sats }; }
+
+            // BUG-1 FIX: Update Constellations.IsActive from NAV-SAT gnssId.
+            // Pills were only driven by RTCM UpdateConstellationSeen.
+            // During Survey-In, RTCM MSM may not flow yet — bars show satellites
+            // but pills stayed red. Now both paths update the pills.
+            //
+            // SNR > 0 means the receiver has signal from that constellation.
+            // We do NOT force any pill to false here — RTCM path or the expiry
+            // loop handles deactivation.
+            var now = DateTime.UtcNow;
+            var activeFromSats = sats
+                .Where(s => s.Snr > 0)
+                .Select(s => GnssIdToConstellationId(s.GnssId))
+                .Where(id => id != null)
+                .ToHashSet();
+
+            lock (_lock)
+            {
+                var updatedConstellations = _state.Constellations
+                    .Select(c =>
+                    {
+                        if (c.Id == "base") return c;  // BASE driven only by RTCM 1005/1006
+                        bool hasSignal = activeFromSats.Contains(c.Id);
+                        return hasSignal
+                            ? c with { IsActive = true, LastSeenUtc = now }
+                            : c;  // leave IsActive unchanged — expiry loop handles it
+                    })
+                    .ToList();
+
+                _state = _state with
+                {
+                    Satellites     = sats,
+                    Constellations = updatedConstellations
+                };
+            }
             FireStateChanged();
             return;
         }
@@ -911,7 +960,7 @@ public sealed class RtkBaseStationService : IAsyncDisposable
             _log.LogDebug("[RTK] NAV-PVT fixType={F} flags=0x{Fl:X2}", fixType, flags);
         }
     }
-
+    private byte _lastVehicleFix = 255;
     // ── Vehicle GPS fix type (WF-10) ──────────────────────────────────────────
     private void OnVehicleGpsUpdate(byte fixType)
     {
@@ -924,7 +973,11 @@ public sealed class RtkBaseStationService : IAsyncDisposable
             3 => "3D Fix",
             _ => "No Fix"
         };
-        _log.LogInformation("[RTK] Vehicle GPS: {Label} (fix_type={F})", label, fixType);
+        if (fixType != _lastVehicleFix)
+        {
+            _log.LogInformation("[RTK] Vehicle GPS: {Label} (fix_type={F})", label, fixType);
+            _lastVehicleFix = fixType;
+        }
 
         lock (_lock)
         {
