@@ -73,55 +73,93 @@ public sealed class Px4BootloaderClient : IDisposable
         using var port = new SerialPort(portName, baudRate)
         {
             ReadTimeout = 100,
-            WriteTimeout = 100,
+            WriteTimeout = 1000,
             DtrEnable = true,
             RtsEnable = true
         };
-        port.Open();
-
-        for (int i = 0; i < attempts; i++)
+        try
         {
-            try
-            {
-                port.DiscardInBuffer();
-                port.BaseStream.Flush();
-                port.Write([(byte)Code.GET_SYNC, (byte)Code.EOC], 0, 2);
-                if (port.ReadByte() == (byte)Code.INSYNC && port.ReadByte() == (byte)Code.OK)
-                    return true;
-            }
-            catch { /* bootloader not ready yet */ }
-            Thread.Sleep(100);
+            port.Open();
         }
-        return false;
+        catch
+        {
+            return false;
+        }
+
+        try
+        {
+            port.DiscardInBuffer();
+            for (int i = 0; i < attempts; i++)
+            {
+                try
+                {
+                    byte[] cmd = [(byte)Code.GET_SYNC, (byte)Code.EOC];
+                    port.Write(cmd, 0, cmd.Length);
+                    port.BaseStream.Flush();
+
+                    int sleepCount = 0;
+                    while (port.BytesToRead < 2 && sleepCount < 10)
+                    {
+                        Thread.Sleep(10);
+                        sleepCount++;
+                    }
+
+                    int lastByte = -1;
+                    while (port.BytesToRead > 0)
+                    {
+                        int currentByte = port.ReadByte();
+                        if (lastByte == (byte)Code.INSYNC && currentByte == (byte)Code.OK)
+                            return true;
+                        lastByte = currentByte;
+                    }
+                }
+                catch { /* bootloader not ready yet */ }
+                Thread.Sleep(20);
+            }
+            return false;
+        }
+        finally
+        {
+            try { port.Close(); } catch { }
+        }
     }
 
     public bool TrySyncInstance(int attempts = 30)
     {
         var oldTimeout = _port.ReadTimeout;
-        _port.ReadTimeout = 200; // Increased timeout for better reliability
+        _port.ReadTimeout = 100;
         try
         {
+            _port.DiscardInBuffer();
             for (int i = 0; i < attempts; i++)
             {
                 try
                 {
-                    _port.DiscardInBuffer();
+                    byte[] cmd = [(byte)Code.GET_SYNC, (byte)Code.EOC];
+                    _port.Write(cmd, 0, cmd.Length);
                     _port.BaseStream.Flush();
-                    Send([(byte)Code.GET_SYNC, (byte)Code.EOC]);
 
-                    int first = _port.ReadByte();
-                    if (first == (byte)Code.INSYNC)
+                    int sleepCount = 0;
+                    while (_port.BytesToRead < 2 && sleepCount < 10)
                     {
-                        int second = _port.ReadByte();
-                        if (second == (byte)Code.OK)
+                        Thread.Sleep(10);
+                        sleepCount++;
+                    }
+
+                    int lastByte = -1;
+                    while (_port.BytesToRead > 0)
+                    {
+                        int currentByte = _port.ReadByte();
+                        if (lastByte == (byte)Code.INSYNC && currentByte == (byte)Code.OK)
                             return true;
+                        lastByte = currentByte;
                     }
                 }
                 catch
                 {
                     // Ignore serial read timeout/errors
                 }
-                Thread.Sleep(100);
+                Thread.Sleep(20);
             }
             return false;
         }
@@ -152,9 +190,9 @@ public sealed class Px4BootloaderClient : IDisposable
         Log($"Board {BoardType} rev {BoardRev}, BL {BootloaderRev}, flash {FlashMaxSize}, ext {ExtFlashMaxSize}");
     }
 
-    public void Upload(FirmwareImage fw, bool skipSameCheck = false, bool forceBoardMatch = false)
+    public void Upload(FirmwareImage fw, bool skipSameCheck = false)
     {
-        if (!forceBoardMatch && BoardType != fw.BoardId && !(BoardType == 33 && fw.BoardId == 9))
+        if (BoardType != fw.BoardId && !(BoardType == 33 && fw.BoardId == 9))
         {
             string? expectedName = FirmwareDownloadService.SupportedBoards
                 .FirstOrDefault(b => b.BoardId == fw.BoardId)?.Name;

@@ -183,6 +183,9 @@ builder.Services.AddServerSideBlazor().AddHubOptions(options =>
 });
 
 var app = builder.Build();
+
+
+
 _ = app.Services.GetRequiredService<ParameterManager>();
 _ = app.Services.GetRequiredService<VehicleProfileService>();
 _ = app.Services.GetRequiredService<NtripService>();
