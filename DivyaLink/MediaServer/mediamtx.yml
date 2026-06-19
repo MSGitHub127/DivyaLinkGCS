@@ -1,0 +1,66 @@
+logLevel: info
+logDestinations: [stdout]
+
+api: yes
+apiAddress: :9997
+
+# RTSP Server Configuration
+rtspAddress: :8554
+protocols: [tcp, udp]
+encryption: "no"
+
+# CRITICAL: Increase RTP/UDP buffer sizes to handle large packets
+readTimeout: 10s
+writeTimeout: 10s
+readBufferCount: 2048
+
+# HLS Configuration - FIXED FOR CONTINUOUS STREAMING
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+
+# CRITICAL FIX: Use lowLatency instead of fmp4 for live streaming
+hlsVariant: lowLatency
+
+# Segment settings - optimized for continuous playback
+hlsSegmentCount: 7        # Reduced from 12 - keeps last 7 segments
+hlsSegmentDuration: 1s     # Reduced from 2s - lower latency
+hlsPartDuration: 200ms     # LL-HLS chunks
+
+# Allow CORS for web access
+hlsAllowOrigin: "*"
+
+# Disable encryption for local streaming
+hlsEncryption: no
+
+# CRITICAL: Enable WebRTC as fallback
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: "*"
+
+paths:
+  live:
+    # Camera RTSP source
+    source: rtsp://192.168.144.108:554/stream=1
+    
+    # CRITICAL: Use TCP to avoid UDP packet fragmentation
+    rtspTransport: tcp
+    
+    # FIXED: Disable on-demand to keep stream always running
+    # This prevents the "not needed by anyone" shutdown
+    sourceOnDemand: no
+    
+    # If you want on-demand, use these settings instead:
+    # sourceOnDemand: yes
+    # sourceOnDemandStartTimeout: 10s
+    # sourceOnDemandCloseAfter: 300s  # 5 minutes instead of 15s
+    
+    # Run on init - start streaming immediately
+    runOnInit: ""
+    runOnInitRestart: yes
+    
+    # Keep stream alive
+    runOnReady: ""
+    runOnReadyRestart: no
+    
+    # Recording disabled
+    record: no

@@ -1,0 +1,54 @@
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+
+<div class="offline-map-container">
+    <button class="offline-map-btn" @onclick="OpenOfflineMap">Offline Maps</button>
+    <div class="offline-map-ui" style="display:@(isOpen ? "block" : "none")">
+        <!-- Simple UI for selecting and downloading offline map regions -->
+        <select @bind="selectedRegion">
+            @foreach (var region in offlineRegions)
+            {
+                <option value="@region">@region</option>
+            }
+        </select>
+        <button @onclick="DownloadRegion">Download Region</button>
+        <button @onclick="CloseOfflineMap">Close</button>
+    </div>
+</div>
+
+@code {
+    private bool isOpen = false;
+    private string selectedRegion = string.Empty;
+    private List<string> offlineRegions = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Load saved region names from local storage
+            var saved = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_offline_regions");
+            if (!string.IsNullOrWhiteSpace(saved))
+            {
+                offlineRegions = System.Text.Json.JsonSerializer.Deserialize<List<string>>(saved) ?? new();
+                StateHasChanged();
+            }
+        }
+    }
+
+    private void OpenOfflineMap()
+    {
+        isOpen = true;
+    }
+
+    private void CloseOfflineMap()
+    {
+        isOpen = false;
+    }
+
+    private async Task DownloadRegion()
+    {
+        if (string.IsNullOrEmpty(selectedRegion)) return;
+        // Trigger JS to start download of tiles for selected region
+        await JS.InvokeVoidAsync("offlineMap.downloadRegion", selectedRegion);
+    }
+}

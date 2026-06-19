@@ -1,0 +1,210 @@
+﻿@inject MavlinkService Drone
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="w-full h-full flex justify-center">
+    <div class="relative w-full h-full min-h-[280px] bg-black rounded-[12px] overflow-hidden border-2 border-[#333] shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] font-mono text-white">
+
+        @* HORIZON — GPU-accelerated via the animateHud rAF loop in App.razor.
+           That loop calls getElementById('hud-horizon') every frame, so Blazor
+           re-renders never produce a stale JS reference. *@
+        <div id="hud-horizon" class="absolute top-[-50%] left-[-50%] w-[200%] h-[200%] z-[1] will-change-transform">
+            <div class="h-1/2 bg-gradient-to-b from-[#3a86ff] to-[#87ceeb] border-b-2 border-white"></div>
+            <div class="h-1/2 bg-gradient-to-b from-[#8b4513] to-[#cd853f]"></div>
+            <div class="absolute inset-0 flex flex-col justify-center items-center">
+                <div class="absolute h-[1px] bg-[rgba(255,255,255,0.7)] top-[30%] w-[60px]"></div>
+                <div class="absolute h-[1px] bg-[rgba(255,255,255,0.7)] top-[40%] w-[80px]"></div>
+                <div class="absolute top-[50%] w-[120px] h-[2px] bg-[#00f2ff] shadow-[0_0_5px_#00f2ff]"></div>
+                <div class="absolute top-[60%] w-[80px] border-t border-dashed border-white bg-transparent"></div>
+                <div class="absolute top-[70%] w-[60px] border-t border-dashed border-white bg-transparent"></div>
+            </div>
+        </div>
+
+        @* CROSSHAIR *@
+        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[5]">
+            <svg viewBox="0 0 100 100" width="60" height="60">
+                <path d="M 10 50 L 35 50 L 50 65 L 65 50 L 90 50"
+                      stroke="yellow" stroke-width="3" fill="none"
+                      filter="drop-shadow(0px 0px 2px rgba(0,0,0,0.8))" />
+                <circle cx="50" cy="50" r="2" fill="yellow" />
+            </svg>
+        </div>
+        
+        
+
+        @* TOP BAR — Roll/Pitch arrive as degrees from MavlinkService.
+           MavlinkService converts at parse time (att.roll * 180/PI).
+           Display directly — no further conversion. *@
+        <div class="absolute top-[10px] left-0 w-full flex justify-center z-10">
+            <div class="bg-[rgba(0,0,0,0.6)] px-[20px] py-[5px] rounded-[20px] border border-[#555] flex gap-[8px] items-center">
+                <span class="font-bold text-[#00f2ff]">YAW: @Drone.State.Yaw.ToString("0")°</span>
+                <span class="text-white ml-2">PITCH: @Drone.State.Pitch.ToString("0.0")°</span>
+                <span class="text-white ml-2">ROLL: @Drone.State.Roll.ToString("0.0")°</span>
+            </div>
+        </div>
+
+        @* LEFT TAPE — SPEED *@
+        <div class="absolute top-[20px] bottom-[60px] left-0 w-[60px] bg-[rgba(0,0,0,0.4)] backdrop-blur-[2px] flex flex-col items-center justify-center border border-[rgba(255,255,255,0.2)] border-r-0 rounded-[0_8px_8px_0] z-10">
+            <div class="text-[0.9rem] text-[#ffffff] mb-[5px]">SPD m/s</div>
+            <div class="text-[1.4rem] font-semibold text-white drop-shadow-[0_0_5px_rgba(0,0,0,1)]">
+                @_smoothedSpeed.ToString("0.0")
+            </div>
+        </div>
+
+        @* RIGHT TAPE — ALTITUDE *@
+        <div class="absolute top-[20px] bottom-[60px] right-0 w-[60px] bg-[rgba(0,0,0,0.4)] backdrop-blur-[2px] flex flex-col items-center justify-center border border-[rgba(255,255,255,0.2)] border-l-0 rounded-[8px_0_0_8px] z-10">
+            <div class="text-[0.9rem] text-[#ffffff] mb-[5px]">ALT m</div>
+            <div class="text-[1.4rem] font-semibold text-white drop-shadow-[0_0_5px_rgba(0,0,0,1)]">
+                @_smoothedAltitude.ToString("0.0")
+            </div>
+            <button class="absolute top-1 left-1/2 -translate-x-1/2 bg-[#2b58ff] text-white border-none rounded-[3px] text-[0.6rem] px-1.5 py-0.5 cursor-pointer opacity-80 hover:opacity-100 transition-opacity"
+                    title="Tare altitude to zero — use when barometer drifts on bench"
+                    @onclick="ZeroAltitude">ZERO</button>
+        </div>
+
+        @* RC INDICATOR *@
+        <div>
+            <div class="absolute top-[5px] right-[5px] z-10 flex items-center justify-center bg-[rgba(13,17,23,0.7)] p-[6px] rounded-[8px] border border-[#30363d] backdrop-blur-[4px] shadow-[0_4px_10px_rgba(0,0,0,0.5)]"
+                 title='@(Drone.State.IsRcConnected ? "RC Connected" : "RC Disconnected")'>
+                <svg class='w-[30px] h-[30px] transition-all duration-300 ease-in-out @(Drone.State.IsRcConnected ? "fill-[#8abe4e] drop-shadow-[0_0_5px_rgba(138,190,78,0.7)]" : "fill-[#4a4a4a] opacity-75")'
+                     xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+                    <path d="m 26,25 c -9.94,0 -18,10.06 -18,20 0,9.94 2.06,30 12,30
+                             5.32,0 16.11,-12.33 19.41,-16 l 21.19,0
+                             c 3.3,3.67 14.08,16 19.41,16 9.94,0 12,-20.06 12,-30
+                             0,-9.94 -8.06,-20 -18,-20 -5.32,0 -10.11,0.33 -13.41,4
+                             l -21.19,0 C 36.11,25.33 31.32,25 26,25 z
+                             m 48,9 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z
+                             m -48.22,1.03 a 2,2 0 0 1 1.78,2.03 l 0,3.97 3.97,0
+                             a 2,2 0 0 1 0,4 l -3.97,0 0,3.97 a 2,2 0 0 1 -4,0
+                             l 0,-3.97 -3.97,0 a 2,2 0 1 1 0,-4 l 3.97,0 0,-3.97
+                             a 2,2 0 0 1 2.22,-2.03 z
+                             M 68,40 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z
+                             m 12,0 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z
+                             m -6,6 c 1.66,0 3,1.34 3,3 0,1.66 -1.34,3 -3,3
+                             -1.66,0 -3,-1.34 -3,-3 0,-1.66 1.34,-3 3,-3 z" />
+                </svg>
+            </div>
+        </div>
+
+        @* BOTTOM PANEL *@
+        <div class="absolute bottom-0 left-0 w-full bg-[rgba(0,0,0,0.85)] p-[8px] z-20 flex flex-col gap-[5px] border-t border-[#444]">
+            <div class="text-center font-semibold tracking-[2px] text-[1.1rem] @(Drone.State.IsArmed ? "text-[#00ff00] drop-shadow-[0_0_10px_#00ff00]" : "text-[#ff3a3a] drop-shadow-[0_0_10px_#ff3a3a]")">
+                @(Drone.State.IsArmed ? "ARMED" : "DISARMED")
+            </div>
+            <div class="flex justify-around text-[1.1rem] text-[#ddd]">
+                <div class="flex items-center gap-[5px]">
+                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M 22 14 L 22 10"/><rect x="2" y="6" width="16" height="12" rx="2"/></svg></span>
+                    @Drone.State.BatteryPercent%
+                </div>
+                <div class="flex items-center gap-[5px]">
+                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m13.5 6.5-3.148-3.148a1.205 1.205 0 0 0-1.704 0L6.352 5.648a1.205 1.205 0 0 0 0 1.704L9.5 10.5"/><path d="M16.5 7.5 19 5"/><path d="m17.5 10.5 3.148 3.148a1.205 1.205 0 0 1 0 1.704l-2.296 2.296a1.205 1.205 0 0 1-1.704 0L13.5 14.5"/><path d="M9 21a6 6 0 0 0-6-6"/><path d="M9.352 10.648a1.205 1.205 0 0 0 0 1.704l2.296 2.296a1.205 1.205 0 0 0 1.704 0l4.296-4.296a1.205 1.205 0 0 0 0-1.704l-2.296-2.296a1.205 1.205 0 0 0-1.704 0z"/></svg></span>
+                    @Drone.State.SatCount
+                </div>
+                <div class="flex items-center gap-[5px]">
+                    <span class="icon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M15 8V2"/><path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z"/><path d="M9 8V2"/></svg></span>
+                    @Drone.State.Voltage.ToString("0.0")V
+                </div>
+            </div>
+        </div>
+        <div class="sleek-heading-indicator">
+    <span class="pointing-label">POINTING</span>
+    <span class="pointing-value">@GetCardinalDirection(_heading)</span>
+</div>
+    </div>
+</div>
+
+@code {
+    // ── Timing locks ─────────────────────────────────────────────────────
+    private DateTime _lastAttitudePush    = DateTime.MinValue;
+    private DateTime _lastTelemetryRender = DateTime.MinValue;
+
+    // ── Smoothed display values ───────────────────────────────────────────
+    private int _heading = 0;
+    private float _smoothedAltitude = 0.0f;
+    private float _smoothedSpeed    = 0.0f;
+    private float _altitudeOffset   = 0.0f;
+    private bool  _isFirstRender    = true;
+    private bool  _disposed         = false;
+
+    protected override void OnInitialized()
+    {
+        Drone.OnTelemetryUpdated += RefreshUi;
+        Drone.OnAttitudeUpdated  += PushAttitudeToJs;
+    }
+
+    private void ZeroAltitude()
+    {
+        _altitudeOffset   = Drone.State.Altitude;
+        _smoothedAltitude = 0.0f;
+        _isFirstRender    = true;                 // EMA resets → snaps to 0, doesn't drift
+        _ = InvokeAsync(StateHasChanged);         // refresh display immediately
+    }
+
+    private void PushAttitudeToJs()
+    {
+        if (_disposed) return;
+        var now = DateTime.UtcNow;
+        
+        // FIX: Increased from 20ms to 66ms (15 Hz)
+        // This stops the SignalR WebSocket from choking on 50 messages per second!
+        if ((now - _lastAttitudePush).TotalMilliseconds < 66) return;
+        _lastAttitudePush = now;
+
+        double rollDeg  = Drone.State.Roll;
+        double pitchDeg = Drone.State.Pitch;
+
+        _ = InvokeAsync(async () =>
+        {
+            try   { await JS.InvokeVoidAsync("updateHudTarget", rollDeg, pitchDeg); }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException)  { }
+        });
+    }
+
+    private string GetCardinalDirection(int degrees)
+    {
+        // Ensure degrees are between 0-359
+        int normalizedDegrees = ((degrees % 360) + 360) % 360; 
+        string[] cardinals = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+        return cardinals[(int)Math.Round((double)normalizedDegrees / 45) % 8];
+    }
+
+    private void RefreshUi()
+    {
+        if (_disposed) return;
+        
+        var now = DateTime.UtcNow;
+        if ((now - _lastTelemetryRender).TotalMilliseconds < 100) return;
+        _lastTelemetryRender = now;
+
+        // Altitude = relative_alt/1000 (AGL metres) from MavlinkService.
+        // Subtract offset set by ZeroAltitude() to correct bench thermal drift.
+        float currentRealAlt = Drone.State.Altitude - _altitudeOffset;
+
+        if (_isFirstRender)
+        {
+            _smoothedAltitude = currentRealAlt;
+            _smoothedSpeed    = Drone.State.GroundSpeed;
+            _heading          = (int)Drone.State.Yaw;
+            _isFirstRender    = false;
+        }
+        else
+        {
+            _smoothedAltitude = (_smoothedAltitude * 0.8f) + (currentRealAlt          * 0.2f);
+            _smoothedSpeed    = (_smoothedSpeed    * 0.8f) + (Drone.State.GroundSpeed * 0.2f);
+            _heading          = (int)Drone.State.Yaw;
+        }
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        Drone.OnTelemetryUpdated -= RefreshUi;
+        Drone.OnAttitudeUpdated  -= PushAttitudeToJs;
+    }
+}

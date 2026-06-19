@@ -1,0 +1,1423 @@
+@inherits LayoutComponentBase
+@using DivyaLink.Components.GCS
+@inject MavlinkService Drone
+@inject IJSRuntime JS
+@inject DgcaAirspaceService AirspaceSvc
+@implements IDisposable
+@using System.IO.Ports
+@using System.Linq
+@inject VehicleProfileService Vehicle
+@inject NavigationManager Navigation
+@inject DivyaLink.Services.LicenseService License
+@inject DivyaLink.Services.ParameterMetadataService MetadataSvc
+@inject DivyaLink.Services.Firmware.FirmwareProfileService FirmwareSvc
+@inject DivyaLink.Services.Firmware.Px4ParameterMetadataService Px4MetadataSvc
+
+@* REMOVED 'flex flex-col' so elements can overlap properly to restore frosted glass *@
+<div class="gcs-wrapper block h-screen w-full bg-[#0a0b0d] overflow-hidden relative">
+
+    @if (isDrawing)
+    {
+        <div class="fixed top-[75px] left-1/2 -translate-x-1/2 bg-[#0f1117]/90 backdrop-blur-md border border-[#ff9900] rounded-[8px] p-[10px_20px] shadow-[0_4px_25px_rgba(255,153,0,0.3)] z-[1000] flex items-center gap-4 text-white pointer-events-auto">
+            <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-[#ff9900] animate-pulse"></span>
+                <span class="text-xs font-black tracking-[1px] uppercase">Drawing Cache Zone</span>
+            </div>
+            <div class="text-[0.75rem] text-[#8b949e]">Click map to place points (min 3 to save)</div>
+            <button class="h-[28px] px-3 bg-[#3fb950] border-none rounded-[4px] text-white text-[0.75rem] font-bold cursor-pointer hover:bg-green-600 transition-colors"
+                    @onclick="SaveDrawnRegion" id="floating-btn-save-zone">SAVE ZONE</button>
+            <button class="h-[28px] px-3 bg-[#ff4a4a] border-none rounded-[4px] text-white text-[0.75rem] font-bold cursor-pointer hover:bg-red-600 transition-colors"
+                    @onclick="CancelDrawingRegion" id="floating-btn-cancel-zone">CANCEL</button>
+        </div>
+    }
+
+    @* --- HEADER --- *@
+    <header class="header fixed top-0 left-0 w-full h-[60px] z-[100] shrink-0 bg-[rgba(18,20,26,0.6)] backdrop-blur-md border-b border-[#242731] flex items-center justify-between px-2 md:px-5 transition-all duration-300">
+        @* HEADER CONTENT IS UNCHANGED *@
+        <div class="flex items-center gap-2 md:gap-[15px]">
+            <div class="hidden sm:flex flex-col justify-center">
+                <span class="bg-gradient-to-r from-[#3a86ff] to-[#ff00c8] bg-clip-text text-transparent font-black text-lg md:text-[1.6rem] tracking-[-0.5px] leading-none">DIVYALINK</span>
+                <div class="text-[0.7rem] text-[#888] tracking-[1.5px] uppercase mt-[2px] font-bold">BY VAYUNOTICS</div>
+            </div>
+
+            <div class="flex items-center gap-1.5 flex-nowrap overflow-x-auto no-scrollbar pb-1 sm:pb-0">
+                @{
+                    var pillBase = "inline-flex items-center justify-center gap-1.5 h-[28px] min-w-[95px] px-2 rounded-[4px] text-[0.8rem] font-bold tracking-[0.8px] whitespace-nowrap transition-all duration-300 border box-border";
+                }
+                <div class="@pillBase @(IsDroneActuallyTalking ? "bg-[rgba(0,200,80,0.12)] border-[#2ea043] text-[#3fb950]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
+                    <i class="bi bi-router-fill"></i>
+                    <span class="hidden sm:inline">
+                        @if (IsDroneActuallyTalking)
+                        {
+                            @($"TELEM {Drone.State.RxPacketsPerSec:0}Hz")
+                        }
+                        else
+                        {
+                            @("NO LINK")
+                        }
+                    </span>
+                </div>
+                <div class="@pillBase @(Drone.State.GpsFixType >= 3 ? "bg-[rgba(0,200,80,0.10)] border-[#2ea043] text-[#3fb950]" : Drone.State.GpsFixType >= 2 ? "bg-[rgba(210,153,34,0.12)] border-[#d29922] text-[#e3a820]" : "bg-[rgba(80,80,80,0.10)] border-[#484f58] text-[#8b949e]")">
+                    <i class="bi bi-reception-4"></i>
+                    <span class="hidden sm:inline">@(Drone.State.SatCount > 0 ? $"{Drone.State.SatCount} SAT" : "NO GPS")</span>
+                </div>
+                <div class="@pillBase @(Drone.State.IsRcConnected ? "bg-[rgba(0,220,80,0.20)] border-[#00cc55] text-[#00ee66]" : "bg-[rgba(220,60,60,0.18)] border-[#cc3333] text-[#ff6666]")">
+                    <i class="bi bi-controller"></i>
+                    <span class="hidden sm:inline">@(Drone.State.IsRcConnected ? "RC" : "NO RC")</span>
+                </div>
+                @if (IsDroneActuallyTalking)
+                {
+                    <div class="@pillBase @(FirmwareSvc.ActiveFirmware == DivyaLink.Services.Firmware.FirmwareFamily.PX4 ? "bg-[rgba(0,212,170,0.10)] border-[#00d4aa] text-[#00d4aa]" : "bg-[rgba(88,166,255,0.10)] border-[#58a6ff] text-[#58a6ff]")">
+                        <i class="bi bi-cpu-fill"></i>
+                        <span class="hidden sm:inline">@FirmwareSvc.ActiveFirmwareDisplayName</span>
+                    </div>
+                }
+                @if (IsDroneActuallyTalking && Drone.State.FlightMode != "Unknown")
+                {
+                    <div class="@pillBase bg-[rgba(88,166,255,0.10)] border-[#58a6ff] text-[#58a6ff]">
+                        <i class="bi bi-airplane-fill"></i>
+                        <span class="hidden sm:inline">@Drone.State.FlightMode</span>
+                    </div>
+                }
+                @if (IsDroneActuallyTalking)
+                {
+                    <div class="@pillBase @(Drone.State.IsArmed ? "bg-[rgba(248,81,73,0.15)] border-[#f85149] text-[#ff8080]" : "bg-[rgba(46,160,67,0.10)] border-[#2ea043] text-[#3fb950]")">
+                        <i class="bi @(Drone.State.IsArmed ? "bi-shield-fill-exclamation" : "bi-shield-fill-check")"></i>
+                        <span class="hidden sm:inline">@(Drone.State.IsArmed ? "ARMED" : "DISARMED")</span>
+                    </div>
+                }
+            </div>
+        </div>
+
+    <div class="flex items-center gap-2 md:gap-3">
+        <div class="flex items-center gap-2 md:gap-3 overflow-x-auto no-scrollbar">
+        @{
+            @* FIX: explicitly locked to h-[36px] and text-[0.9rem] to prevent shrinking/jumping *@
+            var inputBase = "h-[36px] bg-[#08090b] border border-[#242731] text-white px-3 rounded-[4px] text-[0.9rem] font-semibold outline-none focus:border-[#58a6ff]";
+        }
+
+        <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedType">
+            <option value="Serial">SERIAL</option>
+            <option value="UDP">UDP</option>
+            <option value="TCP">TCP</option>
+        </select>
+
+        @if (selectedType == "Serial")
+        {
+            <select class="@inputBase cursor-pointer min-w-[140px]" @onchange="OnPortChanged" value="@selectedPort">
+                @if (availablePorts.Count == 0)
+                {
+                    <option value="" disabled selected>Scanning...</option>
+                }
+                else
+                {
+                    <option value="" disabled selected="@(string.IsNullOrEmpty(selectedPort))">-- Port --</option>
+                    @foreach (var port in Drone.GetAvailablePorts())
+                    {
+                        <option value="@port.PortId">@port.DisplayName</option>
+                    }
+                }
+            </select>
+        }
+        else
+        {
+            <input class="@inputBase w-[140px]" @bind="selectedPort" placeholder="127.0.0.1" />
+        }
+
+        <select class="@inputBase cursor-pointer hidden md:block" @bind="selectedBaud">
+            <option value="9600">9600</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+        </select>
+
+        @* Scaled Status Indicator *@
+        <span class="w-3 h-3 rounded-full shrink-0 mx-1 @(IsDroneActuallyTalking ? "bg-[#00ff00] shadow-[0_0_8px_#00ff00]" : "bg-[#ff0000]")"></span>
+
+        @* Scaled Connect Button: h-[36px] matching the inputs exactly *@
+        <button class="h-[36px] border-none p-2 rounded-[4px] font-extrabold cursor-pointer text-[0.9rem] tracking-[1px] transition-colors flex items-center justify-center @(IsDroneActuallyTalking ? "bg-[#ff3a3a] text-white hover:bg-red-600" : "bg-[#2b58ff] text-white hover:bg-blue-600")"
+                @onclick="ToggleConnection" disabled="@isAttempting">
+            @if (isAttempting)
+            {
+                <span>VERIFYING...</span>
+            }
+            else
+            {
+                @(IsDroneActuallyTalking ? "DISCONNECT" : "CONNECT")
+            }
+        </button>
+        </div>
+
+        @* Profile Dropdown Menu *@
+        <div class="relative shrink-0 flex items-center ml-1">
+            <button class="w-[36px] h-[36px] rounded-full bg-[#1c1f26] border border-[#30363d] flex items-center justify-center font-black text-[0.85rem] text-white hover:border-[#58a6ff] cursor-pointer transition-all duration-200"
+                    @onclick="ToggleProfileMenu" id="profile-avatar-btn">
+                @AvatarInitials
+            </button>
+
+            @if (isProfileMenuOpen)
+            {
+                <div class="fixed inset-0 z-[998] bg-transparent pointer-events-auto" @onclick="ToggleProfileMenu"></div>
+                <div class="absolute top-[48px] right-0 w-[290px] bg-[#0f1117]/95 backdrop-blur-xl border border-[#30363d] rounded-[12px] p-4 shadow-[0_10px_35px_rgba(0,0,0,0.6)] z-[999] flex flex-col gap-3 text-white profile-dropdown-animate" id="profile-dropdown-menu">
+                    <!-- Profile Row -->
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="w-[44px] h-[44px] rounded-full bg-gradient-to-tr from-[#3a86ff] to-[#7e3ff2] flex items-center justify-center font-black text-[0.95rem] text-white shadow-inner shrink-0">
+                            @AvatarInitials
+                        </div>
+                        <div class="flex-1 flex flex-col justify-center leading-tight">
+                            @if (isEditingName)
+                            {
+                                <input class="bg-[#08090b] border border-[#30363d] text-white text-[0.9rem] rounded px-2 py-0.5 w-[140px] outline-none font-bold"
+                                       @bind="tempOperatorName" @onblur="SaveOperatorName" @onkeyup="HandleNameKeyUp" autofocus />
+                            }
+                            else
+                            {
+                                <span class="text-white font-black text-[0.95rem] tracking-[-0.2px]">@operatorName</span>
+                            }
+                            <span class="text-[#3fb950] font-bold text-[0.65rem] uppercase tracking-[0.5px] mt-[2px]">@operatorRole</span>
+                        </div>
+                        <button class="text-[#8b949e] hover:text-white transition-colors cursor-pointer border-none bg-transparent p-1"
+                                @onclick="ToggleEditName">
+                            <i class="bi @(isEditingName ? "bi-check-lg text-[#3fb950] text-[1.2rem]" : "bi-pencil-square text-[1.05rem]")"></i>
+                        </button>
+                    </div>
+
+                    <!-- License Tier -->
+                    <div class="border-t border-[#242731] pt-3 flex flex-col gap-1.5">
+                        <div class="flex justify-between items-center text-[0.68rem] tracking-[1.5px] font-black text-[#8b949e]">
+                            <span>LICENSE TIER</span>
+                            <span class="text-[#3a86ff] font-black uppercase text-[0.78rem] tracking-[1.2px]">@licenseTier</span>
+                        </div>
+                        <div class="flex justify-between items-center text-[0.68rem] tracking-[1.5px] font-black text-[#8b949e]">
+                            <span>VALID FOR</span>
+                            <span class="text-white font-black text-[0.78rem]">@licenseValidity</span>
+                        </div>
+                    </div>
+
+                    <!-- Toggles & Select -->
+                    <div class="border-t border-[#242731] pt-3 flex flex-col gap-3">
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="flex items-center gap-2 flex-1">
+                                <i class="bi bi-brightness-high text-[#8b949e] text-[1.05rem]"></i>
+                                <span class="text-white font-semibold text-[0.82rem]">Outdoor Mode</span>
+                            </div>
+                            <label class="gcs-switch">
+                                <input type="checkbox" @bind="isOutdoorMode" />
+                                <span class="gcs-switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="flex items-center gap-2 flex-1">
+                                <i class="bi bi-cloud-arrow-down text-[#8b949e] text-[1.05rem]"></i>
+                                <span class="text-white font-semibold text-[0.82rem]">Live Map Auto-Cache</span>
+                            </div>
+                            <label class="gcs-switch">
+                                <input type="checkbox" @bind="isLiveMapCache" />
+                                <span class="gcs-switch-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="flex flex-col gap-1">
+                            <div class="flex items-center gap-2">
+                                <i class="bi bi-map text-[#8b949e] text-[1.05rem]"></i>
+                                <span class="text-white font-semibold text-[0.82rem]">Offline Base Map</span>
+                            </div>
+                            <div class="relative w-full mt-1">
+                                <button class="w-full bg-[#08090b] border border-[#242731] text-white px-3 py-1.5 rounded-[4px] text-[0.8rem] font-semibold flex items-center justify-between cursor-pointer outline-none hover:border-[#58a6ff] transition-all"
+                                        @onclick="ToggleMapDropdown" id="custom-map-dropdown-btn">
+                                    <span class="truncate pr-2">@(string.IsNullOrEmpty(selectedOfflineMap) ? "No saved regions" : selectedOfflineMap)</span>
+                                    <i class="bi bi-chevron-down text-[#8b949e] text-[0.75rem]"></i>
+                                </button>
+                                
+                                @if (isMapDropdownOpen)
+                                {
+                                    <div class="fixed inset-0 z-[1000] bg-transparent" @onclick="ToggleMapDropdown"></div>
+                                    <div class="absolute top-[34px] left-0 w-full bg-[#0f1117]/95 backdrop-blur-xl border border-[#30363d] rounded-[6px] shadow-[0_4px_20px_rgba(0,0,0,0.6)] z-[1001] max-h-[160px] overflow-y-auto p-1 flex flex-col gap-0.5 custom-scrollbar">
+                                        @if (savedRegions.Count == 0)
+                                        {
+                                            <div class="text-[#8b949e] text-[0.75rem] p-2 text-center">No saved regions</div>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var region in savedRegions)
+                                            {
+                                                var isSelected = region.Name == selectedOfflineMap;
+                                                <div class="flex items-center justify-between px-2.5 py-1.5 rounded-[4px] transition-all duration-150 @(isSelected ? "bg-[#2b58ff]/15 text-[#58a6ff]" : "hover:bg-[#1f242c] text-[#c9d1d9]")">
+                                                    <span class="text-[0.78rem] font-semibold cursor-pointer truncate flex-1 pr-2"
+                                                          @onclick="() => SelectRegion(region)">
+                                                        @region.Name
+                                                    </span>
+                                                    <div class="flex items-center gap-1.5 shrink-0 pointer-events-auto">
+                                                        <button class="text-[#8b949e] hover:text-white transition-colors cursor-pointer border-none bg-transparent p-0.5 flex items-center justify-center text-[0.85rem]"
+                                                                @onclick="() => RenameRegion(region)" title="Rename zone">
+                                                            <i class="bi bi-pencil text-[0.85rem]"></i>
+                                                        </button>
+                                                        <button class="text-[#ff4a4a] hover:text-[#ff6b6b] transition-colors cursor-pointer border-none bg-transparent p-0.5 flex items-center justify-center text-[0.85rem]"
+                                                                @onclick="() => DeleteRegion(region)" title="Delete zone">
+                                                            <i class="bi bi-trash text-[0.85rem]"></i>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            @if (!isDrawing)
+                            {
+                                <button class="w-full mt-1.5 py-1.5 bg-[rgba(58,134,255,0.15)] hover:bg-[rgba(58,134,255,0.25)] text-[#58a6ff] border border-[#3a86ff]/30 rounded-[6px] text-[0.8rem] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                                        @onclick="StartDrawingRegion" id="btn-draw-cache-zone">
+                                    <i class="bi bi-pencil-square"></i>
+                                    <span>DRAW CACHE ZONE</span>
+                                </button>
+                            }
+                            else
+                            {
+                                <div class="flex gap-1.5 mt-1.5">
+                                    <button class="flex-1 py-1.5 bg-[#3fb950]/20 hover:bg-[#3fb950]/30 text-[#3fb950] border border-[#3fb950]/30 rounded-[6px] text-[0.8rem] font-bold transition-all cursor-pointer flex items-center justify-center gap-1"
+                                            @onclick="SaveDrawnRegion" id="btn-save-zone">
+                                        <i class="bi bi-check-lg"></i>
+                                        <span>SAVE ZONE</span>
+                                    </button>
+                                    <button class="flex-1 py-1.5 bg-[#ff4a4a]/20 hover:bg-[#ff4a4a]/30 text-[#ff4a4a] border border-[#ff4a4a]/30 rounded-[6px] text-[0.8rem] font-bold transition-all cursor-pointer flex items-center justify-center gap-1"
+                                            @onclick="CancelDrawingRegion" id="btn-cancel-zone">
+                                        <i class="bi bi-x-lg"></i>
+                                        <span>CANCEL</span>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Menu Buttons -->
+                    <div class="border-t border-[#242731] pt-2.5 flex flex-col gap-0.5">
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#c9d1d9] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#1f242c]"
+                                @onclick='() => ClickMenuItem("Operator Profile & Settings")'>
+                            <i class="bi bi-sliders2 text-[#8b949e] text-[1rem] shrink-0"></i>
+                            <span>Operator Profile & Settings</span>
+                        </button>
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#c9d1d9] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#1f242c]"
+                                @onclick='() => ClickMenuItem("Firmware Flashing")'>
+                            <i class="bi bi-cpu text-[#8b949e] text-[1rem] shrink-0"></i>
+                            <span>Firmware Flashing</span>
+                        </button>
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#c9d1d9] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#1f242c]"
+                                @onclick='() => ClickMenuItem("Manage License")'>
+                            <i class="bi bi-shield-lock text-[#8b949e] text-[1rem] shrink-0"></i>
+                            <span>Manage License</span>
+                        </button>
+                        <button class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-[6px] text-left text-[#ff4a4a] text-[0.8rem] font-bold transition-all duration-150 hover:bg-[#3a0d0d]/30 hover:text-white"
+                                @onclick="PurgeOfflineStorage">
+                            <i class="bi bi-trash text-[#ff4a4a] text-[1rem] shrink-0"></i>
+                            <span>Purge All Offline Map Storage</span>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+    </header>
+
+    @* ── AIRSPACE WARNING BANNER ──────────────────────────────────────────────────
+         Sits fixed at top-[60px] (just below the 60px header).
+         z-[99] — below the header (z-100) but above everything else.
+         Only rendered when _airspaceWarning is non-null.
+         RED  → pulsing red background, white bold text (matches RESTRICTED severity).
+         YELLOW → solid amber, no pulse (CONTROLLED / advisory).
+    *@
+    @if (_airspaceWarning is not null)
+    {
+        <div class="airspace-warning-banner @(_airspaceWarning == "RED" ? "banner-red" : "banner-yellow")"
+             role="alert"
+             aria-live="assertive">
+            <span class="banner-icon">⚠️</span>
+            <span class="banner-text">
+                WARNING: AIRCRAFT INSIDE RESTRICTED
+                <strong>@(_airspaceWarning == "RED" ? "PROHIBITED" : "CONTROLLED")</strong>
+                AIRSPACE
+            </span>
+            @* Zone type label pill *@
+            <span class="banner-zone-pill">@_airspaceWarning ZONE</span>
+        </div>
+    }
+
+    @* THE ABSOLUTE WORKSPACE: inset-0 forces this container to the very top, restored the glass blur! *@
+    <div class="absolute inset-0 flex flex-row pointer-events-none z-[10] transition-all duration-300">
+        
+        @* 1. THE DRAWER (Consolidated all visibility logic to inline styles, slides under header z-[90]) *@
+        <div class="pointer-events-auto shrink-0 bg-[rgba(15,17,23,0.9)] backdrop-blur-xl border-r border-[rgba(255,255,255,0.1)] z-[90] transition-all duration-300 shadow-[20px_0_50px_rgba(0,0,0,0.3)] overflow-hidden flex flex-col h-full relative pt-[60px]"
+     style="@GetDrawerStyle()">
+             
+            <button class="absolute top-[65px] right-[5px] bg-transparent border-none text-[rgba(255,255,255,0.7)] text-[26px] font-bold p-0 cursor-pointer z-[2000] leading-none transition-all duration-200 hover:text-[#ff3a3a] hover:scale-125" @onclick='() => HandleTabClick(activeTab)'>&times;</button>
+            <div class="w-full h-full p-0 box-border overflow-y-auto overflow-x-hidden">
+                @if (activeTab == "Quick") { <Quick /> }
+                else if (activeTab == "Actions") { <Actions /> }
+                else if (activeTab == "Messages") { <Messages /> }
+                else if (activeTab == "FlightPlan") { <FlightPlan /> }
+                else if (activeTab == "Pre Flight") { <PreFlight /> }
+                else if (activeTab == "Setup") { <Setup /> }
+                else if (activeTab == "Swarm") { <Swarm /> }
+            </div>
+        </div>
+
+        @* 2. THE MAP CONTAINER (flex-1 handles the push, but it reaches top: 0!) *@
+        <main class="flex-1 relative h-full pointer-events-none transition-all duration-300">
+            <CascadingValue Value="activeTab">
+                <div class="pointer-events-auto absolute inset-0 w-full h-full">
+                    @Body
+                </div>
+            </CascadingValue>
+
+            @* 3. THE FOOTER (Anchored strictly inside the shrinking map workspace) *@
+            @if (IsOnDashboard)
+            {
+                <footer class="absolute bottom-0 left-0 w-full p-[15px_10px] flex justify-center z-[1000] transition-all duration-300 pointer-events-none">
+                    <div class="flex gap-2 md:gap-[10px] w-full max-w-[750px] justify-center overflow-x-auto no-scrollbar pointer-events-auto px-2">
+                        @foreach (var tab in tabs)
+                        {
+                            var isActive = activeTab == tab;
+                            <button class="min-w-[70px] md:min-w-[95px] flex-1 rounded-[8px] text-white py-[4px] px-1 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 shadow-lg @(isActive ? "bg-gradient-to-br from-[#2b58ff] to-[#7e3ff2] border border-transparent shadow-[0_0_15px_rgba(126,63,242,0.4)]" : "bg-[rgba(10,11,14,0.85)] backdrop-blur-md border border-[#30363d] hover:bg-[#1a1f2e] hover:border-[#58a6ff]")"
+                                    @onclick="() => HandleTabClick(tab)">
+                                <div class="h-[30px] flex items-center justify-center shrink-0">
+                                    <i class="not-italic flex items-center justify-center @(isActive ? "text-white" : "text-[#00f2ff]") [&>svg]:w-[22px] [&>svg]:h-[22px]">
+                                        @((MarkupString)GetIcon(tab))
+                                    </i>
+                                </div>
+                                <span class="text-[1.1rem] md:text-[1.1rem] font-semibold tracking-tighter leading-none whitespace-nowrap mt-[1px]">@tab</span>
+                            </button>
+                        }
+                    </div>
+                </footer>
+            }
+            <MapOverlayHost />
+        </main>
+    </div>
+
+    @if (isSettingsModalOpen)
+    {
+        <div class="fixed inset-0 z-[10000] bg-black/60 backdrop-blur-md flex items-center justify-center pointer-events-auto">
+            <div class="w-[520px] max-w-[95vw] max-h-[90vh] bg-[#0f1117] border border-[#30363d] rounded-[16px] p-6 shadow-[0_15px_50px_rgba(0,0,0,0.8)] text-white flex flex-col gap-4 relative overflow-hidden">
+                <!-- Header -->
+                <div class="flex items-center justify-between border-b border-[#242731] pb-3 shrink-0">
+                    <h3 class="text-[1.1rem] font-black tracking-tight text-[#00f2ff] flex items-center gap-2 m-0 uppercase">
+                        <i class="bi bi-cpu text-[1.2rem]"></i> Firmware Flashing
+                    </h3>
+                    <button class="bg-transparent border-none text-[#8b949e] hover:text-white text-[1.4rem] cursor-pointer" @onclick="CloseSettingsModal">&times;</button>
+                </div>
+
+                <!-- Body -->
+                <div class="flex-1 overflow-y-auto no-scrollbar">
+                    <Firmware />
+                </div>
+            </div>
+        </div>
+    }
+
+    <ConnectionDialog />
+    <ToastContainer />
+
+    @if (!License.IsActive)
+    {
+        <div class="fixed inset-0 bg-[#0a0b0d]/92 backdrop-blur-2xl flex items-center justify-center p-4" style="z-index: 999999;">
+            <div class="w-full max-w-[500px] bg-[#12141a]/95 border border-[#30363d] rounded-[16px] p-6 md:p-8 shadow-[0_20px_50px_rgba(0,0,0,0.8)] relative overflow-hidden flex flex-col gap-6 select-none" style="pointer-events: auto;">
+                <!-- Decorative gradient blur -->
+                <div class="absolute -top-[50px] -right-[50px] w-[150px] h-[150px] bg-[#2b58ff]/10 rounded-full blur-[50px]"></div>
+                <div class="absolute -bottom-[50px] -left-[50px] w-[150px] h-[150px] bg-[#7e3ff2]/10 rounded-full blur-[50px]"></div>
+
+                <div class="flex flex-col items-center text-center gap-3">
+                    <!-- Icon -->
+                    <div class="w-[60px] h-[60px] rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500 text-[1.8rem] mb-2 animate-pulse">
+                        <i class="bi bi-shield-lock-fill"></i>
+                    </div>
+                    <h2 class="text-white font-black text-xl md:text-2xl tracking-tight m-0 uppercase bg-gradient-to-r from-red-400 to-[#ff00c8] bg-clip-text text-transparent">License Required</h2>
+                    <p class="text-[#8b949e] text-[0.88rem] leading-relaxed max-w-[360px] m-0">
+                        Your free trial has expired or no valid license is loaded. Please enter a valid license key to continue using DivyaLink.
+                    </p>
+                </div>
+
+                <!-- Hardware ID display -->
+                <div class="bg-[#08090b] border border-[#242731] rounded-[8px] p-4 flex flex-col gap-1.5 relative">
+                    <span class="text-[#8b949e] text-[0.68rem] tracking-[1.5px] font-black uppercase">Your Hardware ID (GCS HWID)</span>
+                    <div class="flex items-center justify-between gap-3">
+                        <code class="text-[#00f2ff] font-mono font-bold text-[1.05rem] tracking-[1px]">@License.HardwareId</code>
+                        <button class="px-2.5 py-1 bg-[#21262d] border border-[#30363d] rounded text-[0.7rem] font-bold text-white hover:bg-[#30363d] transition-colors cursor-pointer"
+                                @onclick="CopyHardwareIdToClipboard">
+                            @copyButtonText
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Key entry -->
+                <div class="flex flex-col gap-2">
+                    <span class="text-white font-bold text-[0.82rem]">Enter License Key</span>
+                    <textarea class="w-full h-[90px] bg-[#08090b] border border-[#242731] text-white p-3 rounded-[6px] text-[0.85rem] font-semibold outline-none focus:border-[#58a6ff] resize-none"
+                              placeholder="Paste your license key here..."
+                              @bind="enteredLicenseKey"></textarea>
+                </div>
+
+                <!-- Actions -->
+                <button class="w-full h-[44px] bg-gradient-to-r from-[#2b58ff] to-[#7e3ff2] border-none rounded-[6px] text-white font-extrabold cursor-pointer text-[0.95rem] tracking-[1px] shadow-[0_4px_15px_rgba(126,63,242,0.4)] hover:opacity-95 transition-all flex items-center justify-center gap-2"
+                        @onclick="ActivateLicenseKey" disabled="@isActivatingKey">
+                    @if (isActivatingKey)
+                    {
+                        <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        <span>VALIDATING...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-key-fill"></i>
+                        <span>ACTIVATE LICENSE</span>
+                    }
+                </button>
+            </div>
+        </div>
+    }
+
+</div>
+
+<style>
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    .gcs-wrapper.map-fullscreen .header { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+    .gcs-wrapper.map-fullscreen .footer { transform: translateY(100%); opacity: 0; pointer-events: none; }
+    
+    @* Restored original map pop-out logic for z-indexing, merges with absolute layout *@
+    .gcs-wrapper.map-fullscreen main {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1000; @* COVER EVERY ELEMENT WHEN FULLSCREEN *@
+        pointer-events: auto;
+    }
+
+    /* ── AIRSPACE WARNING BANNER ────────────────────────────────────────────
+       Fixed just below the 60px header.
+       Highest possible z-index below the header itself.
+    ─────────────────────────────────────────────────────────────────────── */
+    .airspace-warning-banner {
+        position: fixed;
+        top: 60px;
+        left: 0;
+        width: 100%;
+        z-index: 99;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 7px 20px;
+        font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 1.2px;
+        text-transform: uppercase;
+        pointer-events: none;          /* never block map interaction */
+        box-shadow: 0 2px 16px rgba(0,0,0,0.45);
+        border-bottom: 1px solid rgba(255,255,255,0.12);
+        transition: background 0.3s ease;
+    }
+
+    /* RED zone — pulsing red, high-contrast white text */
+    .banner-red {
+        background: rgba(200, 30, 30, 0.88);
+        color: #ffffff;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+        animation: bannerPulse 1.4s ease-in-out infinite;
+    }
+
+    /* YELLOW zone — solid amber, no pulse */
+    .banner-yellow {
+        background: rgba(210, 140, 0, 0.90);
+        color: #ffffff;
+        text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        box-shadow: 0 2px 18px rgba(255, 180, 0, 0.30);
+    }
+
+    .banner-icon {
+        font-size: 1rem;
+        flex-shrink: 0;
+    }
+
+    .banner-text {
+        flex: 1;
+        text-align: center;
+    }
+
+    .banner-zone-pill {
+        background: rgba(0,0,0,0.28);
+        border: 1px solid rgba(255,255,255,0.30);
+        border-radius: 3px;
+        padding: 2px 8px;
+        font-size: 0.68rem;
+        letter-spacing: 1.5px;
+        flex-shrink: 0;
+    }
+
+    /* Pulsing animation — RED only */
+    @@keyframes bannerPulse {
+        0%,100% { background: rgba(200, 30, 30, 0.88); }
+        50%      { background: rgba(230, 20, 20, 0.98); }
+    }
+
+    /* Leaflet popup override — remove default white box, let our HTML style it */
+    .dgca-popup .leaflet-popup-content-wrapper {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        border-radius: 0 !important;
+    }
+    .dgca-popup .leaflet-popup-content {
+        margin: 0 !important;
+    }
+    .dgca-popup .leaflet-popup-tip-container {
+        display: none !important;
+    }
+
+    /* Beautiful Custom Toggle Switch */
+    .gcs-switch {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        cursor: pointer;
+        user-select: none;
+    }
+    .gcs-switch input {
+        display: none;
+    }
+    .gcs-switch-slider {
+        position: relative;
+        width: 32px;
+        height: 18px;
+        background-color: #242731;
+        border: 1px solid #30363d;
+        border-radius: 9px;
+        transition: all 0.2s ease-in-out;
+    }
+    .gcs-switch-slider::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background-color: #8b949e;
+        transition: all 0.2s ease-in-out;
+    }
+    .gcs-switch input:checked + .gcs-switch-slider {
+        background-color: #1a3860;
+        border-color: #58a6ff;
+    }
+    .gcs-switch input:checked + .gcs-switch-slider::after {
+        transform: translateX(14px);
+        background-color: #58a6ff;
+    }
+
+    /* Dropdown Animation */
+    @@keyframes dropdownFadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.98);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+    }
+    .profile-dropdown-animate {
+        animation: dropdownFadeIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+</style>
+
+@code {
+    // ── Existing state (unchanged) ────────────────────────────────────────
+    private string activeTab = "";
+    private string selectedType = "Serial";
+    private string selectedPort = "";
+    private int selectedBaud = 57600;
+    [Inject] private IConfiguration Config { get; set; } = default!;
+
+    private List<string> availablePorts = new();
+    private bool isManualConnected = false;
+    private bool isAttempting = false;
+    private System.Threading.Timer? _autoDetectTimer;
+    private string[] tabs = { "Quick", "Actions", "Messages", "FlightPlan", "Pre Flight", "Setup", "Swarm" };
+
+    private bool IsConnected => Drone.State.ConnectionStatus.Contains("Receiving");
+    private bool IsDroneActuallyTalking => Drone.IsLinkHealthy;
+
+    // ── Airspace warning state ────────────────────────────────────────────
+    // null  = no warning  |  "RED" = prohibited  |  "YELLOW" = controlled
+    private string? _airspaceWarning = null;
+
+    // DotNet reference passed to JS so airspace.js can invoke back
+    private DotNetObjectReference<MainLayout>? _dotnetRef;
+
+    // ── Proximity throttle: don't call JS on every telemetry packet ───────
+    private DateTime _lastProximityCheck = DateTime.MinValue;
+    private static readonly TimeSpan ProximityCheckInterval = TimeSpan.FromSeconds(2);
+
+    // ── Airspace load throttle: reload when drone moves >5 km ─────────────
+    private double _lastAirspaceLoadLat = double.NaN;
+    private double _lastAirspaceLoadLon = double.NaN;
+    private const double AirspaceReloadDistanceMeters = 5000;
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+
+    protected override void OnInitialized()
+    {
+        _autoDetectTimer = new System.Threading.Timer(AutoDetectPorts, null, 0, 1000);
+        Drone.OnTelemetryUpdated += RefreshUi;
+        Drone.OnRcChannelsUpdated += OnRcUpdated;
+
+        var defaultType = Config["TcpConnection:DefaultConnectionType"] ?? "Serial";
+        if (Enum.TryParse<ConnectionType>(defaultType, out _))
+            selectedType = defaultType;
+
+        if (selectedType is "TCP" or "UDP")
+        {
+            var host = Config["TcpConnection:DefaultHost"] ?? "";
+            var port = Config["TcpConnection:DefaultPort"] ?? "";
+            selectedPort = string.IsNullOrEmpty(port) ? host : $"{host}:{port}";
+        }
+        Vehicle.OnAutoSnap += HandleVehicleAutoSnap;
+        Navigation.LocationChanged += OnLocationChanged;
+    }
+
+    private void HandleVehicleAutoSnap(AutoSnapEventArgs args)
+    {
+        try
+        {
+            _ = InvokeAsync(() =>
+            {
+                // ── Now on the Blazor circuit thread ──────────────────────────
+                Drone.Toast(args.ToastMessage, MavlinkService.ToastLevel.Warning, "⚠️");
+                // StateHasChanged not needed here — toast library manages its own render
+            });
+        }
+        catch (ObjectDisposedException) { }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        _dotnetRef = DotNetObjectReference.Create(this);
+        try
+        {
+            await JS.InvokeVoidAsync("airspace.setDotnetRef", _dotnetRef);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Airspace] JS not ready: {ex.Message}");
+            // Non-fatal — proximity warnings won't fire but map still works
+        }
+
+        try
+        {
+            var savedName = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_operator_name");
+            if (!string.IsNullOrWhiteSpace(savedName))
+            {
+                operatorName = savedName;
+                tempOperatorName = savedName;
+            }
+
+            var savedOutdoor = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_outdoor_mode");
+            if (bool.TryParse(savedOutdoor, out bool outdoor))
+            {
+                _isOutdoorMode = outdoor;
+            }
+
+            var savedCache = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_live_map_cache");
+            if (bool.TryParse(savedCache, out bool cache))
+            {
+                _isLiveMapCache = cache;
+            }
+
+            // Load saved regions
+            try
+            {
+                var savedRegionsJson = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_saved_regions");
+                if (!string.IsNullOrEmpty(savedRegionsJson))
+                {
+                    var loaded = System.Text.Json.JsonSerializer.Deserialize<List<SavedRegion>>(savedRegionsJson);
+                    if (loaded != null)
+                    {
+                        savedRegions = loaded;
+                        offlineMaps = savedRegions.Select(r => r.Name).ToList();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Regions] Failed to load saved regions: {ex.Message}");
+            }
+
+            var savedMap = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_offline_map");
+            if (!string.IsNullOrWhiteSpace(savedMap) && offlineMaps.Contains(savedMap))
+            {
+                _selectedOfflineMap = savedMap;
+            }
+
+            // Global Settings
+            var savedUnit = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_units");
+            if (!string.IsNullOrWhiteSpace(savedUnit)) settingsUnitSystem = savedUnit;
+
+            var savedLogRate = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_log_rate");
+            if (!string.IsNullOrWhiteSpace(savedLogRate)) settingsLogRate = savedLogRate;
+
+            var savedVoice = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_voice_alerts");
+            if (bool.TryParse(savedVoice, out bool voice)) settingsVoiceAlerts = voice;
+
+            var savedAutoSave = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_auto_save_logs");
+            if (bool.TryParse(savedAutoSave, out bool autoSave)) settingsAutoSaveLogs = autoSave;
+
+            var savedReconnect = await JS.InvokeAsync<string>("localStorage.getItem", "gcs_auto_reconnect");
+            if (bool.TryParse(savedReconnect, out bool reconnect)) settingsAutoReconnect = reconnect;
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Settings] Failed to load from localStorage: {ex.Message}");
+        }
+    }
+
+    // ── JSInvokable: called by airspace.js when proximity state changes ───
+    [JSInvokable]
+    public void UpdateAirspaceWarning(string? zoneType)
+    {
+        // zoneType is "RED", "YELLOW", or null (cleared)
+        if (_airspaceWarning == zoneType) return;
+        _airspaceWarning = zoneType;
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ── Called by Home.razor (or any page) to load zones for current region ─
+    /// <summary>
+    /// Fetches DGCA airspace GeoJSON for a bounding box and passes it to Leaflet.
+    /// Call this from Home.razor after the map is initialized.
+    /// </summary>
+    public async Task LoadAirspaceForRegion(double lat, double lon)
+    {
+        // Only reload if drone has moved significantly
+        if (!double.IsNaN(_lastAirspaceLoadLat))
+        {
+            double dLat = (lat - _lastAirspaceLoadLat) * 111320;
+            double dLon = (lon - _lastAirspaceLoadLon) * 111320 * Math.Cos(lat * Math.PI / 180);
+            double dist = Math.Sqrt(dLat * dLat + dLon * dLon);
+            if (dist < AirspaceReloadDistanceMeters) return;
+        }
+
+        _lastAirspaceLoadLat = lat;
+        _lastAirspaceLoadLon = lon;
+
+        // Bounding box: ±0.5° (~55 km) around current position
+        double pad = 0.5;
+        string geoJson = await AirspaceSvc.GetAirspaceGeoJsonAsync(
+            lat - pad, lon - pad, lat + pad, lon + pad);
+
+        await JS.InvokeVoidAsync("airspace.loadZones", geoJson, _dotnetRef);
+    }
+
+    // ── Telemetry handler (throttled proximity check) ─────────────────────
+    private void RefreshUi()
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastHeaderRender).TotalMilliseconds < 1000) return;
+        _lastHeaderRender = now;
+
+        // Piggyback proximity check on the 1-second header refresh
+        // Only run if we have valid GPS and the check interval has elapsed
+        if ((now - _lastProximityCheck) >= ProximityCheckInterval)
+        {
+            _lastProximityCheck = now;
+            var lat = Drone.State.Latitude;
+            var lon = Drone.State.Longitude;
+            if (Math.Abs(lat) > 0.0001 || Math.Abs(lon) > 0.0001)
+            {
+                _ = JS.InvokeVoidAsync("airspace.checkProximity", lat, lon);
+            }
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    // ── Drawer logic (unchanged) ──────────────────────────────────────────
+
+    private DateTime _lastHeaderRender = DateTime.MinValue;
+
+    private int GetDrawerWidth() => activeTab switch { "Swarm" => 640, _ => 540 };
+
+    private string GetDrawerStyle()
+    {
+        int width = GetDrawerWidth();
+        if (string.IsNullOrEmpty(activeTab))
+            return $"width: {width}px; margin-left: -{width}px;";
+
+        var styles = $"width: {width}px; margin-left: 0;";
+        if (activeTab == "Swarm")
+            styles += " border-bottom-right-radius: 12px; border-top-right-radius: 12px;";
+        return styles;
+    }
+
+    private void HandleTabClick(string tab)
+    {
+        activeTab = (activeTab == tab) ? "" : tab;
+        _ = JS.InvokeVoidAsync("animateMapResize");
+    }
+
+    private void AutoDetectPorts(object? state)
+    {
+        try
+        {
+            var current = SerialPort.GetPortNames().Distinct().OrderBy(x => x).ToList();
+            InvokeAsync(() =>
+            {
+                bool changed = false;
+
+                if (isManualConnected && !string.IsNullOrEmpty(selectedPort)
+                    && !current.Contains(selectedPort))
+                {
+                    Drone.StopConnection();
+                    isManualConnected = false;
+                    selectedPort = "";
+                    changed = true;
+                }
+
+                if (!current.SequenceEqual(availablePorts.OrderBy(x => x)))
+                {
+                    availablePorts = current;
+                    if (!isManualConnected && !string.IsNullOrEmpty(selectedPort)
+                        && !availablePorts.Contains(selectedPort))
+                        selectedPort = "";
+                    changed = true;
+                }
+
+                if (changed) StateHasChanged();
+            });
+        }
+        catch { }
+    }
+
+    private void OnPortChanged(ChangeEventArgs e)
+    {
+        selectedPort = e.Value?.ToString() ?? "";
+        StateHasChanged();
+    }
+
+    private async Task ToggleConnection()
+    {
+        if (isAttempting) return;
+        if (selectedType == "Serial" && string.IsNullOrEmpty(selectedPort)) return;
+
+        isAttempting = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            if (isManualConnected)
+            {
+                Drone.StopConnection();
+                isManualConnected = false;
+            }
+            else
+            {
+                Drone.Connect(Enum.Parse<ConnectionType>(selectedType), selectedPort, selectedBaud);
+                for (int i = 0; i < 30; i++)
+                {
+                    if (IsDroneActuallyTalking) break;
+                    if (Drone.State.ConnectionStatus == "Disconnected") break;
+                    await Task.Delay(500);
+                }
+                if (IsDroneActuallyTalking)
+                {
+                    isManualConnected = true;
+                    Drone.RequestDataStreams();
+                }
+                else
+                {
+                    Drone.StopConnection();
+                    isManualConnected = false;
+                    Drone.Toast("No response from vehicle. Check connection.", MavlinkService.ToastLevel.Warning, "⚠️");
+                }
+            }
+        }
+        catch (Exception) { isManualConnected = false; }
+        finally { isAttempting = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private string GetIcon(string t) => t switch { "Quick" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-zap-icon lucide-zap"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>""", "Actions" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-cog-icon lucide-cog"><path d="M11 10.27 7 3.34"/><path d="m11 13.73-4 6.93"/><path d="M12 22v-2"/><path d="M12 2v2"/><path d="M14 12h8"/><path d="m17 20.66-1-1.73"/><path d="m17 3.34-1 1.73"/><path d="M2 12h2"/><path d="m20.66 17-1.73-1"/><path d="m20.66 7-1.73 1"/><path d="m3.34 17 1.73-1"/><path d="m3.34 7 1.73 1"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="8"/></svg>""", "Messages" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-messages-square-icon lucide-messages-square"><path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/></svg>""", "FlightPlan" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plane-takeoff-icon lucide-plane-takeoff"><path d="M2 22h20"/><path d="M6.36 17.4 4 17l-2-4 1.1-.55a2 2 0 0 1 1.8 0l.17.1a2 2 0 0 0 1.8 0L8 12 5 6l.9-.45a2 2 0 0 1 2.09.2l4.02 3a2 2 0 0 0 2.1.2l4.19-2.06a2.41 2.41 0 0 1 1.73-.17L21 7a1.4 1.4 0 0 1 .87 1.99l-.38.76c-.23.46-.6.84-1.07 1.08L7.58 17.2a2 2 0 0 1-1.22.18Z"/></svg>""", "Pre Flight" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shield-check-icon lucide-shield-check"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>""", "Setup" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings-icon lucide-settings"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>""", "Firmware" => """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6"/><path d="M12 16v6"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="M2 12h6"/><path d="M16 12h6"/><path d="m4.93 19.07 4.24-4.24"/><path d="m14.83 9.17 4.24-4.24"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>""", "Swarm" => """<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" overflow="visible"><defs><g id="swarm-bug"><path d="M -4 -13 L -10 -20 M 4 -13 L 10 -20" stroke="#00f2ff" stroke-width="6" stroke-linecap="round" /><path d="M -6 -7 h -12 a 7 7 0 0 0 0 14 h 12" stroke="#00f2ff" stroke-width="6" fill="#000000" stroke-linejoin="round"/><path d="M 6 -7 h 12 a 7 7 0 0 1 0 14 h -12" stroke="#00f2ff" stroke-width="6" fill="#000000" stroke-linejoin="round"/><rect x="-6" y="-14" width="12" height="28" rx="6" stroke="#00f2ff" stroke-width="6" fill="#000000" stroke-linejoin="round"/></g></defs><g transform="scale(0.24) translate(-10, -4)"><use href="#swarm-bug" x="60" y="32" /><use href="#swarm-bug" x="32" y="82" /><use href="#swarm-bug" x="88" y="70" /><circle cx="92" cy="30" r="4" fill="#00f2ff" /><circle cx="46" cy="54" r="4" fill="#00f2ff" /><circle cx="76" cy="92" r="4" fill="#00f2ff" /></g></svg>""", _ => "❓" };
+
+    private bool _lastRcState = false;
+    private void OnRcUpdated(ushort[] _)
+    {
+        bool current = Drone.State.IsRcConnected;
+        if (current == _lastRcState) return;
+        _lastRcState = current;
+        InvokeAsync(StateHasChanged);
+    }
+
+    // Profile Dropdown State
+    private bool isProfileMenuOpen = false;
+    private bool isEditingName = false;
+    private string operatorName = "Faheem";
+    private string tempOperatorName = "Faheem";
+    private string operatorRole = "Admin Operator";
+    private string licenseTier => License.LicenseTier;
+    private string licenseValidity => License.RemainingDaysText;
+
+    // License verification dialog state
+    private string enteredLicenseKey = "";
+    private string copyButtonText = "COPY";
+    private bool isActivatingKey = false;
+
+    // Global Settings Modal State
+    private bool isSettingsModalOpen = false;
+    private string settingsUnitSystem = "Metric";
+    private string settingsLogRate = "2";
+    private bool settingsVoiceAlerts = true;
+    private bool settingsAutoSaveLogs = true;
+    private bool settingsAutoReconnect = true;
+
+    private bool _isOutdoorMode = false;
+    private bool isOutdoorMode
+    {
+        get => _isOutdoorMode;
+        set
+        {
+            if (_isOutdoorMode != value)
+            {
+                _isOutdoorMode = value;
+                _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_outdoor_mode", value.ToString());
+                Drone.Toast($"Outdoor mode {(value ? "enabled" : "disabled")}", MavlinkService.ToastLevel.Info, "☀️");
+            }
+        }
+    }
+
+    private bool _isLiveMapCache = false;
+    private bool isLiveMapCache
+    {
+        get => _isLiveMapCache;
+        set
+        {
+            if (_isLiveMapCache != value)
+            {
+                _isLiveMapCache = value;
+                _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_live_map_cache", value.ToString());
+                Drone.Toast($"Live map auto-cache {(value ? "enabled" : "disabled")}", MavlinkService.ToastLevel.Info, "🗺️");
+            }
+        }
+    }
+
+    private bool isDrawing = false;
+    private bool isMapDropdownOpen = false;
+    private string _selectedOfflineMap = "";
+    private string selectedOfflineMap
+    {
+        get => _selectedOfflineMap;
+        set
+        {
+            if (_selectedOfflineMap != value)
+            {
+                _selectedOfflineMap = value;
+                _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", value);
+                Drone.Toast($"Switched base map to: {value}", MavlinkService.ToastLevel.Info, "📍");
+
+                var region = savedRegions.FirstOrDefault(r => r.Name == value);
+                if (region != null)
+                {
+                    _ = JS.InvokeVoidAsync("showSavedPolygon", region.CoordsJson);
+                }
+                else
+                {
+                    _ = JS.InvokeVoidAsync("clearSavedPolygon");
+                }
+            }
+        }
+    }
+
+    private List<SavedRegion> savedRegions = new();
+    private List<string> offlineMaps = new();
+
+    private async Task StartDrawingRegion()
+    {
+        isDrawing = true;
+        isProfileMenuOpen = false;
+        await JS.InvokeVoidAsync("startDrawingPolygon");
+        Drone.Toast("Drawing mode: Click map to place points", MavlinkService.ToastLevel.Info, "✏️");
+    }
+
+    private async Task CancelDrawingRegion()
+    {
+        isDrawing = false;
+        await JS.InvokeVoidAsync("stopDrawingPolygon", false);
+        Drone.Toast("Drawing cancelled", MavlinkService.ToastLevel.Info, "❌");
+    }
+
+    private async Task SaveDrawnRegion()
+    {
+        try
+        {
+            var coordsJson = await JS.InvokeAsync<string>("stopDrawingPolygon", true);
+            isDrawing = false;
+
+            var points = System.Text.Json.JsonSerializer.Deserialize<List<double[]>>(coordsJson);
+            if (points == null || points.Count < 3)
+            {
+                Drone.Toast("Save failed: Define at least 3 points for a zone.", MavlinkService.ToastLevel.Error, "❌");
+                return;
+            }
+
+            var name = await JS.InvokeAsync<string>("prompt", "Enter a name for the new offline cache zone:", "");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                Drone.Toast("Save cancelled or name cannot be empty.", MavlinkService.ToastLevel.Warning, "⚠️");
+                return;
+            }
+
+            if (savedRegions.Any(r => r.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            {
+                Drone.Toast($"A region named '{name}' already exists.", MavlinkService.ToastLevel.Error, "❌");
+                return;
+            }
+
+            var newRegion = new SavedRegion { Name = name, CoordsJson = coordsJson };
+            savedRegions.Add(newRegion);
+            offlineMaps = savedRegions.Select(r => r.Name).ToList();
+
+            var json = System.Text.Json.JsonSerializer.Serialize(savedRegions);
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_saved_regions", json);
+
+            _selectedOfflineMap = name;
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", name);
+            await JS.InvokeVoidAsync("showSavedPolygon", coordsJson);
+
+            Drone.Toast($"Zone '{name}' saved successfully!", MavlinkService.ToastLevel.Success, "💾");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Draw] Save error: {ex.Message}");
+            Drone.Toast("Error saving drawing zone.", MavlinkService.ToastLevel.Error, "❌");
+        }
+    }
+
+    private void ToggleMapDropdown()
+    {
+        isMapDropdownOpen = !isMapDropdownOpen;
+    }
+
+    private void SelectRegion(SavedRegion region)
+    {
+        selectedOfflineMap = region.Name;
+        isMapDropdownOpen = false;
+    }
+
+    private async Task RenameRegion(SavedRegion region)
+    {
+        var newName = await JS.InvokeAsync<string>("prompt", $"Rename offline cache zone '{region.Name}' to:", region.Name);
+        if (!string.IsNullOrWhiteSpace(newName) && newName != region.Name)
+        {
+            if (savedRegions.Any(r => r.Name.Equals(newName, StringComparison.OrdinalIgnoreCase)))
+            {
+                Drone.Toast($"A region named '{newName}' already exists.", MavlinkService.ToastLevel.Error, "❌");
+                return;
+            }
+            
+            var oldName = region.Name;
+            region.Name = newName;
+            offlineMaps = savedRegions.Select(r => r.Name).ToList();
+            
+            if (_selectedOfflineMap == oldName)
+            {
+                _selectedOfflineMap = newName;
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", newName);
+            }
+            
+            var json = System.Text.Json.JsonSerializer.Serialize(savedRegions);
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_saved_regions", json);
+            
+            Drone.Toast($"Zone renamed to '{newName}'", MavlinkService.ToastLevel.Success, "✏️");
+            StateHasChanged();
+        }
+    }
+
+    private async Task DeleteRegion(SavedRegion region)
+    {
+        savedRegions.Remove(region);
+        offlineMaps = savedRegions.Select(r => r.Name).ToList();
+        
+        var json = System.Text.Json.JsonSerializer.Serialize(savedRegions);
+        await JS.InvokeVoidAsync("localStorage.setItem", "gcs_saved_regions", json);
+        
+        if (_selectedOfflineMap == region.Name)
+        {
+            _selectedOfflineMap = offlineMaps.FirstOrDefault() ?? "";
+            await JS.InvokeVoidAsync("localStorage.setItem", "gcs_offline_map", _selectedOfflineMap);
+            await JS.InvokeVoidAsync("clearSavedPolygon");
+        }
+        
+        Drone.Toast($"Zone '{region.Name}' deleted.", MavlinkService.ToastLevel.Success, "🗑️");
+        StateHasChanged();
+    }
+
+    public class SavedRegion
+    {
+        public string Name { get; set; } = "";
+        public string CoordsJson { get; set; } = "";
+    }
+
+    private string AvatarInitials
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(operatorName)) return "OP";
+            var parts = operatorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2)
+            {
+                return $"{parts[0][0]}{parts[1][0]}".ToUpper();
+            }
+            if (parts.Length == 1 && parts[0].Length >= 2)
+            {
+                return parts[0].Substring(0, 2).ToUpper();
+            }
+            return parts[0].Substring(0, 1).ToUpper();
+        }
+    }
+
+    private void ToggleProfileMenu()
+    {
+        isProfileMenuOpen = !isProfileMenuOpen;
+    }
+
+    private void ToggleEditName()
+    {
+        if (isEditingName)
+        {
+            SaveOperatorName();
+        }
+        else
+        {
+            tempOperatorName = operatorName;
+            isEditingName = true;
+        }
+    }
+
+    private void SaveOperatorName()
+    {
+        if (!string.IsNullOrWhiteSpace(tempOperatorName))
+        {
+            operatorName = tempOperatorName;
+            _ = JS.InvokeVoidAsync("localStorage.setItem", "gcs_operator_name", operatorName);
+        }
+        isEditingName = false;
+        Drone.Toast($"Operator profile updated: {operatorName}", MavlinkService.ToastLevel.Success, "👤");
+    }
+
+    private void HandleNameKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            SaveOperatorName();
+        }
+        else if (e.Key == "Escape")
+        {
+            isEditingName = false;
+        }
+    }
+
+    private void ClickMenuItem(string item)
+    {
+        if (item == "Operator Profile & Settings")
+        {
+            Navigation.NavigateTo("/operator-profile");
+        }
+        else if (item == "Manage License")
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        var key = await JS.InvokeAsync<string>("prompt", $"Your GCS Hardware ID:\n{License.HardwareId}\n\nEnter License Key:", "");
+                        if (key != null)
+                        {
+                            if (string.IsNullOrWhiteSpace(key))
+                            {
+                                Drone.Toast("License key cannot be empty", MavlinkService.ToastLevel.Warning, "⚠️");
+                            }
+                            else
+                            {
+                                License.SaveLicenseKey(key);
+                                if (License.IsActive)
+                                {
+                                    Drone.Toast($"Activated: {License.LicenseTier} ({License.RemainingDaysText})", MavlinkService.ToastLevel.Success, "🔑");
+                                }
+                                else
+                                {
+                                    Drone.Toast("Invalid or expired license key.", MavlinkService.ToastLevel.Error, "❌");
+                                }
+                                StateHasChanged();
+                            }
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[License] Prompt error: {ex.Message}");
+                }
+            });
+        }
+        else if (item == "Firmware Flashing")
+        {
+            isSettingsModalOpen = true;
+        }
+        else
+        {
+            Drone.Toast($"{item} opened", MavlinkService.ToastLevel.Info, "⚙️");
+        }
+        isProfileMenuOpen = false;
+    }
+
+    private void CloseSettingsModal()
+    {
+        isSettingsModalOpen = false;
+    }
+
+    private void SaveGlobalSettings()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_units", settingsUnitSystem);
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_log_rate", settingsLogRate);
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_voice_alerts", settingsVoiceAlerts.ToString());
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_auto_save_logs", settingsAutoSaveLogs.ToString());
+                await JS.InvokeVoidAsync("localStorage.setItem", "gcs_auto_reconnect", settingsAutoReconnect.ToString());
+
+                await InvokeAsync(() =>
+                {
+                    isSettingsModalOpen = false;
+                    Drone.Toast("Global Settings saved successfully!", MavlinkService.ToastLevel.Success, "⚙️");
+                    StateHasChanged();
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Settings] Save error: {ex.Message}");
+            }
+        });
+    }
+
+    private void PurgeOfflineStorage()
+    {
+        try
+        {
+            AirspaceSvc.InvalidateCache();
+            MetadataSvc.PurgeCache();
+            Px4MetadataSvc.PurgeCache();
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await JS.InvokeVoidAsync("localStorage.removeItem", "gcs_offline_map");
+                    await JS.InvokeVoidAsync("localStorage.removeItem", "gcs_live_map_cache");
+                    await JS.InvokeVoidAsync("localStorage.removeItem", "gcs_saved_regions");
+                    await JS.InvokeVoidAsync("clearSavedPolygon");
+                    await InvokeAsync(() =>
+                    {
+                        _selectedOfflineMap = "";
+                        _isLiveMapCache = false;
+                        savedRegions.Clear();
+                        offlineMaps.Clear();
+                        Drone.Toast("Map cache, parameter dictionary, and saved regions purged!", MavlinkService.ToastLevel.Success, "🗑️");
+                        StateHasChanged();
+                    });
+                }
+                catch { }
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Purge] Error: {ex.Message}");
+            Drone.Toast("Error purging cache.", MavlinkService.ToastLevel.Error, "❌");
+        }
+        isProfileMenuOpen = false;
+    }
+
+    private bool IsOnDashboard => string.IsNullOrEmpty(Navigation.ToBaseRelativePath(Navigation.Uri));
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        _autoDetectTimer?.Dispose();
+        Drone.OnTelemetryUpdated -= RefreshUi;
+        Drone.OnRcChannelsUpdated -= OnRcUpdated;
+        _dotnetRef?.Dispose();
+        Vehicle.OnAutoSnap -= HandleVehicleAutoSnap;
+        Navigation.LocationChanged -= OnLocationChanged;
+    }
+
+    private async Task CopyHardwareIdToClipboard()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", License.HardwareId);
+            copyButtonText = "COPIED!";
+            StateHasChanged();
+            await Task.Delay(2000);
+            copyButtonText = "COPY";
+            StateHasChanged();
+        }
+        catch
+        {
+            copyButtonText = "ERROR";
+            StateHasChanged();
+        }
+    }
+
+    private async Task ActivateLicenseKey()
+    {
+        if (string.IsNullOrWhiteSpace(enteredLicenseKey))
+        {
+            Drone.Toast("License key cannot be empty", MavlinkService.ToastLevel.Warning, "⚠️");
+            return;
+        }
+
+        isActivatingKey = true;
+        await Task.Delay(1000);
+
+        try
+        {
+            License.SaveLicenseKey(enteredLicenseKey);
+            if (License.IsActive)
+            {
+                Drone.Toast($"Activated: {License.LicenseTier} ({License.RemainingDaysText})", MavlinkService.ToastLevel.Success, "🔑");
+                enteredLicenseKey = "";
+            }
+            else
+            {
+                Drone.Toast("Invalid or expired license key.", MavlinkService.ToastLevel.Error, "❌");
+            }
+        }
+        catch (Exception ex)
+        {
+            Drone.Toast($"Activation error: {ex.Message}", MavlinkService.ToastLevel.Error, "❌");
+        }
+        finally
+        {
+            isActivatingKey = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+}

@@ -1,0 +1,736 @@
+@* RtkDrawer.razor
+   
+   Fixes applied in this version:
+   FIX-1: Messages Seen now shows UBX + RTCM frames (Ubx0501, Ubx013B, Rtcm1077…)
+   FIX-2: "RTK / GPS INJECT" top bar removed — RtkDrawer owns its own header with X close.
+           The parent component should render <RtkDrawer OnClose="…" /> with NO title wrapper.
+   FIX-3: Restart Survey calls RtkService.RestartSurveyAsync() — port stays open, 
+           CFG-TMODE3 disable sent then fresh SurveyIn, hardware timer resets to 0s.
+*@
+
+@using DivyaLink.Models
+@using DivyaLink.Services
+@inject RtkBaseStationService RtkService
+@inject MavlinkService MavService
+@inject IJSRuntime JS
+@implements IDisposable
+
+@* ── Outer container: full-window overlay, no external title bar ── *@
+<div class="flex flex-col h-full w-full overflow-hidden bg-[#0d1117] text-[#c9d1d9] font-sans">
+
+    @* ══ DRAWER TITLE BAR (replaces any parent title) ══ *@
+    <div class="flex items-center justify-between px-4 py-2.5 bg-[#161b22] border-b border-[#21262d] shrink-0">
+        <div class="flex items-center gap-3">
+            <span class="text-[0.65rem] @(_state?.Phase > RtkPhase.Idle ? "text-[#58a6ff] animate-pulse" : "text-[#484f58]")">⬤</span>
+            <span class="text-sm font-bold tracking-wide text-[#f0f6fc] uppercase">RTK Base Station</span>
+            <span class="text-[0.6rem] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border @PhaseBadgeClass(_state?.Phase ?? RtkPhase.Idle)">
+                @PhaseLabel(_state?.Phase ?? RtkPhase.Idle)
+            </span>
+        </div>
+        @* X close button — FIX-2: replaces parent dialog title bar *@
+        @if (OnClose.HasDelegate)
+        {
+            <button class="w-7 h-7 flex items-center justify-center rounded text-[#8b949e] hover:text-white hover:bg-[#21262d] transition-colors text-base"
+                    @onclick="OnClose">✕</button>
+        }
+    </div>
+
+    @* ── Error banner ── *@
+    @if (_state?.ErrorMessage is { Length: > 0 } errMsg)
+    {
+        <div class="mx-4 mt-2 bg-[#f85149]/10 border border-[#f85149]/30 rounded px-3 py-1.5 text-[0.7rem] text-[#f85149] flex items-center gap-2 shrink-0">
+            <span>⚠</span> @errMsg
+        </div>
+    }
+
+    @* ══ BODY: left panel + right panel ══ *@
+    <div class="flex flex-1 min-h-0 overflow-hidden">
+
+        @* ════════════════════════════════════════════════════
+           LEFT PANEL  (340px)
+           ════════════════════════════════════════════════════ *@
+        <div class="w-[340px] shrink-0 border-r border-[#21262d] flex flex-col overflow-y-auto">
+
+            <div class="flex flex-col gap-4 p-4 flex-1">
+
+                @* ── CONNECTION ── *@
+                <div class="flex flex-col gap-2.5">
+                    <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Connection</div>
+
+                    <div class="flex gap-2">
+                        <div class="flex-1">
+                            <label class="text-[0.6rem] text-[#8b949e] block mb-1">Port</label>
+                            <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:border-[#58a6ff] focus:outline-none"
+                                    disabled="@(_state?.Phase != RtkPhase.Idle)"
+                                    @bind="_cfg.ComPort">
+                                @foreach (var p in _availablePorts)
+                                {
+                                    <option value="@p">@p</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="w-[110px]">
+                            <label class="text-[0.6rem] text-[#8b949e] block mb-1">Baud</label>
+                            <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white font-mono focus:border-[#58a6ff] focus:outline-none"
+                                    disabled="@(_state?.Phase != RtkPhase.Idle)"
+                                    @bind="_cfg.BaudRate">
+                                @foreach (var b in new[] { 9600, 57600, 115200, 230400, 460800 })
+                                {
+                                    <option value="@b">@b</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" class="accent-[#58a6ff]"
+                               disabled="@(_state?.Phase != RtkPhase.Idle)"
+                               @bind="_cfg.AutoConfig" />
+                        <span class="text-xs text-[#c9d1d9]">UBlox M8P/F9P autoconfig</span>
+                    </label>
+
+                    @* Firmware badge — appears once MON-VER parsed *@
+                    @if (_receiverInfo?.Module is { Length: > 0 } mod)
+                    {
+                        <div class="flex items-center gap-2 text-[0.65rem]">
+                            <span class="text-[#8b949e]">@mod</span>
+                            <span class="px-1.5 py-0.5 rounded bg-[#58a6ff]/10 text-[#58a6ff] font-bold border border-[#58a6ff]/20">
+                                @(_receiverInfo.IsMsm7Capable ? "MSM7" : "MSM4")
+                            </span>
+                            @if (_receiverInfo.IsF9P)
+                            {
+                                <span class="px-1.5 py-0.5 rounded bg-[#3fb950]/10 text-[#3fb950] font-bold border border-[#3fb950]/20">F9P</span>
+                            }
+                        </div>
+                    }
+                </div>
+
+                @* ── SURVEY-IN THRESHOLDS ── *@
+                <div class="flex flex-col gap-2.5">
+                    <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Survey-In Thresholds</div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-[0.6rem] text-[#8b949e] block mb-1">Target Acc (m)</label>
+                            <input type="number" step="0.01" min="0.01" max="50"
+                                   class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white font-mono focus:border-[#58a6ff] focus:outline-none"
+                                   disabled="@(_state?.Phase > RtkPhase.Connecting)"
+                                   @bind="_cfg.TargetAccuracyM" />
+                        </div>
+                        <div>
+                            <label class="text-[0.6rem] text-[#8b949e] block mb-1">Min Duration (s)</label>
+                            <input type="number" step="10" min="10" max="3600"
+                                   class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white font-mono focus:border-[#58a6ff] focus:outline-none"
+                                   disabled="@(_state?.Phase > RtkPhase.Connecting)"
+                                   @bind="_cfg.MinDurationSec" />
+                        </div>
+                    </div>
+
+                    @* FIX-3: Restart Survey calls RestartSurveyAsync — visible while active *@
+                    @if (_state?.Phase is RtkPhase.Survey or RtkPhase.Injecting)
+                    {
+                        <button class="w-full flex items-center justify-center gap-2 text-xs font-bold py-2 rounded border
+                                       border-[#f0b429]/40 bg-[#f0b429]/10 text-[#f0b429]
+                                       hover:bg-[#f0b429]/20 transition-colors disabled:opacity-40"
+                                disabled="@_restartBusy"
+                                @onclick="OnRestartSurvey">
+                            @if (_restartBusy)
+                            {
+                                <span class="animate-spin">↻</span>
+                                <span>Restarting…</span>
+                            }
+                            else
+                            {
+                                <span>↺</span>
+                                <span>Restart Survey</span>
+                            }
+                        </button>
+                    }
+                </div>
+
+                @* ── SURVEY-IN ring ── *@
+                <div class="flex flex-col gap-2">
+                    <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Survey-In</div>
+
+                    <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
+                        <div class="flex items-center gap-4">
+
+                            @* Circular progress ring *@
+                            @{
+                                double ringPct   = _state?.Survey is { AccuracyM: < 9000 } sv
+                                    ? Math.Min(100.0, _cfg.TargetAccuracyM / Math.Max(sv.AccuracyM, 0.0001) * 100.0)
+                                    : 0.0;
+                                double circ      = 301.59;   // 2 * π * 48
+                                double offset    = circ * (1.0 - ringPct / 100.0);
+                                string accText   = _state?.Survey is { AccuracyM: < 9000 } s2
+                                    ? $"{s2.AccuracyM:F2}"
+                                    : "—";
+                                string ringColor = ringPct >= 100 ? "#3fb950"
+                                                 : ringPct >=  50 ? "#f0b429"
+                                                 : "#58a6ff";
+                                double dotAngle  = ringPct / 100.0 * 2.0 * Math.PI;
+                                double dotX      = 60 + 48 * Math.Cos(dotAngle - Math.PI / 2);
+                                double dotY      = 60 + 48 * Math.Sin(dotAngle - Math.PI / 2);
+                            }
+
+                            <div class="relative shrink-0" style="width:88px;height:88px">
+                                <svg width="88" height="88" viewBox="0 0 120 120" style="transform:rotate(-90deg)">
+                                    <circle cx="60" cy="60" r="48" fill="none" stroke="#21262d" stroke-width="8" />
+                                    <circle cx="60" cy="60" r="48" fill="none"
+                                            stroke="@ringColor" stroke-width="8" stroke-linecap="round"
+                                            stroke-dasharray="@circ.ToString("F2")"
+                                            stroke-dashoffset="@offset.ToString("F2")"
+                                            style="transition:stroke-dashoffset 0.6s ease,stroke 0.4s ease" />
+                                    @if (ringPct < 100 && ringPct > 0)
+                                    {
+                                        <circle cx="@dotX.ToString("F1")" cy="@dotY.ToString("F1")"
+                                                r="5" fill="@ringColor" />
+                                    }
+                                    @if (ringPct < 1)
+                                    {
+                                        @* Dot at top when survey just started *@
+                                        <circle cx="60" cy="12" r="5" fill="@ringColor" />
+                                    }
+                                </svg>
+                                <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+                                    <span class="text-[0.6rem] font-bold font-mono leading-tight text-white">@accText</span>
+                                    <span class="text-[0.5rem] text-[#8b949e] leading-none mt-0.5">metres</span>
+                                </div>
+                            </div>
+
+                            <div class="flex flex-col gap-2 flex-1 text-xs">
+                                <div class="flex justify-between">
+                                    <span class="text-[#8b949e]">Duration</span>
+                                    <span class="font-mono text-white">@(_state?.Survey?.DurationSec ?? 0) s</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-[#8b949e]">Observations</span>
+                                    <span class="font-mono text-white">@(_state?.Survey?.Observations ?? 0)</span>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-[#8b949e]">Status</span>
+                                    @if (_state?.Survey?.Valid == true)
+                                    {
+                                        <span class="text-[0.65rem] font-bold text-[#3fb950]">✓ VALID</span>
+                                    }
+                                    else if (_state?.Survey?.Active == true)
+                                    {
+                                        <span class="text-[0.65rem] font-bold text-[#f0b429]">● ACTIVE</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-[#484f58]">—</span>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                @* ── SAVED PROFILES ── *@
+                <div class="flex flex-col gap-2 flex-1">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Saved Profiles</span>
+                        @if (_state?.IsInjecting == true && _state?.FixedPosition != null)
+                        {
+                            <button class="text-[0.65rem] text-[#58a6ff] border border-[#58a6ff]/30 bg-[#58a6ff]/5 px-2 py-0.5 rounded hover:bg-[#58a6ff]/10"
+                                    @onclick="OnSaveProfile">Save Current</button>
+                        }
+                    </div>
+
+                    @if (_state?.SavedProfiles is { Count: > 0 })
+                    {
+                        <div class="flex flex-col gap-1.5">
+                            @foreach (var p in _state.SavedProfiles)
+                            {
+                                if (p is null) continue;
+                                bool isActive = _state.ActiveProfileName == p.Name;
+                                <div class="bg-[#0d1117] border @(isActive ? "border-[#3fb950]" : "border-[#21262d]") rounded-md p-2 flex flex-col gap-1">
+                                    <div class="flex items-center justify-between text-xs">
+                                        <span class="font-semibold text-[#58a6ff] truncate max-w-[140px]">@p.Name</span>
+                                        @if (isActive)
+                                        {
+                                            <span class="text-[0.55rem] text-[#3fb950] font-bold">ACTIVE</span>
+                                        }
+                                    </div>
+                                    <div class="text-[0.65rem] font-mono text-[#8b949e]">
+                                        @p.Lat.ToString("F6")°, @p.Lng.ToString("F6")°
+                                    </div>
+                                    <div class="flex gap-1.5 mt-0.5">
+                                        <button class="flex-1 text-[0.65rem] py-0.5 bg-[#238636] text-white rounded hover:bg-[#2ea44f]"
+                                                disabled="@(_state?.Phase == RtkPhase.Idle)"
+                                                @onclick="() => OnUseProfile(p.Name)">Use</button>
+                                        <button class="px-2 text-[0.65rem] py-0.5 bg-[#f85149]/10 text-[#f85149] border border-[#f85149]/20 rounded hover:bg-[#f85149]/20"
+                                                @onclick="() => OnDeleteProfile(p.Name)">×</button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-[0.7rem] text-[#484f58] italic leading-relaxed">
+                            No saved profiles yet. Complete a Survey-In and save the position.
+                        </div>
+                    }
+                </div>
+
+            </div>@* end scrollable body *@
+
+            @* Connect / Disconnect pinned to bottom *@
+            <div class="p-4 border-t border-[#21262d] shrink-0">
+                @if (_state?.Phase == RtkPhase.Idle)
+                {
+                    <button class="w-full bg-[#238636] hover:bg-[#2ea44f] text-white py-2 rounded font-bold text-xs transition-colors"
+                            @onclick="OnConnect">Connect Base Station</button>
+                }
+                else
+                {
+                    <button class="w-full bg-[#f85149]/10 hover:bg-[#f85149]/20 text-[#f85149] border border-[#f85149]/40 py-2 rounded font-bold text-xs transition-colors"
+                            @onclick="OnDisconnect">Disconnect Base Station</button>
+                }
+            </div>
+
+        </div>@* end left panel *@
+
+
+        @* ════════════════════════════════════════════════════
+           RIGHT PANEL (flex-1)
+           ════════════════════════════════════════════════════ *@
+        <div class="flex-1 min-w-0 flex flex-col overflow-hidden">
+
+            @* Tab bar *@
+            <div class="flex border-b border-[#21262d] px-2 pt-1 shrink-0 bg-[#0d1117]">
+                @foreach (var (label, idx) in new[] { ("Satellite View", 0), ("Fixed Coords", 1), ("RTCM Stream", 2) })
+                {
+                    <button class="px-4 py-2.5 text-xs font-semibold border-b-2 bg-transparent border-x-0 border-t-0 cursor-pointer transition-colors
+                                   @(_activeTab == idx ? "border-[#58a6ff] text-white" : "border-transparent text-[#8b949e] hover:text-white")"
+                            @onclick="() => SetTab(idx)">
+                        @label
+                    </button>
+                }
+            </div>
+
+            @* Tab content *@
+            <div class="flex-1 min-h-0 overflow-hidden flex flex-col">
+
+                @* TAB 0: Satellite View *@
+                @if (_activeTab == 0)
+                {
+                    <div class="flex-1 min-h-0 flex flex-col gap-2 p-3">
+                        <div class="flex gap-1.5 flex-wrap shrink-0">
+                            @if (_state?.Constellations != null)
+                            {
+                                @foreach (var c in _state.Constellations)
+                                {
+                                    if (c is null) continue;
+
+                                    // Code execution context runs natively here
+                                    bool connected = _state.Phase > RtkPhase.Idle;
+        
+                                    string pillCss = c.IsActive ? "bg-[#3fb950]/20 text-[#3fb950] border-[#3fb950]/50"
+                                        : connected ? "bg-[#f85149]/10 text-[#f85149] border-[#f85149]/40"
+                                        : "bg-[#21262d] text-[#484f58] border-[#21262d]";
+
+                                    string dot = c.IsActive ? "● " : connected ? "○ " : "";
+
+                                    // Context automatically switches to HTML markup on the next line
+                                    <span class="text-[0.6rem] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border transition-all duration-500 @pillCss">
+                                        @dot@c.Label
+                                    </span>
+                                }
+                            }
+                        </div>
+                        <div class="flex-1 min-h-0 bg-[#161b22] border border-[#21262d] rounded-lg p-2 relative">
+                            @if (_state?.Satellites is null or { Count: 0 })
+                            {
+                                <div class="absolute inset-0 flex items-center justify-center text-[0.7rem] text-[#484f58] font-mono">
+                                    Awaiting carrier solution stream metrics…
+                                </div>
+                            }
+                            <canvas id="rtk-snr-canvas" class="w-full h-full block"></canvas>
+                        </div>
+                    </div>
+                }
+
+                @* TAB 1: Fixed Coords — satellite map + coordinate readout *@
+                @if (_activeTab == 1)
+                {
+                    <div class="flex-1 flex flex-col overflow-hidden">
+
+                        @if (_state?.FixedPosition is { } pos)
+                        {
+                            @* ── Satellite map ── *@
+                            @* rtkBaseMap.js initialises a Leaflet map in this div.
+                               The div must exist in DOM before JS is called — handled
+                               by OnAfterRenderAsync when _activeTab == 1. *@
+                            <div id="rtk-fixed-map"
+                                 class="shrink-0 border-b border-[#21262d]"
+                                 style="height:320px; background:#0d1117;">
+                            </div>
+
+                            @* ── Coordinate cards below the map ── *@
+                            <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
+
+                                @* LLA row *@
+                                <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+                                    <div class="text-[0.58rem] font-bold text-[#8b949e] uppercase tracking-widest px-3 py-1.5 border-b border-[#21262d]">
+                                        Geodetic (WGS-84)
+                                    </div>
+                                    @foreach (var (lbl, val, copy) in new[] {
+                                        ("Latitude",  $"{pos.Lat:F8}°", $"{pos.Lat:F8}"),
+                                        ("Longitude", $"{pos.Lng:F8}°", $"{pos.Lng:F8}"),
+                                        ("Height",    $"{pos.Alt:F3} m", $"{pos.Alt:F3}")
+                                    })
+                                    {
+                                        <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117] last:border-0 group">
+                                            <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">@lbl</span>
+                                            <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@val</span>
+                                        </div>
+                                    }
+                                </div>
+
+                                @* ECEF row *@
+                                <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
+                                    <div class="text-[0.58rem] font-bold text-[#8b949e] uppercase tracking-widest px-3 py-1.5 border-b border-[#21262d]">
+                                        ECEF (WGS-84)
+                                    </div>
+                                    @foreach (var (lbl, val) in new[] {
+                                        ("X", $"{pos.EcefX:F4} m"),
+                                        ("Y", $"{pos.EcefY:F4} m"),
+                                        ("Z", $"{pos.EcefZ:F4} m")
+                                    })
+                                    {
+                                        <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117] last:border-0">
+                                            <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">@lbl</span>
+                                            <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@val</span>
+                                        </div>
+                                    }
+                                </div>
+
+                                @* Survey quality badge *@
+                                <div class="bg-[#3fb950]/10 border border-[#3fb950]/30 rounded-lg px-3 py-2 flex items-center gap-3">
+                                    <span class="text-[#3fb950] text-base shrink-0">✓</span>
+                                    <div class="text-[0.7rem] text-[#3fb950]">
+                                        <span class="font-bold">Survey Baseline Secured</span>
+                                        <span class="opacity-70 font-mono ml-2">
+                                            @(_state?.Survey?.AccuracyM < 9000
+                                                ? $"{_state.Survey.AccuracyM:F3} m"
+                                                : "—") ·
+                                            @(_state?.Survey?.Observations ?? 0) obs
+                                        </span>
+                                    </div>
+                                </div>
+
+                            </div>@* end coordinate cards *@
+                        }
+                        else
+                        {
+                            <div class="flex-1 flex flex-col items-center justify-center gap-3 text-[#8b949e]">
+                                <div class="text-4xl opacity-30">🛰️</div>
+                                <div class="text-xs text-center px-8">
+                                    Survey-In running — position will appear<br/>here once the survey locks.
+                                </div>
+                            </div>
+                        }
+
+                    </div>
+                }
+
+                @* TAB 2: RTCM Stream *@
+                @if (_activeTab == 2)
+                {
+                    <div class="flex-1 p-3 overflow-y-auto flex flex-col gap-3">
+                        @if (_state?.Stream is not null)
+                        {
+                            <div class="grid grid-cols-2 gap-2 shrink-0">
+                                @foreach (var (lbl, val, sub) in new[] {
+                                    ("Total Frames",   _state.Stream.TotalMessages.ToString("N0"),  "UBX + RTCM combined"),
+                                    ("Inject BW",      $"{_state.Stream.TxBps} bps",               "To drone"),
+                                    ("Receiver BW",    $"{_state.Stream.RxBps} bps",               "From u-blox"),
+                                    ("Frag Depth",     $"{_state.Stream.FragmentsUsed} / 4",        "MAVLink packing"),
+                                })
+                                {
+                                    <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
+                                        <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">@lbl</div>
+                                        <div class="text-base font-bold font-mono text-white">@val</div>
+                                        <div class="text-[0.55rem] text-[#484f58] mt-0.5">@sub</div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        <div class="flex-1 min-h-[120px] bg-black border border-[#21262d] rounded-lg p-3 font-mono text-xs overflow-y-auto flex flex-col gap-1.5">
+                            <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest border-b border-[#21262d] pb-1 mb-1 shrink-0">
+                                Vehicle Status Messages
+                            </div>
+                            @if (_state?.StatusMessages is { Count: > 0 })
+                            {
+                                @foreach (var msg in _state.StatusMessages.Take(8))
+                                {
+                                    if (msg is null) continue;
+                                    <div class="@(msg.Severity <= 3 ? "text-[#f85149]" : msg.Severity == 4 ? "text-[#f0b429]" : "text-[#8b949e]") leading-relaxed select-text">
+                                        <span class="font-bold">[@msg.SeverityLabel]</span> @msg.Text
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <div class="text-[#484f58] italic my-auto text-center">No vehicle messages received</div>
+                            }
+                        </div>
+                    </div>
+                }
+
+            </div>@* end tab content *@
+
+            @* ── Footer: LINK STATUS | MESSAGES SEEN | VEHICLE GPS ── *@
+            <div class="border-t border-[#21262d] bg-[#0d1117] shrink-0 flex divide-x divide-[#21262d] min-h-[46px]">
+
+                <div class="px-4 py-2 flex flex-col justify-center gap-0.5 min-w-[150px]">
+                    <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest">Link Status</div>
+                    <div class="flex gap-3 text-[0.65rem] font-mono">
+                        <span class="text-[#8b949e]">RX <span class="text-white ml-0.5">@(_state?.Stream?.RxBps ?? 0) bps</span></span>
+                        <span class="text-[#8b949e]">TX <span class="@(_state?.Stream?.TxBps > 0 ? "text-[#3fb950]" : "text-white") ml-0.5">@(_state?.Stream?.TxBps ?? 0) bps</span></span>
+                    </div>
+                </div>
+
+                @* FIX-1: Messages Seen now shows both UBX and RTCM frames *@
+                <div class="flex-1 px-4 py-2 overflow-hidden flex flex-col justify-center">
+                    <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest mb-0.5">Messages Seen</div>
+                    <div class="flex flex-wrap gap-x-3 gap-y-0">
+                        @if (_state?.Messages is { Count: > 0 })
+                        {
+                            @foreach (var m in _state.Messages.Take(12))
+                            {
+                                if (m is null) continue;
+                                @* Highlight RTCM in blue, UBX in grey — matches Image 1 *@
+                                bool isRtcm = m.Name.StartsWith("Rtcm");
+                                <span class="text-[0.6rem] font-mono @(isRtcm ? "text-[#58a6ff]" : "text-[#8b949e]")">
+                                    @m.Name<span class="text-[#c9d1d9]">=@m.Count</span>
+                                </span>
+                            }
+                        }
+                        else
+                        {
+                            <span class="text-[0.6rem] text-[#484f58] italic">—</span>
+                        }
+                    </div>
+                </div>
+
+                @* Vehicle GPS fix badge *@
+                <div class="px-4 py-2 flex flex-col items-end justify-center gap-0.5 min-w-[120px]">
+                    <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest">Vehicle GPS</div>
+                    <span class="text-[0.65rem] font-bold px-2 py-0.5 rounded @VehicleFixBadgeClass(_state?.VehicleGpsFixType ?? 0)">
+                        @(_state?.VehicleGpsLabel ?? "No Fix")
+                    </span>
+                </div>
+
+            </div>
+
+        </div>@* end right panel *@
+
+    </div>@* end body *@
+
+</div>@* end outer container *@
+
+@code {
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private RtkState    _state        = new();
+    private MonVerInfo? _receiverInfo;
+    private int         _activeTab    = 0;
+    private bool        _restartBusy  = false;
+    private bool        _fixedMapReady = false;   // tracks whether rtkBaseMap.init() has fired
+    private string      _saveProfileName = "";
+    private IReadOnlyList<string> _availablePorts = Array.Empty<string>();
+
+    private sealed class CfgLocal
+    {
+        public string ComPort         { get; set; } = "COM3";
+        public int    BaudRate        { get; set; } = 460800;
+        public bool   AutoConfig      { get; set; } = true;
+        public double TargetAccuracyM { get; set; } = 0.200;
+        public int    MinDurationSec  { get; set; } = 60;
+        public RtkConfig ToConfig() =>
+            new(ComPort, BaudRate, AutoConfig, TargetAccuracyM, MinDurationSec);
+    }
+    private readonly CfgLocal _cfg = new();
+
+    protected override void OnInitialized()
+    {
+        RtkService.OnStateChanged += OnRtkStateChanged;
+        _state = RtkService.State ?? new();
+        RefreshPorts();
+    }
+
+    public void Dispose()
+    {
+        RtkService.OnStateChanged -= OnRtkStateChanged;
+        _ = JS.InvokeVoidAsync("rtkBaseMap.destroy");
+    }
+
+    // ── Map lifecycle ─────────────────────────────────────────────────────
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_activeTab != 1) return;
+
+        var pos = _state?.FixedPosition;
+        if (pos == null) return;
+
+        double acc = _state?.Survey?.AccuracyM < 9000
+            ? _state!.Survey!.AccuracyM
+            : 1.0;  // fallback when survey data not available (fixed profile load)
+
+        try
+        {
+            if (!_fixedMapReady)
+            {
+                // First render of this tab with a valid position — initialise map
+                await JS.InvokeVoidAsync(
+                    "rtkBaseMap.init",
+                    "rtk-fixed-map",
+                    pos.Lat, pos.Lng,
+                    acc, pos.Alt);
+                _fixedMapReady = true;
+            }
+            else
+            {
+                // Subsequent renders (position updated) — pan + update circle
+                await JS.InvokeVoidAsync(
+                    "rtkBaseMap.update",
+                    pos.Lat, pos.Lng,
+                    acc, pos.Alt);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal — map will retry on next render
+            Console.WriteLine($"[rtkBaseMap] JS error: {ex.Message}");
+        }
+    }
+    
+    private void OnRtkStateChanged(RtkState state)
+    {
+        InvokeAsync(async () =>
+        {
+            if (state is null) return;
+            _state = state;
+            StateHasChanged();
+
+            // If on Fixed Coords tab and position updated, StateHasChanged
+            // triggers OnAfterRenderAsync which calls rtkBaseMap.update.
+            if (_activeTab != 0 && _activeTab != 1)
+            {
+                // other tabs: nothing extra needed
+            }
+
+            if (_activeTab == 0 && state.Satellites is { Count: > 0 })
+            {
+                try
+                {
+                    var sats = state.Satellites
+                        .Where(s => s is not null)
+                        .Select(s => new { id = s.Id, snr = (int)s.Snr, active = s.Active, gnssId = (int)s.GnssId, svId = (int)s.SvId })
+                        .ToArray();
+                    if (sats.Length > 0)
+                        await JS.InvokeVoidAsync("rtk.drawSnrChart", "rtk-snr-canvas", sats);
+                }
+                catch { }
+            }
+        });
+    }
+
+    // ── Button handlers ───────────────────────────────────────────────────────
+    private async Task OnConnect()
+    {
+        RefreshPorts();
+        await RtkService.ConnectAsync(_cfg.ToConfig());
+    }
+
+    private async Task OnDisconnect() => await RtkService.DisconnectAsync();
+
+    // FIX-3: Restart Survey — calls RestartSurveyAsync (port stays open, hardware reset)
+    private async Task OnRestartSurvey()
+    {
+        if (_restartBusy) return;
+        _restartBusy = true;
+        StateHasChanged();
+        try
+        {
+            await RtkService.RestartSurveyAsync();
+        }
+        finally
+        {
+            _restartBusy = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnSaveProfile()
+    {
+        if (string.IsNullOrWhiteSpace(_saveProfileName))
+            _saveProfileName = $"Base_{DateTime.Now:yyyyMMdd_HHmm}";
+        await RtkService.SaveCurrentProfileAsync(_saveProfileName.Trim());
+        _saveProfileName = "";
+    }
+
+    private async Task OnUseProfile(string n)    => await RtkService.UseProfileAsync(n);
+    private async Task OnDeleteProfile(string n) => await RtkService.DeleteProfileAsync(n);
+
+    private void SetTab(int idx)
+    {
+        int prev = _activeTab;
+        _activeTab = idx;
+
+        if (prev == 1 && idx != 1)
+        {
+            // Leaving Fixed Coords tab — destroy the Leaflet map instance
+            // so it is re-created fresh next time the tab is opened.
+            _fixedMapReady = false;
+            _ = JS.InvokeVoidAsync("rtkBaseMap.destroy");
+        }
+
+        if (idx == 0 && _state?.Satellites?.Count > 0)
+            OnRtkStateChanged(_state);
+
+        StateHasChanged();
+    }
+
+    private void RefreshPorts()
+    {
+        try   { _availablePorts = System.IO.Ports.SerialPort.GetPortNames(); }
+        catch { _availablePorts = Array.Empty<string>(); }
+        if (string.IsNullOrEmpty(_cfg.ComPort) && _availablePorts.Count > 0)
+            _cfg.ComPort = _availablePorts[0];
+    }
+
+    // ── Visual helpers ────────────────────────────────────────────────────────
+    private static string PhaseLabel(RtkPhase p) => p switch
+    {
+        RtkPhase.Idle       => "IDLE",
+        RtkPhase.Connecting => "CONFIGURING",
+        RtkPhase.Survey     => "SURVEY",
+        RtkPhase.Fixed      => "LOCKED",
+        RtkPhase.Injecting  => "INJECTING",
+        _                   => p.ToString().ToUpper()
+    };
+
+    private static string PhaseBadgeClass(RtkPhase p) => p switch
+    {
+        RtkPhase.Idle       => "bg-[#21262d]    text-[#8b949e]  border-[#30363d]",
+        RtkPhase.Connecting => "bg-[#58a6ff]/10 text-[#58a6ff]  border-[#58a6ff]/40",
+        RtkPhase.Survey     => "bg-[#f0b429]/10 text-[#f0b429]  border-[#f0b429]/40",
+        RtkPhase.Fixed      => "bg-[#3fb950]/10 text-[#3fb950]  border-[#3fb950]/40",
+        RtkPhase.Injecting  => "bg-[#00f2ff]/10 text-[#00f2ff]  border-[#00f2ff]/40",
+        _                   => ""
+    };
+
+    private static string VehicleFixBadgeClass(byte fx) => fx switch
+    {
+        6 => "bg-[#3fb950]/20 text-[#3fb950] border border-[#3fb950]/40",
+        5 => "bg-[#58a6ff]/20 text-[#58a6ff] border border-[#58a6ff]/40",
+        4 => "bg-[#f0b429]/20 text-[#f0b429] border border-[#f0b429]/40",
+        3 => "bg-[#21262d]    text-[#c9d1d9] border border-[#30363d]",
+        _ => "bg-[#21262d]    text-[#484f58] border border-[#21262d]"
+    };
+}

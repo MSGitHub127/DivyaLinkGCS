@@ -1,0 +1,474 @@
+@page "/firmware"
+@using DivyaLink.Services.Firmware
+@using System.IO.Ports
+@inject FirmwareFlashService FlashSvc
+@inject FirmwareProfileService FirmwareSvc
+@inject FirmwareDownloadService DownloadSvc
+@inject MavlinkService Drone
+@implements IDisposable
+
+<style>
+    @@keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+    .animate-spin {
+        animation: spin 1s linear infinite;
+        display: inline-block;
+    }
+</style>
+
+<div class="flex flex-col h-auto bg-transparent text-[#c9d1d9] w-full max-w-[520px] mx-auto gap-[16px]">
+
+    <div class="bg-[#161b22] border border-[#30363d] rounded-[8px] p-[16px]">
+        <div class="text-[0.75rem] font-bold uppercase tracking-[1px] text-[#8b949e] mb-2">Detected Firmware</div>
+        <div class="flex items-center gap-3">
+            <span class="text-[1.4rem] font-black @(FirmwareSvc.ActiveFirmware == FirmwareFamily.PX4 ? "text-[#00d4aa]" : "text-[#58a6ff]")">
+                @FirmwareSvc.ActiveFirmwareDisplayName
+            </span>
+            @if (Drone.IsLinkHealthy)
+            {
+                <span class="text-[0.7rem] px-2 py-1 rounded bg-[rgba(63,185,80,0.15)] text-[#3fb950] border border-[#2ea043]">AUTO-DETECTED</span>
+            }
+            else
+            {
+                <span class="text-[0.7rem] px-2 py-1 rounded bg-[rgba(139,148,158,0.15)] text-[#8b949e] border border-[#484f58]">NOT CONNECTED</span>
+            }
+        </div>
+        <p class="text-[0.8rem] text-[#8b949e] mt-2 leading-relaxed">
+            When connected, DivyaLink reads HEARTBEAT.autopilot to choose ArduPilot or PX4 behavior for flight modes and parameters.
+        </p>
+    </div>
+
+    <div class="bg-[#161b22] border border-[#30363d] rounded-[8px] p-[16px] flex flex-col gap-3">
+        <div class="text-[0.75rem] font-bold uppercase tracking-[1px] text-[#8b949e]">Flash Target</div>
+
+        <!-- Always use One-Click Download (local file option removed per user request) -->
+
+        <label class="text-[0.75rem] font-semibold text-[#8b949e] uppercase mt-1">Serial Port</label>
+        <select class="h-[38px] bg-[#0d1117] border border-[#30363d] text-white px-3 rounded-[4px] text-[0.9rem] outline-none focus:border-[#58a6ff]"
+                @bind="selectedPort">
+            <option value="" disabled>-- Select Port --</option>
+            @foreach (var port in availablePorts)
+            {
+                <option value="@port">@port</option>
+            }
+        </select>
+
+            <!-- Auto-Detect hardware button -->
+            <div class="flex flex-col gap-1.5 bg-[#0d1117] border border-[#30363d] rounded-[6px] p-[10px] mt-1">
+                <div class="flex gap-2 items-center justify-between">
+                    <button class="h-[32px] px-3 bg-[#21262d] border border-[#30363d] hover:border-[#8b949e] rounded-[4px] text-white text-[0.78rem] font-bold cursor-pointer transition-all flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled="@(isDetectingBoard || string.IsNullOrEmpty(selectedPort))"
+                            @onclick="AutoDetectHardware">
+                        @if (isDetectingBoard)
+                        {
+                            <span class="animate-spin mr-1">🔄</span>
+                            <span>DETECTING...</span>
+                        }
+                        else
+                        {
+                            <span>🔍 DETECT BOARD TYPE</span>
+                        }
+                    </button>
+                    <span class="text-[0.72rem] text-[#8b949e] uppercase tracking-[0.5px]">Bootloader Probe</span>
+                </div>
+                @if (!string.IsNullOrEmpty(detectedBoardMsg))
+                {
+                    <div class="text-[0.78rem] text-[#58a6ff] leading-snug mt-1">@detectedBoardMsg</div>
+                }
+            </div>
+
+            <label class="text-[0.75rem] font-semibold text-[#8b949e] uppercase mt-1">Board Model</label>
+            <select class="h-[38px] bg-[#0d1117] border border-[#30363d] text-white px-3 rounded-[4px] text-[0.9rem] outline-none focus:border-[#58a6ff]"
+                    @bind="BindBoardId">
+                @foreach (var board in FirmwareDownloadService.SupportedBoards)
+                {
+                    <option value="@board.BoardId">@board.Name</option>
+                }
+                <option value="-1">-- Custom Board ID --</option>
+            </select>
+
+            @if (selectedBoardId == -1)
+            {
+                <label class="text-[0.75rem] font-semibold text-[#8b949e] uppercase mt-1">Custom Board ID</label>
+                <input type="number" class="h-[38px] bg-[#0d1117] border border-[#30363d] text-white px-3 rounded-[4px] text-[0.9rem] outline-none focus:border-[#58a6ff]"
+                       @bind="customBoardIdInput" placeholder="e.g. 50" />
+            }
+
+            <label class="text-[0.75rem] font-semibold text-[#8b949e] uppercase mt-1">Firmware Family</label>
+            <div class="grid grid-cols-2 gap-2">
+                <button class="h-[40px] rounded-[6px] border-2 font-bold text-[0.8rem] transition-all cursor-pointer
+                               @(selectedTarget == FirmwareFamily.ArduPilot ? "border-[#58a6ff] bg-[rgba(88,166,255,0.12)] text-[#58a6ff]" : "border-[#30363d] bg-[#0d1117] text-[#8b949e] hover:border-[#484f58]")"
+                        @onclick="() => SelectTarget(FirmwareFamily.ArduPilot)">
+                    ArduPilot (.apj)
+                </button>
+                <button class="h-[40px] rounded-[6px] border-2 font-bold text-[0.8rem] transition-all cursor-pointer
+                               @(selectedTarget == FirmwareFamily.PX4 ? "border-[#00d4aa] bg-[rgba(0,212,170,0.12)] text-[#00d4aa]" : "border-[#30363d] bg-[#0d1117] text-[#8b949e] hover:border-[#484f58]")"
+                        @onclick="() => SelectTarget(FirmwareFamily.PX4)">
+                    PX4 (.px4)
+                </button>
+            </div>
+
+            @if (selectedTarget == FirmwareFamily.ArduPilot)
+            {
+                <label class="text-[0.75rem] font-semibold text-[#8b949e] uppercase mt-1">Vehicle Type</label>
+                <select class="h-[38px] bg-[#0d1117] border border-[#30363d] text-white px-3 rounded-[4px] text-[0.9rem] outline-none focus:border-[#58a6ff]"
+                        @bind="selectedVehicleType">
+                    <option value="Copter">Multicopter (Copter)</option>
+                    <option value="Plane">Fixed-Wing / VTOL (Plane)</option>
+                    <option value="Rover">Ground Vehicle (Rover)</option>
+                    <option value="Sub">Underwater (Sub)</option>
+                </select>
+            }
+
+            <label class="text-[0.75rem] font-semibold text-[#8b949e] uppercase mt-1">Release Channel</label>
+            <select class="h-[38px] bg-[#0d1117] border border-[#30363d] text-white px-3 rounded-[4px] text-[0.9rem] outline-none focus:border-[#58a6ff]"
+                    @bind="selectedChannel">
+                <option value="stable">Stable (Recommended)</option>
+                <option value="beta">Beta / Testing</option>
+                <option value="master">Developer / Latest</option>
+            </select>
+
+        <label class="flex items-center gap-2 text-[0.8rem] text-[#8b949e] cursor-pointer mt-2">
+            <input type="checkbox" @bind="forceUpload" class="accent-[#58a6ff]" />
+            Force upload even if CRC matches
+        </label>
+
+
+        <div class="flex gap-2 mt-2">
+            <button class="flex-1 h-[42px] bg-[#238636] border-none rounded-[6px] text-white font-bold text-[0.9rem] cursor-pointer hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                    disabled="@(!CanFlashAuto)"
+                    @onclick="StartFlashAuto">
+                @(isDownloading ? "DOWNLOADING..." : FlashSvc.IsFlashing ? "FLASHING..." : "DOWNLOAD & FLASH")
+            </button>
+
+            @if (FlashSvc.IsFlashing || isDownloading)
+            {
+                <button class="h-[42px] px-4 bg-[#da3633] border-none rounded-[6px] text-white font-bold cursor-pointer hover:brightness-110"
+                        @onclick="CancelFlash">CANCEL</button>
+            }
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMessage) || isDownloading || FlashSvc.IsFlashing)
+    {
+        <div class="bg-[#0d1117] border border-[#30363d] rounded-[8px] p-[14px]">
+            <div class="text-[0.7rem] font-bold uppercase tracking-[1px] text-[#8b949e] mb-2">
+                @if (isDownloading)
+                {
+                    <span>Downloading — @(downloadPercent >= 0 ? $"{Math.Round(downloadPercent, 1)}%" : "Connecting...")</span>
+                }
+                else
+                {
+                    <span>Status — @FlashSvc.State</span>
+                }
+            </div>
+
+            @if (isDownloading && downloadPercent >= 0)
+            {
+                <div class="w-full h-[6px] bg-[#21262d] rounded-full overflow-hidden mb-2">
+                    <div class="h-full bg-[#00d4aa] transition-all duration-300" style="width: @(Math.Clamp(downloadPercent, 0, 100))%"></div>
+                </div>
+            }
+            else if (progressPercent >= 0)
+            {
+                <div class="w-full h-[6px] bg-[#21262d] rounded-full overflow-hidden mb-2">
+                    <div class="h-full bg-[#58a6ff] transition-all duration-300" style="width: @(Math.Clamp(progressPercent, 0, 100))%"></div>
+                </div>
+            }
+            
+            <div class="text-[0.85rem] @(FlashSvc.State == FlashState.Error ? "text-[#f85149]" : FlashSvc.State == FlashState.Complete ? "text-[#3fb950]" : "text-[#c9d1d9]")">
+                @statusMessage
+            </div>
+        </div>
+    }
+
+    <div class="bg-[#161b22] border border-[#30363d] rounded-[8px] p-[16px] text-[0.78rem] text-[#8b949e] leading-relaxed">
+        <div class="font-bold uppercase tracking-[1px] mb-2 text-[#c9d1d9]">Instructions</div>
+        <ol class="list-decimal list-inside space-y-1">
+            <li>Disconnect the telemetry link and power module from your flight controller before flashing.</li>
+            <li>Connect your Pixhawk flight controller via USB to your computer.</li>
+            <li>Use the **Detect Board Type** button to automatically detect your flight controller board ID (tries multiple connection methods for reliability).</li>
+            <li>Select **PX4 (.px4)** as your firmware family.</li>
+            <li>Select your vehicle type (Copter, Plane, Rover, or Sub).</li>
+            <li>Choose your release channel (Stable recommended for most users).</li>
+            <li>Click **Download & Flash** to automatically resolve, download, and install the PX4 firmware.</li>
+            <li>Wait for the process to complete - this may take longer than before as it attempts multiple connection methods for reliability - the flight controller will reboot automatically when done.</li>
+            <li>After reboot, reconnect the power and telemetry - DivyaLink GCS will auto-detect the active firmware.</li>
+        </ol>
+        <p class="mt-3 text-[#6e7681]">
+            Supports Pixhawk-class boards using the PX4-compatible serial bootloader. `.apj` and `.px4` containers are automatically processed.
+            <br/>
+            <strong>Troubleshooting:</strong>
+            <br/>
+            • <em>Bootloader sync errors:</em> Unplug USB, wait 10 seconds, replug and try Detect Board Type again (process tries multiple communication speeds for reliability)
+            <br/>
+            • <em>Bootloader mismatch errors:</em> Verify you selected the correct board model (Detect Board Type shows what's detected)
+            <br/>
+            • <em>Persistent connection issues:</em> Try a different USB port or cable, ensure no other software is using the serial port
+            <br/>
+            • <em>For advanced users:</em> Enable "Force board ID mismatch" only if you're certain your hardware is compatible with the selected firmware
+            <br/>
+            • <em>Bootloader not entering mode:</em> Some boards require holding a bootloader button while plugging in USB
+            <br/>
+            • <em>If still failing:</em> Try a different USB cable (prefer short, high-quality data cables), ensure stable power supply, or contact support with verbose logs
+            <br/>
+            • <em>Note:</em> The flashing process may take longer than before as it attempts multiple connection methods to ensure reliability
+        </p>
+    </div>
+</div>
+
+@code {
+    private int selectedBoardId = 50; // Pixhawk 4 default
+    private int customBoardIdInput = 50;
+    private string selectedChannel = "stable";
+    private string selectedVehicleType = "Copter";
+    private bool isDownloading = false;
+    private double downloadPercent = 0;
+    private bool isDetectingBoard = false;
+    private string detectedBoardMsg = "";
+
+    private FirmwareFamily selectedTarget = FirmwareFamily.ArduPilot;
+    private string selectedPort = "";
+    private string? tempFirmwarePath;
+    private bool forceUpload;
+    private string selectedFileName = "";
+    private string statusMessage = "";
+    private double progressPercent = -1;
+    private List<string> availablePorts = [];
+    private System.Threading.Timer? _portTimer;
+
+    private int BindBoardId
+    {
+        get => selectedBoardId;
+        set
+        {
+            selectedBoardId = value;
+            if (selectedBoardId != -1)
+            {
+                customBoardIdInput = selectedBoardId;
+            }
+        }
+    }
+
+    private bool CanFlash =>
+        !FlashSvc.IsFlashing &&
+        !string.IsNullOrEmpty(selectedPort) &&
+        !string.IsNullOrEmpty(tempFirmwarePath) &&
+        File.Exists(tempFirmwarePath);
+
+    private bool CanFlashAuto =>
+        !isDownloading &&
+        !FlashSvc.IsFlashing &&
+        !string.IsNullOrEmpty(selectedPort) &&
+        (selectedBoardId != -1 || customBoardIdInput > 0);
+
+    protected override void OnInitialized()
+    {
+        RefreshPorts();
+        _portTimer = new System.Threading.Timer(_ => InvokeAsync(RefreshPorts), null, 0, 2000);
+        FlashSvc.OnProgress += OnFlashProgress;
+        selectedTarget = FirmwareSvc.ActiveFirmware == FirmwareFamily.Unknown
+            ? FirmwareFamily.ArduPilot
+            : FirmwareSvc.ActiveFirmware;
+    }
+
+    private void SelectTarget(FirmwareFamily target)
+    {
+        selectedTarget = target;
+        FirmwareSvc.SetManualOverride(target);
+        selectedFileName = "";
+        tempFirmwarePath = null;
+    }
+
+    private void RefreshPorts()
+    {
+        try
+        {
+            availablePorts = SerialPort.GetPortNames().OrderBy(p => p).ToList();
+            if (string.IsNullOrEmpty(selectedPort) && availablePorts.Count > 0)
+                selectedPort = availablePorts[0];
+            StateHasChanged();
+        }
+        catch { /* serial enumeration can fail on some hosts */ }
+    }
+
+
+    private async Task AutoDetectHardware()
+    {
+        if (string.IsNullOrEmpty(selectedPort)) return;
+
+        isDetectingBoard = true;
+        detectedBoardMsg = "Syncing with bootloader... Please plug/replug the FC USB cable now.";
+        StateHasChanged();
+
+        bool wasConnectedOnTargetPort = Drone.IsLinkHealthy && 
+                                        Drone.ConnectionType == ConnectionType.Serial && 
+                                        string.Equals(Drone.PortName, selectedPort, StringComparison.OrdinalIgnoreCase);
+
+        ConnectionType prevType = Drone.ConnectionType;
+        string prevPort = Drone.PortName;
+        int prevBaud = Drone.BaudRate;
+
+        if (wasConnectedOnTargetPort)
+        {
+            Drone.RebootToBootloader();
+            await Task.Delay(100);
+            Drone.StopConnection();
+            await Task.Delay(500);
+        }
+
+        var boardInfo = await FlashSvc.DetectBoardAsync(selectedPort);
+        isDetectingBoard = false;
+
+        if (boardInfo != null)
+        {
+            selectedBoardId = boardInfo.BoardId;
+            customBoardIdInput = boardInfo.BoardId;
+            var boardDetails = FirmwareDownloadService.SupportedBoards.FirstOrDefault(b => b.BoardId == boardInfo.BoardId);
+            string name = boardDetails != null ? boardDetails.Name : $"Custom Board ({boardInfo.ChipDescription})";
+            detectedBoardMsg = $"Detected: {name} (Board ID {boardInfo.BoardId}, Rev {boardInfo.BoardRev})";
+        }
+        else
+        {
+            detectedBoardMsg = "Board not detected. Power-cycle the USB and try again, or select manually.";
+        }
+
+        if (wasConnectedOnTargetPort)
+        {
+            Drone.Connect(prevType, prevPort, prevBaud, showDialog: false);
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task StartFlashAuto()
+    {
+        if (!CanFlashAuto) return;
+
+        isDownloading = true;
+        downloadPercent = 0;
+        progressPercent = 0;
+        statusMessage = "Resolving firmware URL...";
+        StateHasChanged();
+
+        bool wasConnectedOnTargetPort = Drone.IsLinkHealthy && 
+                                        Drone.ConnectionType == ConnectionType.Serial && 
+                                        string.Equals(Drone.PortName, selectedPort, StringComparison.OrdinalIgnoreCase);
+
+        if (wasConnectedOnTargetPort)
+        {
+            Drone.RebootToBootloader();
+            await Task.Delay(100);
+            Drone.StopConnection();
+            await Task.Delay(500);
+        }
+
+        try
+        {
+            int finalBoardId = selectedBoardId == -1 ? customBoardIdInput : selectedBoardId;
+
+            // 1. Resolve URL
+            var url = await DownloadSvc.GetFirmwareUrlAsync(
+                selectedTarget,
+                selectedChannel,
+                selectedVehicleType,
+                finalBoardId,
+                status => InvokeAsync(() => { statusMessage = status; StateHasChanged(); }),
+                pct => InvokeAsync(() => { downloadPercent = pct; StateHasChanged(); }),
+                CancellationToken.None
+            );
+
+            // 2. Download File
+            tempFirmwarePath = await DownloadSvc.DownloadFirmwareToFileAsync(
+                url,
+                pct => InvokeAsync(() => { downloadPercent = pct; StateHasChanged(); }),
+                CancellationToken.None
+            );
+
+            selectedFileName = Path.GetFileName(url);
+            isDownloading = false;
+
+            // 3. Start Flashing
+            statusMessage = "Download complete. Initializing flash...";
+            StateHasChanged();
+
+            var ok = await FlashSvc.FlashAsync(
+                selectedPort, tempFirmwarePath, selectedTarget,
+                baudRate: 115200, forceUpload: forceUpload);
+
+            if (ok)
+                Drone.Toast($"{selectedTarget} firmware flashed successfully", MavlinkService.ToastLevel.Success, "✅");
+            else if (!string.IsNullOrEmpty(FlashSvc.LastError))
+                Drone.Toast(FlashSvc.LastError, MavlinkService.ToastLevel.Error, "❌");
+        }
+        catch (Exception ex)
+        {
+            isDownloading = false;
+            statusMessage = $"Error: {ex.Message}";
+            Drone.Toast($"Operation failed: {ex.Message}", MavlinkService.ToastLevel.Error, "❌");
+            StateHasChanged();
+        }
+    }
+
+    private async Task StartFlash()
+    {
+        if (!CanFlash || tempFirmwarePath == null) return;
+
+        bool wasConnectedOnTargetPort = Drone.IsLinkHealthy && 
+                                        Drone.ConnectionType == ConnectionType.Serial && 
+                                        string.Equals(Drone.PortName, selectedPort, StringComparison.OrdinalIgnoreCase);
+
+        if (wasConnectedOnTargetPort)
+        {
+            Drone.RebootToBootloader();
+            await Task.Delay(100);
+            Drone.StopConnection();
+            await Task.Delay(500);
+        }
+
+        statusMessage = "Starting flash...";
+        progressPercent = 0;
+
+        var ok = await FlashSvc.FlashAsync(
+            selectedPort, tempFirmwarePath, selectedTarget,
+            baudRate: 115200, forceUpload: forceUpload);
+
+        if (ok)
+            Drone.Toast($"{selectedTarget} firmware flashed successfully", MavlinkService.ToastLevel.Success, "✅");
+        else if (!string.IsNullOrEmpty(FlashSvc.LastError))
+            Drone.Toast(FlashSvc.LastError, MavlinkService.ToastLevel.Error, "❌");
+    }
+
+    private void CancelFlash()
+    {
+        if (isDownloading)
+        {
+            // Just reset download state
+            isDownloading = false;
+            statusMessage = "Download cancelled.";
+            StateHasChanged();
+        }
+        else
+        {
+            FlashSvc.Cancel();
+        }
+    }
+
+    private void OnFlashProgress(FlashProgressEvent e)
+    {
+        InvokeAsync(() =>
+        {
+            statusMessage = e.Message;
+            if (e.Percent >= 0) progressPercent = e.Percent;
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        FlashSvc.OnProgress -= OnFlashProgress;
+        _portTimer?.Dispose();
+    }
+}
