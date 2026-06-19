@@ -276,6 +276,10 @@ public class MavlinkService : BackgroundService
             _connectionType, _portName, _baudRate);
     }
 
+    public ConnectionType ConnectionType => _connectionType;
+    public string PortName => _portName;
+    public int BaudRate => _baudRate;
+
     public bool IsConnected
     {
         get
@@ -2731,6 +2735,17 @@ private void SendRtcmFragments((byte[] Buf, byte Flags, byte Len)[] packets)
         Toast("Frame configuration applied — reboot required", ToastLevel.Warning, "🔧");
     }
     public void RequestDataStreams() => TryConfigureMessageIntervals();
+
+    public void RebootAutopilot()
+    {
+        SendCommand(MAVLink.MAV_CMD.PREFLIGHT_REBOOT_SHUTDOWN, 1, 0, 0, 0, 0, 0, 0);
+    }
+
+    public void RebootToBootloader()
+    {
+        SendCommand(MAVLink.MAV_CMD.PREFLIGHT_REBOOT_SHUTDOWN, 3, 0, 0, 0, 0, 0, 0);
+    }
+
 
     public void TestMotor(int motorIndex, float throttlePercent, float durationSec)
     {

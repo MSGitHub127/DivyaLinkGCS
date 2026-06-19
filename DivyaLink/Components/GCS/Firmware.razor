@@ -134,10 +134,7 @@
             <input type="checkbox" @bind="forceUpload" class="accent-[#58a6ff]" />
             Force upload even if CRC matches
         </label>
-        <label class="flex items-center gap-2 text-[0.8rem] text-[#8b949e] cursor-pointer mt-2">
-            <input type="checkbox" @bind="forceBoardMatch" class="accent-[#58a6ff]" />
-            Force board ID mismatch (advanced use only)
-        </label>
+
 
         <div class="flex gap-2 mt-2">
             <button class="flex-1 h-[42px] bg-[#238636] border-none rounded-[6px] text-white font-bold text-[0.9rem] cursor-pointer hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
@@ -236,7 +233,6 @@
     private string selectedPort = "";
     private string? tempFirmwarePath;
     private bool forceUpload;
-    private bool forceBoardMatch;
     private string selectedFileName = "";
     private string statusMessage = "";
     private double progressPercent = -1;
@@ -284,7 +280,6 @@
         FirmwareSvc.SetManualOverride(target);
         selectedFileName = "";
         tempFirmwarePath = null;
-        forceBoardMatch = false;
     }
 
     private void RefreshPorts()
@@ -308,8 +303,18 @@
         detectedBoardMsg = "Syncing with bootloader... Please plug/replug the FC USB cable now.";
         StateHasChanged();
 
-        if (Drone.IsLinkHealthy)
+        bool wasConnectedOnTargetPort = Drone.IsLinkHealthy && 
+                                        Drone.ConnectionType == ConnectionType.Serial && 
+                                        string.Equals(Drone.PortName, selectedPort, StringComparison.OrdinalIgnoreCase);
+
+        ConnectionType prevType = Drone.ConnectionType;
+        string prevPort = Drone.PortName;
+        int prevBaud = Drone.BaudRate;
+
+        if (wasConnectedOnTargetPort)
         {
+            Drone.RebootToBootloader();
+            await Task.Delay(100);
             Drone.StopConnection();
             await Task.Delay(500);
         }
@@ -329,6 +334,12 @@
         {
             detectedBoardMsg = "Board not detected. Power-cycle the USB and try again, or select manually.";
         }
+
+        if (wasConnectedOnTargetPort)
+        {
+            Drone.Connect(prevType, prevPort, prevBaud, showDialog: false);
+        }
+
         StateHasChanged();
     }
 
@@ -342,8 +353,14 @@
         statusMessage = "Resolving firmware URL...";
         StateHasChanged();
 
-        if (Drone.IsLinkHealthy)
+        bool wasConnectedOnTargetPort = Drone.IsLinkHealthy && 
+                                        Drone.ConnectionType == ConnectionType.Serial && 
+                                        string.Equals(Drone.PortName, selectedPort, StringComparison.OrdinalIgnoreCase);
+
+        if (wasConnectedOnTargetPort)
         {
+            Drone.RebootToBootloader();
+            await Task.Delay(100);
             Drone.StopConnection();
             await Task.Delay(500);
         }
@@ -379,7 +396,7 @@
 
             var ok = await FlashSvc.FlashAsync(
                 selectedPort, tempFirmwarePath, selectedTarget,
-                baudRate: 115200, forceUpload: forceUpload, forceBoardMatch: forceBoardMatch);
+                baudRate: 115200, forceUpload: forceUpload);
 
             if (ok)
                 Drone.Toast($"{selectedTarget} firmware flashed successfully", MavlinkService.ToastLevel.Success, "✅");
@@ -399,8 +416,14 @@
     {
         if (!CanFlash || tempFirmwarePath == null) return;
 
-        if (Drone.IsLinkHealthy)
+        bool wasConnectedOnTargetPort = Drone.IsLinkHealthy && 
+                                        Drone.ConnectionType == ConnectionType.Serial && 
+                                        string.Equals(Drone.PortName, selectedPort, StringComparison.OrdinalIgnoreCase);
+
+        if (wasConnectedOnTargetPort)
         {
+            Drone.RebootToBootloader();
+            await Task.Delay(100);
             Drone.StopConnection();
             await Task.Delay(500);
         }
@@ -410,7 +433,7 @@
 
         var ok = await FlashSvc.FlashAsync(
             selectedPort, tempFirmwarePath, selectedTarget,
-            baudRate: 115200, forceUpload: forceUpload, forceBoardMatch: forceBoardMatch);
+            baudRate: 115200, forceUpload: forceUpload);
 
         if (ok)
             Drone.Toast($"{selectedTarget} firmware flashed successfully", MavlinkService.ToastLevel.Success, "✅");
