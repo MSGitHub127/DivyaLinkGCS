@@ -30,41 +30,36 @@ public static class UbxConfigurator
 
     public const int TargetBaud = 460800;
 
-    // ── SetupM8P ──────────────────────────────────────────────────────────────
-    /// Returns the complete config command sequence.
-    /// <param name="useMsm7">
-    ///   true  → enable MSM7 (1077/1087/1097/1127) — correct for M8P HPG 1.40+
-    ///   false → enable MSM4 (1074/1084/1094/1124) — only for older fw
-    ///   Auto-detected by caller from MonVerInfo.IsMsm7Capable.
-    /// </param>
-    /// <param name="addNavSat">true = enable NAV-SAT for SNR chart</param>
-    public static IEnumerable<(byte[] Cmd, int DelayMs)> SetupM8P(
-        bool useMsm7   = true,
+    /// <summary>
+    /// Phase 1 of the M8P setup sequence: port configuration, navigation settings,
+    /// NMEA suppression, and sensor message enables.
+    /// Does NOT configure any RTCM output — that is done by <see cref="SetupM8pRtcm"/>
+    /// after the caller has queried CFG-GNSS to learn which constellations are active.
+    ///
+    /// Includes a MON-VER poll so the caller can determine MSM7 vs MSM4 capability
+    /// before invoking Phase 2.
+    /// </summary>
+    public static IEnumerable<(byte[] Cmd, int DelayMs)> SetupM8pPhase1(
         bool addNavSat = true)
     {
         // ── Port config ───────────────────────────────────────────────────────
-        // MP line 21690-21698: sends CFG-PRT UART1 for every baud in the scan
-        // list. We send it once here (baud scan is handled by the service layer).
+        // MP line 21690-21698 / 21702-21711
         yield return (CfgPrtUart1(), 100);
-
-        // USB port — MP line 21702-21711
-        yield return (CfgPrtUsb(), 300);
-
+        yield return (CfgPrtUsb(),   300);
+ 
         // ── Navigation rate = 1 Hz ────────────────────────────────────────────
-        // MP line 21717: {0xE8,0x03,0x01,0x00,0x01,0x00}
-        // measRate=1000ms, navRate=1, timeRef=1(GPS)
+        // MP line 21717: measRate=1000ms, navRate=1, timeRef=1(GPS)
         yield return (Generate(0x06, 0x08,
             [0xE8,0x03, 0x01,0x00, 0x01,0x00]), 200);
-
+ 
         // ── Stationary dynamic model ──────────────────────────────────────────
-        // MP line 21723-21733: exact 36-byte payload with mask=0xFFFF
-        // dynModel=2(Stationary), fixMode=3(Auto 2D/3D)
+        // MP line 21723-21733: exact 36-byte payload, mask=0xFFFF
         yield return (Generate(0x06, 0x24, [
             0xFF,0xFF,               // mask: apply all parameters
             0x02,                    // dynModel = 2 (stationary)
             0x03,                    // fixMode  = 3 (auto 2D/3D)
-            0x00,0x00,0x00,0x00,    // fixedAlt
-            0x10,0x27,0x00,0x00,    // fixedAltVar
+            0x00,0x00,0x00,0x00,     // fixedAlt
+            0x10,0x27,0x00,0x00,     // fixedAltVar
             0x0F,0x00,               // minElev=15°
             0xFA,0x00,               // drLimit
             0xFA,0x00,               // pDop=2.5
@@ -76,86 +71,144 @@ public static class UbxConfigurator
             0x10,0x27,               // cnoThreshNumSVs + cnoThresh
             0x00,0x00,               // reserved
             0x00,0x00,               // staticHoldMaxDist
-            0x00,0x00,0x00,0x00    // utcStandard + reserved
+            0x00,0x00,0x00,0x00      // utcStandard + reserved
         ]), 200);
-
+ 
         // ── Disable all NMEA output ───────────────────────────────────────────
-        // MP line 21738-21743: a=0..0xF, skip 0xB, 0xC, 0xE
+        // MP line 21738-21743: ids 0..0xF excluding 0xB, 0xC, 0xE
         byte[] nmeaOff = [0x00,0x01,0x02,0x03,0x04,0x05,0x06,
                           0x07,0x08,0x09,0x0A,0x0D,0x0F];
         foreach (byte id in nmeaOff)
             yield return (TurnOnOff(0xF0, id, 0), 20);
-
-        // ── Poll MON-VER (for firmware version logging) ───────────────────────
-        // MP line 21746: poll_msg(port, 0xa, 0x4)
+ 
+        // ── Poll MON-VER ──────────────────────────────────────────────────────
+        // MP line 21746. Caller waits for _receiverInfo.FwVer to be populated
+        // before invoking Phase 2, so it knows MSM7 vs MSM4 capability.
         yield return (PollMsg(0x0A, 0x04), 200);
-
-        // ── Enable survey-in status feedback ─────────────────────────────────
-        // MP line 21749: turnon_off(port, 0x01, 0x3b, 1)
-        yield return (TurnOnOff(0x01, 0x3B, 1), 50);
-
-        // ── Enable PVT feedback ───────────────────────────────────────────────
-        // MP line 21752: turnon_off(port, 0x01, 0x07, 1)
-        yield return (TurnOnOff(0x01, 0x07, 1), 50);
-
-        // ── NAV-SAT (satellite SNR chart) ─────────────────────────────────────
+ 
+        // ── Enable survey-in + PVT + satellite feedback ───────────────────────
+        // MP lines 21749, 21752
+        yield return (TurnOnOff(0x01, 0x3B, 1), 50);   // NAV-SVIN
+        yield return (TurnOnOff(0x01, 0x07, 1), 50);   // NAV-PVT
+ 
         if (addNavSat)
-            yield return (TurnOnOff(0x01, 0x35, 1), 50);
-
-        // ── RTCM 1005 — base position — 5s ───────────────────────────────────
-        // MP line 21754-21755: turnon_off(port, 0xf5, 0x05, 5)
-        yield return (TurnOnOff(0xF5, 0x05, 5), 50);
-
-        // ── RTCM MSM messages ─────────────────────────────────────────────────
-        // MP lines 21757-21790: rate1/rate2 logic
-        // useMsm7=true  → MSM7 rate=1, MSM4 rate=0  (MP: m8p_130plus=false)
-        // useMsm7=false → MSM4 rate=1, MSM7 rate=0  (MP: m8p_130plus=true)
+            yield return (TurnOnOff(0x01, 0x35, 1), 50); // NAV-SAT
+    }
+ 
+    /// <summary>
+    /// Phase 2 of the M8P setup sequence: RTCM output rates, diagnostic message
+    /// enables, and CFG-CFG save-to-flash.
+    ///
+    /// Only emits CFG-MSG commands for RTCM messages whose constellation is present
+    /// in <paramref name="enabledGnss"/>. Pass <c>null</c> to send all (backward
+    /// compatibility); pass the result of <see cref="ParseCfgGnss"/> to filter
+    /// precisely and eliminate NACKs for unsupported constellations.
+    ///
+    /// Changes vs the original SetupM8P body:
+    ///   • RTCM 1005 rate: 5 → 1  (ARP every second, not every 5 s)
+    ///   • Each MSM pair (MSM4+MSM7) gated on the matching gnssId being present
+    ///   • RTCM 1230 gated on GLONASS (gnssId 6) being present
+    /// </summary>
+    public static IEnumerable<(byte[] Cmd, int DelayMs)> SetupM8pRtcm(
+        bool useMsm7,
+        IReadOnlySet<byte>? enabledGnss = null)
+    {
+        // Helper: true if constellation is enabled (or filter is not applied).
+        bool Has(byte gnssId) => enabledGnss == null || enabledGnss.Contains(gnssId);
+ 
         byte msm7rate = useMsm7 ? (byte)1 : (byte)0;
         byte msm4rate = useMsm7 ? (byte)0 : (byte)1;
-
-        // GPS
-        yield return (TurnOnOff(0xF5, 0x4A, msm4rate), 50); // 1074 MSM4
-        yield return (TurnOnOff(0xF5, 0x4D, msm7rate), 50); // 1077 MSM7
-
-        // GLONASS
-        yield return (TurnOnOff(0xF5, 0x54, msm4rate), 50); // 1084 MSM4
-        yield return (TurnOnOff(0xF5, 0x57, msm7rate), 50); // 1087 MSM7
-
-        // Galileo
-        yield return (TurnOnOff(0xF5, 0x5E, msm4rate), 50); // 1094 MSM4
-        yield return (TurnOnOff(0xF5, 0x61, msm7rate), 50); // 1097 MSM7
-
-        // BeiDou
-        yield return (TurnOnOff(0xF5, 0x7C, msm4rate), 50); // 1124 MSM4
-        yield return (TurnOnOff(0xF5, 0x7F, msm7rate), 50); // 1127 MSM7
-
-        // 4072 — u-blox moving-base proprietary — always disable for static base
-        // MP line 21787: turnon_off(port, 0xf5, 0xFE, 0)
+ 
+        // ── RTCM 1005 — Base station ARP ─────────────────────────────────────
+        // Always sent — not constellation-specific.
+        // FIX: rate 5 → 1 so the drone gets the base position every second,
+        // not every 5 s.  MP line 21754-21755: rate=5 (matched here as rate=1
+        // intentionally, see engineering report §5 "RTCM 1005 rate").
+        yield return (TurnOnOff(0xF5, 0x05, 1), 50);   // RTCM-1005 @ 1 Hz
+ 
+        // ── GPS (gnssId = 0) ──────────────────────────────────────────────────
+        // MP lines 21757-21762
+        if (Has(0))
+        {
+            yield return (TurnOnOff(0xF5, 0x4A, msm4rate), 50); // RTCM-1074 MSM4
+            yield return (TurnOnOff(0xF5, 0x4D, msm7rate), 50); // RTCM-1077 MSM7
+        }
+ 
+        // ── GLONASS (gnssId = 6) ──────────────────────────────────────────────
+        // MP lines 21764-21769
+        if (Has(6))
+        {
+            yield return (TurnOnOff(0xF5, 0x54, msm4rate), 50); // RTCM-1084 MSM4
+            yield return (TurnOnOff(0xF5, 0x57, msm7rate), 50); // RTCM-1087 MSM7
+        }
+ 
+        // ── Galileo (gnssId = 2) ──────────────────────────────────────────────
+        // MP lines 21771-21776
+        // NEO-M8P-2 supports Galileo from HPG 1.40+. Firmware HPG 1.43 (observed
+        // in logs) includes it, but only if enabled in CFG-GNSS.
+        if (Has(2))
+        {
+            yield return (TurnOnOff(0xF5, 0x5E, msm4rate), 50); // RTCM-1094 MSM4
+            yield return (TurnOnOff(0xF5, 0x61, msm7rate), 50); // RTCM-1097 MSM7
+        }
+ 
+        // ── BeiDou (gnssId = 3) ───────────────────────────────────────────────
+        // MP lines 21778-21783
+        // NEO-M8P-2 does NOT support BeiDou — CFG-GNSS will never return it as
+        // enabled, so this block is effectively dead on the M8P-2.  Keeping it
+        // here means the code works correctly on any future u-blox module that
+        // does support BeiDou (e.g. ZED-F9P).
+        if (Has(3))
+        {
+            yield return (TurnOnOff(0xF5, 0x7C, msm4rate), 50); // RTCM-1124 MSM4
+            yield return (TurnOnOff(0xF5, 0x7F, msm7rate), 50); // RTCM-1127 MSM7
+        }
+ 
+        // ── RTCM 4072 — u-blox moving-base proprietary — always off ──────────
+        // MP line 21787
         yield return (TurnOnOff(0xF5, 0xFE, 0), 50);
-
-        // RTCM 1230 — GLONASS code-phase biases — 5s
-        // MP line 21790: turnon_off(port, 0xf5, 0xE6, 5)
-        yield return (TurnOnOff(0xF5, 0xE6, 5), 50);
-
+ 
+        // ── RTCM 1230 — GLONASS code-phase biases ────────────────────────────
+        // MP line 21790
+        // Only meaningful when GLONASS is active.
+        if (Has(6))
+            yield return (TurnOnOff(0xF5, 0xE6, 5), 50);
+ 
         // ── Diagnostics ───────────────────────────────────────────────────────
-        // NAV-VELNED 1s
-        yield return (TurnOnOff(0x01, 0x12, 1), 50);
-
-        // MON-HW 2s (MP line 21804)
-        yield return (TurnOnOff(0x0A, 0x09, 2), 50);
-
-        // ── Save configuration to BBR ─────────────────────────────────────────
-        // MP SetupBasePos uses {0,0,0,0, 0xff,0xff,0,0, 0,0,0,0, 0x01} for disable
-        // For full setup save we use deviceMask=0x17 (BBR+Flash+EEPROM+SpiFlash)
-        // saveMask=0x0000FFFF covers all configuration sections per spec §32.10.3
-        // Generated checksum: CK_A=0x31, CK_B=0xBF (verified by calculator)
-        byte[] saveCfgPayload = [
-            0x00,0x00,0x00,0x00,   // clearMask  = 0
-            0xFF,0xFF,0x00,0x00,   // saveMask   = 0x0000FFFF
-            0x00,0x00,0x00,0x00,   // loadMask   = 0
-            0x17                   // deviceMask = BBR(1)+Flash(2)+EEPROM(4)+SpiFlash(16)
-        ];
-        yield return (Generate(0x06, 0x09, saveCfgPayload), 300);
+        yield return (TurnOnOff(0x01, 0x12, 1), 50);   // NAV-VELNED 1 s
+        yield return (TurnOnOff(0x0A, 0x09, 2), 50);   // MON-HW     2 s
+ 
+        // ── Save to flash (BBR + Flash + EEPROM + SpiFlash) ───────────────────
+        // MP §32.10.3 CFG-CFG: saveMask=0x0000FFFF, deviceMask=0x17
+        yield return (Generate(0x06, 0x09, [
+            0x00,0x00,0x00,0x00,   // clearMask = 0
+            0xFF,0xFF,0x00,0x00,   // saveMask  = 0x0000FFFF
+            0x00,0x00,0x00,0x00,   // loadMask  = 0
+            0x17                   // deviceMask= BBR(1)+Flash(2)+EEPROM(4)+SpiFlash(16)
+        ]), 300);
+    }
+    
+    public static IEnumerable<(byte[] Cmd, int DelayMs)> SetupM8P(
+        bool useMsm7   = true,
+        bool addNavSat = true)
+    {
+        // Thin wrapper that runs both phases in sequence.
+        // ConnectAsync uses the two phases directly (with CFG-GNSS query between
+        // them). This wrapper exists only for backward compatibility.
+        foreach (var item in SetupM8pPhase1(addNavSat))      yield return item;
+        foreach (var item in SetupM8pRtcm(useMsm7, null))    yield return item;
+    }
+    
+    // NOTE: also add IReadOnlySet<byte>? enabledGnss = null as a third parameter
+    // if you want SetupM8P callers to be able to pass a filter too:
+    
+    public static IEnumerable<(byte[] Cmd, int DelayMs)> SetupM8P(
+        bool useMsm7            = true,
+        bool addNavSat          = true,
+        IReadOnlySet<byte>? enabledGnss = null)
+    {
+        foreach (var item in SetupM8pPhase1(addNavSat))            yield return item;
+        foreach (var item in SetupM8pRtcm(useMsm7, enabledGnss))   yield return item;
     }
 
     // ── Survey-In ─────────────────────────────────────────────────────────────
@@ -233,6 +286,109 @@ public static class UbxConfigurator
         data[6 + len]     = (byte)(a & 0xFF);
         data[6 + len + 1] = (byte)(b & 0xFF);
         return data;
+    }
+
+    private static readonly Dictionary<(byte, byte), string> _messageNames = new()
+    {
+        // CFG group (0x06) ─────────────────────────────────────────────────────────
+        { (0x06, 0x00), "CFG-PRT"    },   // port configuration
+        { (0x06, 0x01), "CFG-MSG"    },   // message rate (used for all RTCM enables)
+        { (0x06, 0x08), "CFG-RATE"   },   // navigation/measurement rate
+        { (0x06, 0x09), "CFG-CFG"    },   // save/load/clear configuration
+        { (0x06, 0x11), "CFG-RXM"    },   // receiver manager (power mode)
+        { (0x06, 0x13), "CFG-ANT"    },   // antenna control
+        { (0x06, 0x16), "CFG-SBAS"   },   // SBAS configuration
+        { (0x06, 0x17), "CFG-NMEA"   },   // NMEA protocol
+        { (0x06, 0x1B), "CFG-USB"    },   // USB configuration
+        { (0x06, 0x23), "CFG-NAVX5"  },   // navigation expert settings
+        { (0x06, 0x24), "CFG-NAV5"   },   // navigation engine settings
+        { (0x06, 0x31), "CFG-TP5"    },   // time pulse
+        { (0x06, 0x39), "CFG-ITFM"   },   // jamming/interference monitor
+        { (0x06, 0x3D), "CFG-PMS"    },   // power management
+        { (0x06, 0x3E), "CFG-GNSS"   },   // GNSS system configuration
+        { (0x06, 0x71), "CFG-TMODE3" },   // time mode 3 (survey-in / fixed-pos)
+ 
+        // NAV group (0x01) ─────────────────────────────────────────────────────────
+        { (0x01, 0x02), "NAV-POSLLH" },
+        { (0x01, 0x03), "NAV-STATUS" },
+        { (0x01, 0x06), "NAV-SOL"    },
+        { (0x01, 0x07), "NAV-PVT"    },
+        { (0x01, 0x12), "NAV-VELNED" },
+        { (0x01, 0x20), "NAV-TIMEGPS"},
+        { (0x01, 0x21), "NAV-TIMEUTC"},
+        { (0x01, 0x26), "NAV-TIMELS" },
+        { (0x01, 0x30), "NAV-SVINFO" },
+        { (0x01, 0x35), "NAV-SAT"    },
+        { (0x01, 0x3B), "NAV-SVIN"   },
+        { (0x01, 0x3C), "NAV-RELPOSNED"},
+ 
+        // MON group (0x0A) ─────────────────────────────────────────────────────────
+        { (0x0A, 0x04), "MON-VER"    },
+        { (0x0A, 0x06), "MON-MSGPP"  },
+        { (0x0A, 0x07), "MON-RXBUF"  },
+        { (0x0A, 0x08), "MON-TXBUF"  },
+        { (0x0A, 0x09), "MON-HW"     },
+        { (0x0A, 0x0B), "MON-HW2"    },
+        { (0x0A, 0x21), "MON-RXR"    },
+        { (0x0A, 0x27), "MON-PATCH"  },
+        { (0x0A, 0x28), "MON-GNSS"   },
+        { (0x0A, 0x36), "MON-COMMS"  },
+ 
+        // ACK group (0x05) ─────────────────────────────────────────────────────────
+        { (0x05, 0x00), "ACK-NACK"   },
+        { (0x05, 0x01), "ACK-ACK"    },
+ 
+        // RTCM output messages (CFG-MSG target class 0xF5) ─────────────────────────
+        // The receiver NACKs CFG-MSG with payload [0x06,0x01]; the inner target
+        // (0xF5, msgId) identifies which RTCM message was being configured.
+        { (0xF5, 0x05), "RTCM-1005"  },   // Stationary RTK reference ARP
+        { (0xF5, 0x4A), "RTCM-1074"  },   // GPS MSM4
+        { (0xF5, 0x4D), "RTCM-1077"  },   // GPS MSM7   ← most commonly NACKed
+        { (0xF5, 0x54), "RTCM-1084"  },   // GLONASS MSM4
+        { (0xF5, 0x57), "RTCM-1087"  },   // GLONASS MSM7
+        { (0xF5, 0x5E), "RTCM-1094"  },   // Galileo MSM4
+        { (0xF5, 0x61), "RTCM-1097"  },   // Galileo MSM7
+        { (0xF5, 0x7C), "RTCM-1124"  },   // BeiDou MSM4
+        { (0xF5, 0x7F), "RTCM-1127"  },   // BeiDou MSM7
+        { (0xF5, 0xE6), "RTCM-1230"  },   // GLONASS code-phase biases
+        { (0xF5, 0xFE), "RTCM-4072"  },   // u-blox moving-base proprietary
+ 
+        // NMEA output messages (CFG-MSG target class 0xF0) ─────────────────────────
+        { (0xF0, 0x00), "NMEA-GGA"   },
+        { (0xF0, 0x01), "NMEA-GLL"   },
+        { (0xF0, 0x02), "NMEA-GSA"   },
+        { (0xF0, 0x03), "NMEA-GSV"   },
+        { (0xF0, 0x04), "NMEA-RMC"   },
+        { (0xF0, 0x05), "NMEA-VTG"   },
+        { (0xF0, 0x06), "NMEA-GRS"   },
+        { (0xF0, 0x07), "NMEA-GST"   },
+        { (0xF0, 0x08), "NMEA-ZDA"   },
+        { (0xF0, 0x0D), "NMEA-GNS"   },
+    };
+ 
+    /// <summary>
+    /// Returns a human-readable name for a UBX (class, id) pair.
+    /// Used by ACK/NACK log messages to identify which command the receiver
+    /// accepted or rejected, instead of logging raw hex bytes.
+    /// </summary>
+    /// <example>
+    /// GetMessageName(0x06, 0x01) → "CFG-MSG"
+    /// GetMessageName(0xF5, 0x4D) → "RTCM-1077"
+    /// GetMessageName(0xFF, 0xFF) → "0xFF/0xFF"
+    /// </example>
+    public static string GetMessageName(byte cls, byte id)
+        => _messageNames.TryGetValue((cls, id), out var name)
+            ? name
+            : $"0x{cls:X2}/0x{id:X2}";
+ 
+    /// <summary>
+    /// Overload used when NACK payload indicates a CFG-MSG rejection:
+    /// decodes the inner (msgClass, msgId) to name the specific RTCM/NMEA message.
+    /// </summary>
+    public static string GetCfgMsgTargetName(byte msgClass, byte msgId)
+    {
+        if (_messageNames.TryGetValue((msgClass, msgId), out var name)) return name;
+        return $"class=0x{msgClass:X2} id=0x{msgId:X2}";
     }
 
     // ── TurnOnOff (CFG-MSG) ───────────────────────────────────────────────────
@@ -323,4 +479,64 @@ public static class UbxConfigurator
 
         return p;
     }
+
+    /// <summary>
+    /// Generates a CFG-GNSS poll request (0-byte payload = poll, per spec §32.10.15).
+    /// The receiver responds with a CFG-GNSS frame listing every GNSS block it
+    /// knows about, each with an enable/disable flag in bits 0 of the flags field.
+    /// </summary>
+    public static byte[] PollCfgGnss()
+        => Generate(0x06, 0x3E, Array.Empty<byte>());
+ 
+    /// <summary>
+    /// Parses a CFG-GNSS response payload and returns the set of gnssId values
+    /// (byte) that are currently enabled in the receiver.
+    ///
+    /// CFG-GNSS payload layout (u-blox M8 Interface Description §32.10.15):
+    ///   Byte 0:  msgVer          (u8)  always 0
+    ///   Byte 1:  numTrkChHw      (u8)  hardware tracking channels
+    ///   Byte 2:  numTrkChUse     (u8)  tracking channels to use
+    ///   Byte 3:  numConfigBlocks (u8)  number of 8-byte constellation blocks
+    ///   Then numConfigBlocks × 8-byte blocks:
+    ///     Byte 0: gnssId   (u8)   — 0=GPS, 1=SBAS, 2=Galileo, 3=BeiDou,
+    ///                               4=IMES, 5=QZSS, 6=GLONASS
+    ///     Byte 1: resTrkCh (u8)
+    ///     Byte 2: maxTrkCh (u8)
+    ///     Byte 3: reserved
+    ///     Bytes 4-7: flags (u32 LE)  — bit 0 = enable (1=on, 0=off)
+    ///
+    /// Only gnssIds with flags bit 0 == 1 appear in the returned set.
+    /// </summary>
+    public static IReadOnlySet<byte> ParseCfgGnss(ReadOnlySpan<byte> payload)
+    {
+        var enabled = new HashSet<byte>();
+        if (payload.Length < 4) return enabled;
+ 
+        byte numBlocks = payload[3];
+        for (int i = 0; i < numBlocks; i++)
+        {
+            int offset = 4 + i * 8;
+            if (offset + 8 > payload.Length) break;
+ 
+            byte gnssId = payload[offset];
+            uint flags  = BinaryPrimitives.ReadUInt32LittleEndian(payload.Slice(offset + 4, 4));
+ 
+            if ((flags & 0x01) != 0)   // bit 0 = enable
+                enabled.Add(gnssId);
+        }
+        return enabled;
+    }
+ 
+    /// <summary>Returns the human-readable name for a u-blox gnssId byte.</summary>
+    public static string GnssIdName(byte gnssId) => gnssId switch
+    {
+        0 => "GPS",
+        1 => "SBAS",
+        2 => "Galileo",
+        3 => "BeiDou",
+        4 => "IMES",
+        5 => "QZSS",
+        6 => "GLONASS",
+        _ => $"GNSS-{gnssId}"
+    };
 }

@@ -49,6 +49,8 @@ public sealed class RtcmStreamParser
     private int   _lenBytesRead   = 0;
     private int   _crcBytesRead   = 0;
     private int   _messageLength  = 0;
+    private int   _completedMessageId  = 0;   // saved before Reset() clears _messageLength
+    private int   _completedFrameLen   = 0;   // HeaderSize + payload + CrcSize
 
     // ── Public properties ─────────────────────────────────────────────────────
 
@@ -59,21 +61,21 @@ public sealed class RtcmStreamParser
     public long TotalBytes { get; private set; }
 
     /// 12-bit RTCM message type. Valid only when Feed() just returned true.
-    public int MessageId
-    {
-        get
-        {
-            if (_messageLength < 2) return 0;
-            // Payload starts at _buf[HeaderSize]
-            return ((_buf[3] << 4) | (_buf[4] >> 4)) & 0x0FFF;
-        }
-    }
+    /// <summary>
+    /// The RTCM message type (12-bit value, e.g. 1005, 1077, 1087).
+    /// Valid only immediately after Feed() returns true.
+    /// Reads from _completedMessageId which is cached inside Feed() BEFORE
+    /// Reset() clears _messageLength — that was the source of the Rtcm0 bug.
+    /// </summary>
+    public int MessageId => _completedMessageId;
 
-    /// Complete frame including preamble, length, payload, and CRC.
-    /// Valid only when Feed() just returned true.
+    /// <summary>
+    /// The complete RTCM frame including preamble, length bytes, payload, and CRC.
+    /// Valid only immediately after Feed() returns true.
+    /// Reads from _completedFrameLen which is cached before Reset().
+    /// </summary>
     public ReadOnlySpan<byte> FrameWithCrc =>
-        _buf.AsSpan(0, HeaderSize + _messageLength + CrcSize);
-
+        _buf.AsSpan(0, _completedFrameLen);
     // ── Feed ─────────────────────────────────────────────────────────────────
     /// Feed one byte. Returns true when a CRC-valid frame is complete.
     /// Returns false on CRC failure OR when the frame is still accumulating.
@@ -131,24 +133,32 @@ public sealed class RtcmStreamParser
 
             case State.ReadCrc:
                 _crcBytes[_crcBytesRead++] = b;
-
+ 
                 if (_crcBytesRead == CrcSize)
                 {
-                    // Copy CRC bytes into tail of _buf so FrameWithCrc spans one array
                     int crcOffset = HeaderSize + _messageLength;
                     _buf[crcOffset]     = _crcBytes[0];
                     _buf[crcOffset + 1] = _crcBytes[1];
                     _buf[crcOffset + 2] = _crcBytes[2];
-
+ 
                     bool valid = ValidateCrc();
-                    if (valid) TotalBytes += HeaderSize + _messageLength + CrcSize;
-
-                    // FIX-1: ALWAYS reset after CRC evaluation.
-                    // Leaving state=ReadCrc with _crcBytesRead=3 causes
-                    // IndexOutOfRangeException on the next byte. This was the
-                    // root cause of the entire RTK injection failure.
+ 
+                    if (valid)
+                    {
+                        TotalBytes += HeaderSize + _messageLength + CrcSize;
+ 
+                        // CACHE before Reset() zeroes _messageLength.
+                        // MessageId and FrameWithCrc read these saved values,
+                        // not the (now-reset) _messageLength field.
+                        _completedFrameLen = HeaderSize + _messageLength + CrcSize;
+                        _completedMessageId = (_messageLength >= 2)
+                            ? ((_buf[HeaderSize] << 4) | (_buf[HeaderSize + 1] >> 4)) & 0x0FFF
+                            : 0;
+                    }
+ 
+                    // FIX-1: ALWAYS reset — prevents IndexOutOfRange on next byte.
                     Reset();
-
+ 
                     return valid;
                 }
                 break;
@@ -578,9 +588,9 @@ public static class UbxMonHwParser
     private const int OFF_NOISE     = 16;  // u16 LE
     private const int OFF_AGC_CNT   = 18;  // u16 LE  0-8191
     private const int OFF_AGC_STATE = 20;  // u8
-    private const int OFF_ANT_STAT  = 21;  // u8
-    private const int OFF_ANT_PWR   = 22;  // u8
-    private const int OFF_FLAGS     = 23;  // u8  bits1:0 = jammingState
+    private const int OFF_ANT_STAT  = 20;  // u8  aStatus: 0=INIT,1=DONTKNOW,2=OK,3=SHORT,4=OPEN
+    private const int OFF_ANT_PWR   = 21;  // u8  aPower:  0=OFF,1=ON,2=DONTKNOW
+    private const int OFF_FLAGS     = 22;  // X1  flags:   bits3:2 = jammingState (was 23 — BUG)
     private const int OFF_USED_MASK = 24;  // u32
     private const int OFF_VP        = 28;  // 17 bytes
     private const int OFF_JAM_IND   = 45;  // u8  jam indicator 0-255
@@ -589,18 +599,22 @@ public static class UbxMonHwParser
     public static MonHwData? Parse(ReadOnlySpan<byte> payload)
     {
         if (payload.Length < MIN_LEN) return null;
-
+ 
         ushort noise     = BitConverter.ToUInt16(payload.Slice(OFF_NOISE,   2));
         ushort agcCnt    = BitConverter.ToUInt16(payload.Slice(OFF_AGC_CNT, 2));
-        byte   flags     = payload[OFF_FLAGS];
-        byte   jamInd    = payload[OFF_JAM_IND];
-
-        // MP formula: agc% = (agcCnt / 8191.0) * 100, jam% = (jamInd / 256.0) * 100
+        byte   flags     = payload[OFF_FLAGS];     // offset 22 — the actual flags byte
+        byte   jamInd    = payload[OFF_JAM_IND];   // offset 45 — CW jam indicator 0-255
+        byte   antStatus = payload[OFF_ANT_STAT];  // offset 20 — antenna supervisor state
+ 
         double agcPct    = (agcCnt / 8191.0) * 100.0;
         double jamPct    = (jamInd / 256.0)  * 100.0;
-        int    jamState  = flags & 0x0C;   // bits 3:2 per spec §32.16.4
-
-        return new MonHwData(noise, agcPct, jamPct, jamState);
+ 
+        // FIX: shift bits 3:2 down to 0-1 range.
+        // Old code: flags & 0x0C → value 0/4/8/12 (wrong, shows 4 not 1)
+        // New code: (flags >> 2) & 0x03 → value 0/1/2/3 (correct)
+        int    jamState  = (flags >> 2) & 0x03;
+ 
+        return new MonHwData(noise, agcPct, jamPct, jamState, antStatus);
     }
 }
 
@@ -608,7 +622,8 @@ public sealed record MonHwData(
     ushort NoisePerMs,
     double AgcPct,
     double JamPct,
-    int    JamState      // 0=unknown,1=ok,2=warning,3=critical
+    int    JamState,      // 0=unknown,1=ok,2=warning,3=critical
+    byte   AntStatus    // 0=INIT, 1=DONTKNOW, 2=OK, 3=SHORT, 4=OPEN  ← NEW
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════

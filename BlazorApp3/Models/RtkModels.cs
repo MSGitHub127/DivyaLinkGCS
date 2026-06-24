@@ -89,6 +89,43 @@ public sealed record BasePosition(
     double Alt      // metres above ellipsoid
 );
 
+// ── LivePosition ──────────────────────────────────────────────────────────────
+// Raw GPS antenna position sourced from UBX-NAV-PVT.
+// Available as soon as the receiver gets a 3D fix (before survey-in starts).
+// NOT the survey mean — see FixedPosition for the averaged result.
+//
+// Report section 6 "Mission Planner architecture":
+//   Live GPS Position  →  Survey-In Engine  →  Final Base Position
+//   ^^^^^^^^^^^^^^^^^^^^
+//   This record is "Live GPS Position".
+ 
+/// <summary>
+/// Live GPS position of the base station antenna, sourced from UBX-NAV-PVT at 1 Hz.
+/// Populated as soon as the receiver reports a 3D fix (fixType ≥ 2, gnssFixOk = true).
+/// Separate from <see cref="BasePosition"/> which is the survey-averaged mean.
+/// </summary>
+public sealed record LivePosition(
+    double Lat,      // decimal degrees (WGS-84)
+    double Lng,      // decimal degrees (WGS-84)
+    double Alt,      // metres above ellipsoid
+    byte   FixType,  // 0=no fix, 2=2D, 3=3D, 4=GNSS+DR, 5=time-only
+    byte   NumSV     // number of satellites used in solution
+)
+{
+    /// <summary>Human-readable fix type for UI display.</summary>
+    public string FixLabel => FixType switch
+    {
+        5 => "Time",
+        4 => "3D+DR",
+        3 => "3D",
+        2 => "2D",
+        _ => "No Fix"
+    };
+ 
+    /// <summary>True when the position is reliable enough to display on a map.</summary>
+    public bool IsValid => FixType >= 3 && Lat != 0 && Lng != 0;
+}
+
 // ── Satellite signal data (from UBX-NAV-SAT, class=0x01, id=0x35) ────────────
 // Reference: u-blox M8 Interface Description §32.17.20
 public sealed record SatelliteInfo(
@@ -151,13 +188,14 @@ public sealed record MessageEntry(string Name, int Count);
 public sealed record RtkStreamStats(
     int  RxBps,
     int  TxBps,
+    int TxInjectedBps,
     long TotalMessages,
     int  LargestRtcmBytes,
     int  FragmentsUsed,      // ceil(LargestRtcmBytes / 180), max 4
     bool HasOverflow         // true if LargestRtcmBytes > 540 (3+ fragments)
 )
 {
-    public static RtkStreamStats Zero => new(0, 0, 0, 0, 0, false);
+    public static RtkStreamStats Zero => new(0, 0, 0, 0, 0, 0, false);
 }
 
 // ── Vehicle MAVLink status text ───────────────────────────────────────────────
@@ -201,6 +239,7 @@ public sealed record RtkState
     public RtkPhase                           Phase              { get; init; } = RtkPhase.Idle;
     public SurveyInStatus                     Survey             { get; init; } = SurveyInStatus.Empty;
     public BasePosition?                      FixedPosition      { get; init; }
+    public LivePosition?  CurrentPosition  { get; init; }
     public IReadOnlyList<SatelliteInfo>       Satellites         { get; init; } = [];
     public IReadOnlyList<ConstellationStatus> Constellations     { get; init; } = ConstellationStatus.DefaultSet();
     public IReadOnlyList<MessageEntry>        Messages           { get; init; } = [];
@@ -215,6 +254,12 @@ public sealed record RtkState
 
     // WF-11: Recent STATUSTEXT messages from vehicle
     public IReadOnlyList<StatusMessage> StatusMessages { get; init; } = [];
+
+    // RESPONSIVENESS FIX: true while the service is discarding stale NAV-SVIN
+    // frames after a (re)start, waiting for the receiver's hardware timer to
+    // confirm it has actually reset. Lets the UI show "Resetting…" instead of
+    // a frozen duration value, so the survey ring never looks hung.
+    public bool IsResettingTimer { get; init; } = false;
 
     // ── Derived helpers used directly in Blazor UI ────────────────────────────
     public bool IsActive    => Phase >= RtkPhase.Survey;
