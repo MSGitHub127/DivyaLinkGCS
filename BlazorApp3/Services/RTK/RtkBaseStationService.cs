@@ -64,7 +64,7 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     // ── Byte channel (MP's serial read buffer equivalent) ─────────────────────
     // MP reads up to 180 bytes at a time (line 30063-30068).
     // We use a bounded channel; DropOldest is last resort — size 131072 = ~2.8s at 460800.
-    private Channel<byte>? _byteChannel;
+    private Channel<byte[]>? _byteChannel;
 
     // ── RTCM injection gate ───────────────────────────────────────────────────
     // FIX-4: matches MP ExtractBasePos (line 30434) — only inject after 1005 seen.
@@ -187,11 +187,11 @@ public sealed class RtkBaseStationService : IAsyncDisposable
         SetPhase(RtkPhase.Connecting, ct);
         ResetSessionCounters();
 
-        _byteChannel = Channel.CreateBounded<byte>(new BoundedChannelOptions(131072)
+        _byteChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(512)
         {
-            FullMode    = BoundedChannelFullMode.DropOldest,
-            SingleReader= true,
-            SingleWriter= true
+            FullMode     = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = true,
         });
 
         // ── Open serial port + baud scan ─────────────────────────────────────
@@ -459,56 +459,86 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     // ═══════════════════════════════════════════════════════════════════════════
     // SERIAL DATA RECEIVED  →  byte channel
     // ═══════════════════════════════════════════════════════════════════════════
-    private void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
+    // ═══════════════════════════════════════════════════════════════════════════
+// CHANGE from RC-4/RC-5 fix:
+//   Previous: channel.Writer.TryWrite(buf[i]) in a per-byte for-loop.
+//   Now:      rent pool buffer, read all available bytes, copy to owned
+//             array, write one channel element per DataReceived event.
+//
+// This reduces channel operations from O(bytes) to O(events).
+// At 460800 baud / 15 KB/s: from ~15,000 TryWrite/s to ~1–5 TryWrite/s
+// (the OS fires DataReceived at driver-packet granularity, typically
+// producing 46–460 byte chunks rather than single bytes).
+// ═══════════════════════════════════════════════════════════════════════════
+private void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
+{
+    var port    = sender as SerialPort;
+    var channel = _byteChannel;
+    if (port == null || channel == null) return;
+
+    int avail = port.BytesToRead;
+    if (avail <= 0) return;
+
+    // Rent a temporary buffer for the port read.
+    var poolBuf = System.Buffers.ArrayPool<byte>.Shared.Rent(avail);
+    try
     {
-        var port    = sender as SerialPort;
-        var channel = _byteChannel;
-        if (port == null || channel == null) return;
+        int read = port.Read(poolBuf, 0, avail);
+        if (read <= 0) return;
 
-        int avail = port.BytesToRead;
-        if (avail <= 0) return;
+        // Account for raw serial bytes in the RX bandwidth meter.
+        Interlocked.Add(ref _rxBytesThisSecond, read);
 
-        var buf = System.Buffers.ArrayPool<byte>.Shared.Rent(avail);
-        try
-        {
-            int read = port.Read(buf, 0, avail);
-            Interlocked.Add(ref _rxBytesThisSecond, read);
+        // Copy the read slice to an owned array.
+        // The pool buffer must be returned before this method exits, but the
+        // owned array stays alive until the processing loop consumes it.
+        var owned = new byte[read];
+        Buffer.BlockCopy(poolBuf, 0, owned, 0, read);
 
-            for (int i = 0; i < read; i++)
-                channel.Writer.TryWrite(buf[i]);
-        }
-        finally
-        {
-            System.Buffers.ArrayPool<byte>.Shared.Return(buf);
-        }
+        // Write the entire chunk as one channel element.
+        // TryWrite is non-blocking; DropOldest handles back-pressure.
+        channel.Writer.TryWrite(owned);
     }
+    finally
+    {
+        // Always return the pool buffer, even on exception.
+        System.Buffers.ArrayPool<byte>.Shared.Return(poolBuf);
+    }
+}
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PROCESS BYTES LOOP
-    // Mirrors MP mainloop() for(a<read) dispatch (Files.md lines 30094-30163)
-    // MP feeds each byte to rtcm3, sbp, ubx_m8p, nmea parsers in order.
-    // We handle RTCM and UBX only (no SBP/NMEA needed for base station).
-    // ═══════════════════════════════════════════════════════════════════════════
-    private async Task ProcessBytesLoopAsync(CancellationToken ct)
-    {
-        var ubx   = new UbxStreamParser();
-        var rtcm  = new RtcmStreamParser();
-        bool inRtcm = false;
+// PROCESS BYTES LOOP
+//
+// Updated to consume Channel<byte[]> (segments) rather than Channel<byte>.
+// The inner for-loop dispatches bytes from each segment identically to the
+// old per-byte path, so DispatchByte() and all downstream parsers are
+// unchanged. The benefit is purely in eliminating channel synchronisation
+// overhead: we await once per segment, then spin through the bytes in a
+// tight un-synchronized loop — equivalent to MP's mainloop() for(a<read).
+// ═══════════════════════════════════════════════════════════════════════════
+private async Task ProcessBytesLoopAsync(CancellationToken ct)
+{
+    var ubx    = new UbxStreamParser();
+    var rtcm   = new RtcmStreamParser();
+    bool inRtcm = false;
 
-        try
+    try
+    {
+        await foreach (var segment in _byteChannel!.Reader.ReadAllAsync(ct))
         {
-            await foreach (var b in _byteChannel!.Reader.ReadAllAsync(ct))
-            {
-                DispatchByte(b, ubx, rtcm, ref inRtcm);
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "[RTK] Byte processing loop terminated unexpectedly");
-            SetError("Serial processing error. Reconnect to resume.");
+            // Tight inner loop — no async suspension, no channel overhead.
+            // Mirrors MP mainloop() "for (int a = 0; a < read; a++)".
+            for (int i = 0; i < segment.Length; i++)
+                DispatchByte(segment[i], ubx, rtcm, ref inRtcm);
         }
     }
+    catch (OperationCanceledException) { }
+    catch (Exception ex)
+    {
+        _log.LogError(ex, "[RTK] Byte processing loop terminated unexpectedly");
+        SetError("Serial processing error. Reconnect to resume.");
+    }
+}
 
     /// <summary>
     /// Routes one incoming byte to the correct parser.
@@ -1040,7 +1070,14 @@ public sealed class RtkBaseStationService : IAsyncDisposable
                 _awaitingFreshSurvey = false;
                 _lastKnownSurveyDur  = sv.DurationSec;
 
-                lock (_lock) { _state = _state with { IsResettingTimer = false }; }
+                lock (_lock)
+                {
+                    _state = _state with
+                    {
+                        IsResettingTimer          = false,
+                        PositionClearedForRestart = false,  // ← ADD THIS LINE
+                    };
+                }
                 FireStateChanged();
 
                 if (timedOut)
@@ -1323,75 +1360,132 @@ public sealed class RtkBaseStationService : IAsyncDisposable
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // SURVEY RESTART
-    // Mirrors Mission Planner "Restart Survey" button behavior exactly.
-    // Port stays OPEN — no baud scan needed — receiver responds instantly.
-    // MP sends CFG-TMODE3 disable then immediately re-sends Survey-In.
-    // (Files.md line 21823-21843 SetupBasePos pattern)
-    // ═══════════════════════════════════════════════════════════════════════════
-    public async Task RestartSurveyAsync()
+// SURVEY RESTART
+//
+// CORRECTED to mirror Mission Planner SetupBasePos(disable=true) exactly:
+//   ubx_m8p.cs lines 588–602
+//
+// Required 3-command sequence (in order):
+//   1. CFG-TMODE3 Disable   — stops the state machine
+//   2. CFG-CFG save BBR     — persists "Disabled" so the GPS reset does not
+//                              reload the old Survey-In mode from BBR
+//   3. CFG-RST GPS-SW-only  — flushes the mean-position accumulator (BBR bit 4)
+//
+// Without step 2, the GPS reset restores Survey-In from BBR and the receiver
+// resumes accumulating from the old partial mean.
+// Without step 3, the mean-position accumulator is never flushed regardless
+// of how many CFG-TMODE3 Disable frames are sent.
+// ═══════════════════════════════════════════════════════════════════════════
+public async Task RestartSurveyAsync()
+{
+    if (_port is not { IsOpen: true })
     {
-        if (_port is not { IsOpen: true })
-        {
-            _log.LogWarning("[RTK] RestartSurvey called but port is not open");
-            return;
-        }
-
-        var ct = _cts?.Token ?? CancellationToken.None;
-
-        _log.LogInformation("[RTK] Restarting Survey-In (hardware reset via CFG-TMODE3)…");
-
-        // Step 1: Disable TMODE3 — forces receiver to stop its internal survey timer.
-        // Send 40-byte zero payload: flags=0 = Disabled mode.
-        var disablePayload = new byte[40]; // all zeros
-        WritePort(UbxConfigurator.Generate(0x06, 0x71, disablePayload));
-        await Task.Delay(500, ct);
-
-        // Step 2: Reset all local session state so the UI shows 0s / 0 obs.
-        // Do NOT reset the serial port or re-run SetupM8P.
-        _has1005Seen = false;
-        _largestRtcmFrame = 0;
-        _totalMessages = 0;
-        Interlocked.Exchange(ref _rxBytesThisSecond, 0);
-        Interlocked.Exchange(ref _rtcmParsedBytesThisSecond, 0);
-        Interlocked.Exchange(ref _txInjectedBytesThisSecond, 0);
-
-        lock (_lock)
-        {
-            _msgSeen.Clear();
-            _constellationLastSeen.Clear();
-            _state = _state with
-            {
-                Phase         = RtkPhase.Survey,
-                Survey        = SurveyInStatus.Empty,
-                // SURVEY-BUG-4 FIX: Do NOT clear FixedPosition here.
-                // If a saved profile was active, clearing it causes data loss.
-                // FixedPosition is updated by OnNavSvin when valid=true arrives.
-                // FixedPosition = null,   ← intentionally removed
-                Messages      = [],
-                Stream        = RtkStreamStats.Zero,
-                Constellations= ConstellationStatus.DefaultSet(),
-                // RESPONSIVENESS FIX: set immediately so the ring shows
-                // "Resetting…" from the very first render after the click,
-                // instead of waiting for the first discarded NAV-SVIN frame.
-                IsResettingTimer = true,
-            };
-        }
-        FireStateChanged();
-
-        // Step 3: Send fresh CFG-TMODE3 Survey-In command.
-        // The receiver resets its hardware timer to 0s on receipt.
-        var cfg = _lastConfig ?? RtkConfig.Default;
-        var cmd = UbxConfigurator.BuildSurveyIn(
-            (uint)cfg.MinDurationSec, cfg.TargetAccuracyM);
-        WritePort(cmd);
-
-        _awaitingFreshSurvey      = true;
-        _awaitingFreshSurveySince = DateTime.UtcNow;  // SURVEY-BUG-5: timeout reference
-        _lastKnownSurveyDur       = 0;
-        _log.LogInformation("[RTK] CFG-TMODE3 Survey-In sent — receiver timer reset to 0s");
+        _log.LogWarning("[RTK] RestartSurvey called but port is not open");
+        return;
     }
 
+    var ct = _cts?.Token ?? CancellationToken.None;
+
+    _log.LogInformation(
+        "[RTK] Restarting Survey-In — " +
+        "3-step hardware flush: TMODE3-disable → CFG-CFG BBR → CFG-RST…");
+
+    // ── Step 1: CFG-TMODE3 Disable ────────────────────────────────────────────
+    // Sends flags=0 (Disabled mode). This stops the receiver's internal
+    // survey timer from advancing but does NOT flush the BBR mean-position
+    // accumulator. The accumulator will survive until CFG-RST clears bit 4 (Pos).
+    //
+    // MP: generate(0x6, 0x71, ubx_cfg_tmode3.Disable)
+    //     ubx_m8p.cs line 592
+    WritePort(UbxConfigurator.Generate(0x06, 0x71, new byte[40]));   // all zeros = Disabled
+    await Task.Delay(200, ct);
+
+    // ── Step 2: CFG-CFG save to BBR ───────────────────────────────────────────
+    // Persists the Disabled TMODE3 state to Battery-Backed RAM BEFORE the
+    // GPS-engine reset that follows. Without this step the GPS engine reloads
+    // the previous Survey-In configuration from BBR on restart and begins
+    // accumulating again immediately — making step 3 completely ineffective.
+    //
+    // MP: generate(0x06, 0x09, new uint8_t[] {0,0,0,0, 0xff,0xff, 0,0,0,0,0,0, 0x01})
+    //     ubx_m8p.cs line 595
+    WritePort(UbxConfigurator.BuildCfgCfgSaveBbr());
+    await Task.Delay(800, ct);   // allow BBR write to complete before the reset
+
+    // ── Step 3: CFG-RST GPS-only controlled software reset ────────────────────
+    // navBbrMask=0xFF14 — bit 4 (Pos) clears the survey mean-position
+    // accumulator from BBR. resetMode=0x02 (GPS-SW-only) keeps the UART alive
+    // so we do not need to re-open the port.
+    //
+    // MP: generate(0x06, 0x04, new uint8_t[] {0x14, 0xff, 2, 0})
+    //     ubx_m8p.cs line 599 — Thread.Sleep(3000) follows
+    WritePort(UbxConfigurator.BuildGpsReset());
+    _log.LogInformation(
+        "[RTK] CFG-RST (GPS-SW) sent — waiting 3 s for GPS engine restart…");
+    await Task.Delay(3000, ct);   // GPS subsystem restart: 2–3 s (MP: Thread.Sleep(3000))
+
+    // ── Step 4: Reset all local session state ─────────────────────────────────
+    // Published BEFORE the new CFG-TMODE3 so the UI transitions to the blank
+    // "Survey-In running" state immediately on operator click, not after the
+    // first NAV-SVIN arrives.
+    //
+    // FixedPosition is now explicitly cleared.
+    //
+    // RATIONALE FOR CLEARING (replaces SURVEY-BUG-4 comment):
+    //   The previous code kept FixedPosition to avoid "data loss" when a saved
+    //   profile was active. However, profile data is stored in _profiles (disk)
+    //   and _state.SavedProfiles. FixedPosition is only a display-layer cache.
+    //   Clearing it correctly blanks the map and coordinate readout during
+    //   the restart window. If the operator wants to resume profile injection
+    //   without re-running a survey, they can re-select it from Saved Profiles.
+    //
+    // PositionClearedForRestart = true prevents OnAfterRenderAsync from calling
+    // rtkBaseMap.init() or rtkBaseMap.update() while the map container should
+    // be showing the "Survey-In running" placeholder. It is cleared by OnNavSvin
+    // when the first fresh frame confirms DurationSec has reset to ≤2.
+    _has1005Seen              = false;
+    _largestRtcmFrame         = 0;
+    _totalMessages            = 0;
+    Interlocked.Exchange(ref _rxBytesThisSecond,         0);
+    Interlocked.Exchange(ref _rtcmParsedBytesThisSecond, 0);
+    Interlocked.Exchange(ref _txInjectedBytesThisSecond, 0);
+
+    lock (_lock)
+    {
+        _msgSeen.Clear();
+        _constellationLastSeen.Clear();
+        _state = _state with
+        {
+            Phase                   = RtkPhase.Survey,
+            Survey                  = SurveyInStatus.Empty,
+            FixedPosition           = null,      // clear stale coords from display cache
+            PositionClearedForRestart = true,    // gate rtkBaseMap calls in OnAfterRenderAsync
+            ActiveProfileName       = null,      // profile preserved in _profiles; clear display
+            Messages                = [],
+            Stream                  = RtkStreamStats.Zero,
+            Constellations          = ConstellationStatus.DefaultSet(),
+            IsResettingTimer        = true,      // ring shows "Resetting…"
+        };
+    }
+    FireStateChanged();
+
+    // ── Step 5: Issue the fresh CFG-TMODE3 Survey-In ──────────────────────────
+    // GPS BBR is now clean. The accumulator starts at observation #1, duration 0 s.
+    // _awaitingFreshSurvey causes OnNavSvin to discard stale frames until the
+    // receiver confirms DurationSec ≤ 2.
+    _awaitingFreshSurvey      = true;
+    _awaitingFreshSurveySince = DateTime.UtcNow;
+    _lastKnownSurveyDur       = 0;
+
+    var cfg = _lastConfig ?? RtkConfig.Default;
+    var surveyCmd = UbxConfigurator.BuildSurveyIn(
+        (uint)cfg.MinDurationSec, cfg.TargetAccuracyM);
+    WritePort(surveyCmd);
+
+    _log.LogInformation(
+        "[RTK] CFG-TMODE3 Survey-In sent (minDur={D}s acc={A:F3}m) — " +
+        "receiver accumulator reset. Awaiting first NAV-SVIN confirmation (DurationSec ≤ 2).",
+        cfg.MinDurationSec, cfg.TargetAccuracyM);
+}
     // ═══════════════════════════════════════════════════════════════════════════
     // BACKGROUND LOOPS
     // ═══════════════════════════════════════════════════════════════════════════

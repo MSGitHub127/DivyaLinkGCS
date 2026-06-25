@@ -16,7 +16,6 @@
     --color-gray-300: oklch(87.2% 0.01 258.338);
     --color-gray-400: oklch(70.7% 0.022 261.325);
     --color-gray-500: oklch(55.1% 0.027 264.364);
-    --color-stone-100: oklch(97% 0.001 106.424);
     --color-black: #000;
     --color-white: #fff;
     --spacing: 0.25rem;
@@ -3438,9 +3437,6 @@
   .text-inherit {
     color: inherit;
   }
-  .text-stone-100 {
-    color: var(--color-stone-100);
-  }
   .text-transparent {
     color: transparent;
   }
@@ -4460,11 +4456,6 @@
   .disabled\:opacity-25 {
     &:disabled {
       opacity: 25%;
-    }
-  }
-  .disabled\:opacity-30 {
-    &:disabled {
-      opacity: 30%;
     }
   }
   .disabled\:opacity-35 {

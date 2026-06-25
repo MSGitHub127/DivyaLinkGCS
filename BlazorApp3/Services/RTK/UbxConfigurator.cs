@@ -481,6 +481,73 @@ public static class UbxConfigurator
     }
 
     /// <summary>
+    /// CFG-CFG (0x06/0x09): save all configuration groups to Battery-Backed RAM only.
+    ///
+    /// This MUST be sent BEFORE BuildGpsReset() when performing a survey restart.
+    /// It persists the current CFG-TMODE3 "Disabled" state to BBR so that when the
+    /// GPS engine restarts it does not reload the old "Survey-In" mode from BBR,
+    /// which would immediately resume accumulating the old mean-position average.
+    ///
+    /// Mirrors MP ubx_m8p.cs line 595:
+    ///   generate(0x06, 0x09, new uint8_t[] {0, 0, 0, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0x01})
+    ///
+    /// Payload breakdown (CFG-CFG spec, u-blox M8 ICD §32.10.3):
+    ///   clearMask  [0..3]  = 0x00000000  → clear nothing
+    ///   saveMask   [4..7]  = 0x0000FFFF  → save all configuration sections
+    ///   loadMask   [8..11] = 0x00000000  → load nothing on this call
+    ///   deviceMask [12]    = 0x01        → BBR only (avoids Flash wear)
+    /// </summary>
+    public static byte[] BuildCfgCfgSaveBbr() =>
+        Generate(0x06, 0x09, new byte[]
+        {
+            // clearMask (uint32 LE)
+            0x00, 0x00, 0x00, 0x00,
+            // saveMask (uint32 LE) — save all
+            0xFF, 0xFF, 0x00, 0x00,
+            // loadMask (uint32 LE)
+            0x00, 0x00, 0x00, 0x00,
+            // deviceMask: 0x01 = BBR
+            0x01
+        });
+
+    /// <summary>
+    /// CFG-RST (0x06/0x04): GPS-engine controlled software reset with
+    /// survey-mean-accumulator flush.
+    ///
+    /// Mirrors MP ubx_m8p.cs line 599 (the "//reboot" comment):
+    ///   generate(0x06, 0x04, new uint8_t[] {0x14, 0xff, 2, 0})
+    ///
+    /// Payload breakdown (CFG-RST spec, u-blox M8 ICD §32.10.26):
+    ///
+    ///   navBbrMask (uint16 LE) = 0xFF14:
+    ///     bit  2 (0x0004): Health     — clears cached receiver health
+    ///     bit  4 (0x0010): Pos        — *** CRITICAL: clears mean-position
+    ///                                   accumulator from BBR ***
+    ///     bits 8–14       : RTC, SFDRParam, SFDRStep, TPParam, TCXO, FW1, FW2
+    ///                       — full calibration flush ensures a clean restart
+    ///
+    ///   resetMode = 0x02: Controlled Software Reset (GPS only).
+    ///     Only the GPS engine resets. The host CPU, UART peripheral, and DMA
+    ///     controller stay alive. The serial port does NOT need to be re-opened.
+    ///     Contrast with resetMode=0x01 (hardware watchdog) which resets the
+    ///     entire module including UART, requiring port re-open.
+    ///
+    /// The GPS engine takes approximately 2–3 seconds to complete its restart
+    /// sequence after this command. Do not send any further UBX commands until
+    /// Task.Delay(3000) elapses or the receiver may silently discard them.
+    /// </summary>
+    public static byte[] BuildGpsReset() =>
+        Generate(0x06, 0x04, new byte[]
+        {
+            // navBbrMask (uint16 LE): 0xFF14
+            0x14, 0xFF,
+            // resetMode: 0x02 = Controlled Software Reset (GPS only)
+            0x02,
+            // reserved1
+            0x00
+        });
+
+    /// <summary>
     /// Generates a CFG-GNSS poll request (0-byte payload = poll, per spec §32.10.15).
     /// The receiver responds with a CFG-GNSS frame listing every GNSS block it
     /// knows about, each with an enable/disable flag in bits 0 of the flags field.

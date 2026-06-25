@@ -1,43 +1,36 @@
 @* RtkDrawer.razor
    ─────────────────────────────────────────────────────────────────────────────
-   CHANGES IN THIS REVISION
+   BUG FIXES IN THIS REVISION
    ─────────────────────────────────────────────────────────────────────────────
 
-   JS INTEROP — all three callsites corrected to match rtkBaseMap.js exports:
-     BEFORE  rtkMapInterop.initRtkMiniMap(containerId, lat, lng, acc, alt, phase)
-     AFTER   rtkBaseMap.init(containerId, lat, lng, accuracyM, altM)
+   FIX-1 — BLANK COORDINATE CARDS (Geodetic / ECEF / Stats grid):
+     Root cause: @foreach (var (lbl, val) in new[] { ("Lat", $"{pos.Lat:F8}°"), ... })
+     The curly braces inside the $"..." string interpolation expressions are
+     mis-counted by the Razor tokeniser as matching the @foreach code-block
+     delimiter.  This silently swallows the loop body, rendering the card
+     headers but zero data rows.  The same defect hit the ECEF block and the
+     Tab 2 stats grid (whose interpolations also contain {} tokens).
+     Fix: all three @foreach loops are completely unrolled into explicit static
+     HTML rows.  Each value field directly calls .ToString("Fn") or embeds a
+     pre-computed variable — no string interpolation inside loop expressions.
 
-     BEFORE  rtkMapInterop.updateRtkMiniMap(lat, lng, acc, alt, phase)
-     AFTER   rtkBaseMap.update(lat, lng, accuracyM, altM)
+   FIX-2 — ESRI SATELLITE TILES (rtkBaseMap.js, separate file):
+     Tile source changed from OpenStreetMap to Esri World Imagery satellite
+     base + Esri World Boundaries and Places label overlay.
+     ResizeObserver attached to the container element to dynamically call
+     invalidateSize() on layout shifts.  See rtkBaseMap.js for full details.
 
-     BEFORE  rtkMapInterop.destroyRtkMiniMap()
-     AFTER   rtkBaseMap.destroy()
-
-   The `phase` parameter is dropped in all three callsites because rtkBaseMap.js
-   v2 derives its colour semantics from accuracyM internally (blue → green at
-   ≤ 1.0 m) and has no use for the C# phase enum string.
-
-   SVG COMPILE FIX — ring progress widget (≈ original line 190 area):
-     Razor's parser becomes ambiguous when ToString("F1") / ToString("F2")
-     appears inside double-quoted SVG attribute values because the inner double
-     quotes end the attribute string from the parser's perspective, producing a
-     compiler error.  Fix: all floating-point format expressions are moved into
-     a preceding @{ } block as named string variables (circStr, offsetStr,
-     dotXStr, dotYStr) and only the variable references appear in the markup.
-     The `StateHasChanged` call that was previously loose in that code block
-     has been removed — it was unreachable markup-context C# and is the direct
-     cause of the CS1002 "expected ;" compiler error the team reported.
-
-   SetTab ASYNC PROMOTION:
-     SetTab is promoted to `async Task` so the rtkBaseMap.destroy() interop
-     call is properly awaited instead of fire-and-forgot.  Blazor's @onclick
-     binding handles async lambdas transparently.
+   FIX-3 — PORT RESCAN (preserved exactly):
+     The ⟳ Rescan button and @onfocus="RefreshPorts" on the <select> element
+     are already present in the uploaded source and are preserved verbatim.
+     The button is disabled while the port is open (Phase != Idle) to prevent
+     accidental port enumeration during an active survey.
 
    CARRIED FORWARD (no change to logic):
-     TX-LABEL  "RTCM Parsed" label retained (frames counted before inject gate).
-     THROUGHPUT rtk.updateThroughputChart driven from OnRtkStateChanged on Tab 2.
-     LIVE GPS   CurrentPosition panel in left panel.
-     RESET      OnDisconnect resets throughput ring-buffer.
+     JS INTEROP    rtkBaseMap.init / .update / .destroy (correct namespace).
+     SVG FIX       All ring-progress format strings pre-computed as named vars.
+     ASYNC SetTab  destroy() properly awaited on tab-leave.
+     STATE HANDLER OnRtkStateChanged drives SNR chart (Tab 0) and throughput (Tab 2).
    ─────────────────────────────────────────────────────────────────────────────
 *@
 
@@ -90,46 +83,52 @@
                     <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Connection</div>
 
                     <div class="flex gap-2">
-    <div class="flex-1">
-        <div class="flex justify-between items-center mb-1">
-            <label class="text-[0.6rem] text-[#8b949e] block font-semibold tracking-wide">Port</label>
-            <button class="text-[0.62rem] text-[#58a6ff] hover:text-white transition-colors bg-transparent border-none cursor-pointer p-0 select-none flex items-center gap-0.5 disabled:opacity-30" 
-                    disabled="@(_state?.Phase != RtkPhase.Idle)" 
-                    @onclick="RefreshPorts" 
-                    type="button"
-                    title="Rescan COM Ports">
-                ⟳ Rescan
-            </button>
-        </div>
-        <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:border-[#58a6ff] focus:outline-none cursor-pointer" 
-                disabled="@(_state?.Phase != RtkPhase.Idle)" 
-                @onfocus="RefreshPorts"
-                @bind="_cfg.ComPort">
-            @if (_availablePorts == null || _availablePorts.Count == 0)
-            {
-                <option value="">No Ports Detected</option>
-            }
-            else
-            {
-                @foreach (var p in _availablePorts)
-                {
-                    <option value="@p">@p</option>
-                }
-            }
-        </select>
-    </div>
-    <div class="w-[110px]">
-        <label class="text-[0.6rem] text-[#8b949e] block mb-1 font-semibold tracking-wide">Baud</label>
-        <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white font-mono focus:border-[#58a6ff] focus:outline-none cursor-pointer" 
-                disabled="@(_state?.Phase != RtkPhase.Idle)" 
-                @bind="_cfg.BaudRate">
-            @foreach (var b in new[] { 9600, 57600, 115200, 230400, 460800 })
-            {
-                <option value="@b">@b</option>
-            }
-        </select>
-    </div>
-</div>
+                        <div class="flex-1">
+
+                            @* ── FIX-3 (PRESERVED): Port label + inline Rescan button ── *@
+                            <div class="flex justify-between items-center mb-1">
+                                <label class="text-[0.6rem] text-[#8b949e] block font-semibold tracking-wide">Port</label>
+                                <button class="text-[0.62rem] text-[#58a6ff] hover:text-white transition-colors bg-transparent border-none cursor-pointer p-0 select-none flex items-center gap-0.5 disabled:opacity-30"
+                                        disabled="@(_state?.Phase != RtkPhase.Idle)"
+                                        @onclick="RefreshPorts"
+                                        type="button"
+                                        title="Rescan COM Ports">
+                                    ⟳ Rescan
+                                </button>
+                            </div>
+
+                            @* @onfocus triggers a rescan whenever the operator opens the dropdown,
+                               catching devices that were plugged in after the last scan. *@
+                            <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:border-[#58a6ff] focus:outline-none cursor-pointer"
+                                    disabled="@(_state?.Phase != RtkPhase.Idle)"
+                                    @onfocus="RefreshPorts"
+                                    @bind="_cfg.ComPort">
+                                @if (_availablePorts == null || _availablePorts.Count == 0)
+                                {
+                                    <option value="">No Ports Detected</option>
+                                }
+                                else
+                                {
+                                    @foreach (var p in _availablePorts)
+                                    {
+                                        <option value="@p">@p</option>
+                                    }
+                                }
+                            </select>
+                        </div>
+
+                        <div class="w-[110px]">
+                            <label class="text-[0.6rem] text-[#8b949e] block mb-1 font-semibold tracking-wide">Baud</label>
+                            <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white font-mono focus:border-[#58a6ff] focus:outline-none cursor-pointer"
+                                    disabled="@(_state?.Phase != RtkPhase.Idle)"
+                                    @bind="_cfg.BaudRate">
+                                @foreach (var b in new[] { 9600, 57600, 115200, 230400, 460800 })
+                                {
+                                    <option value="@b">@b</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
 
                     <label class="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" class="accent-[#58a6ff]"
@@ -196,20 +195,10 @@
                 </div>
 
                 @* ── SURVEY-IN RING ──────────────────────────────────────────────────────
-                   SVG COMPILE FIX:
-                   All floating-point format expressions that would otherwise appear as
-                   ToString("F1") or ToString("F2") inside double-quoted SVG attributes
-                   are pre-computed here as named string locals.  Razor's parser sees
-                   only simple @variable references inside the attribute strings, which
-                   removes the quote-nesting ambiguity that caused the CS1002 compiler
-                   error in the previous version of this file.
-
-                   The previous version also had a loose `StateHasChanged();` statement
-                   sitting between SVG element declarations in this block — a statement
-                   in markup context, not a C# code block — which the Razor compiler
-                   rejected with "expected ;".  That statement has been removed; the
-                   canonical StateHasChanged() calls remain where they belong (inside
-                   OnRtkStateChanged and the button handlers in @code). *@
+                   SVG COMPILE FIX (from prior revision, kept intact):
+                   All floating-point format strings pre-computed as named locals so
+                   no ToString("F2") / ToString("F1") appears inside double-quoted SVG
+                   attribute values (Razor parser ambiguity → CS1002 compile error). *@
                 <div class="flex flex-col gap-2">
                     <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Survey-In</div>
 
@@ -217,29 +206,24 @@
                         <div class="flex items-center gap-4">
 
                             @{
-                                // ── Ring maths ──────────────────────────────────────────────
                                 double ringPct = _state?.Survey is { AccuracyM: < 9000 } sv
                                     ? Math.Min(100.0, _cfg.TargetAccuracyM / Math.Max(sv.AccuracyM, 0.0001) * 100.0)
                                     : 0.0;
 
-                                const double circ  = 301.59;            // circumference at r=48
-                                double offset      = circ * (1.0 - ringPct / 100.0);
+                                const double circ = 301.59;   // circumference at r=48
+                                double offset     = circ * (1.0 - ringPct / 100.0);
 
                                 string accText = _state?.Survey is { AccuracyM: > 0 and < 200 } s2
-                                    ? $"{s2.AccuracyM:F2}" : "—";
+                                    ? s2.AccuracyM.ToString("F2") : "—";
 
                                 string ringColor = ringPct >= 100 ? "#3fb950"
-                                                 : ringPct >=  50 ? "#f0b429"
+                                                 : ringPct >= 50  ? "#f0b429"
                                                  : "#58a6ff";
 
                                 double dotAngle = ringPct / 100.0 * 2.0 * Math.PI;
                                 double dotX     = 60 + 48 * Math.Cos(dotAngle - Math.PI / 2);
                                 double dotY     = 60 + 48 * Math.Sin(dotAngle - Math.PI / 2);
 
-                                // ── Pre-formatted strings ────────────────────────────────────
-                                // These variables are embedded directly into SVG attribute values.
-                                // Using named vars avoids ToString("F2") inside double-quoted
-                                // attributes, which the Razor parser mis-reads as attribute end.
                                 string circStr   = circ.ToString("F2");
                                 string offsetStr = offset.ToString("F2");
                                 string dotXStr   = dotX.ToString("F1");
@@ -260,13 +244,13 @@
                                             stroke-dasharray="@circStr"
                                             stroke-dashoffset="@offsetStr"
                                             style="transition:stroke-dashoffset 0.6s ease,stroke 0.4s ease" />
-                                    @* Leading-edge dot (visible while arc is incomplete) *@
+                                    @* Leading-edge dot *@
                                     @if (ringPct > 0 && ringPct < 100)
                                     {
                                         <circle cx="@dotXStr" cy="@dotYStr"
                                                 r="5" fill="@ringColor" />
                                     }
-                                    @* Seed dot at 12-o'clock when arc hasn't started yet *@
+                                    @* Seed dot at 12-o'clock when arc hasn't started *@
                                     @if (ringPct < 1)
                                     {
                                         <circle cx="60" cy="12" r="5" fill="@ringColor" />
@@ -469,26 +453,23 @@
                 }
 
                 @* ══════════════════════════════════════════════
-                   TAB 1 — Fixed Coords: live map + coordinate readout
+                   TAB 1 — Fixed Coords
                    ══════════════════════════════════════════════
-
-                   MAP CONTAINER  id="rtk-fixed-map"
-                     rtkBaseMap.js mounts a Leaflet map into this div.
-                     The div must exist in the DOM before JS is called.
-                     OnAfterRenderAsync fires after Blazor renders the markup,
-                     so timing is always correct.
-
-                   ZOOM POLICY
-                     rtkBaseMap.init() sets zoom to 16 once.
-                     rtkBaseMap.update() calls panTo() only — never setZoom().
-                     The operator retains full zoom control at all times. *@
+                   FIX-1: Coordinate card loops are FULLY UNROLLED.
+                   The previous @foreach loops used implicit tuple arrays with
+                   $"{pos.Lat:F8}°" style interpolated strings.  The curly
+                   braces inside those interpolations confused the Razor
+                   tokeniser's brace-counting, causing the loop body to be
+                   silently discarded — producing empty card headers with no
+                   data rows.  Each row is now a standalone explicit element
+                   referencing @pos.Lat.ToString("F8") etc. directly. *@
                 @if (_activeTab == 1)
                 {
                     <div class="flex-1 flex flex-col overflow-hidden">
 
                         @if (_state?.FixedPosition is { } pos)
                         {
-                            @* ── Live street map ── *@
+                            @* ── Live satellite map — rtkBaseMap.js (Esri SAT + LBL) ── *@
                             <div id="rtk-fixed-map"
                                  class="shrink-0 border-b border-[#21262d]"
                                  style="height:320px; background:#0d1117;">
@@ -497,59 +478,69 @@
                             @* ── Coordinate cards ── *@
                             <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
 
-                                @* Geodetic Card Row layout (Explicitly mapped to remove tokenizer loop anomalies) *@
+                                @* ── Geodetic (WGS-84) — UNROLLED (FIX-1) ─────────────────────
+                                   DO NOT refactor back into a tuple @foreach loop.
+                                   See FIX-1 note at the top of this file for the root cause. *@
                                 <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
                                     <div class="text-[0.58rem] font-bold text-[#8b949e] uppercase tracking-widest px-3 py-1.5 border-b border-[#21262d]">
                                         Geodetic (WGS-84)
                                     </div>
+                                    @* Latitude *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Latitude</span>
                                         <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.Lat.ToString("F8")°</span>
                                     </div>
+                                    @* Longitude *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Longitude</span>
                                         <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.Lng.ToString("F8")°</span>
                                     </div>
-                                    <div class="flex items-center justify-between px-3 py-1.5 last:border-0">
+                                    @* Height *@
+                                    <div class="flex items-center justify-between px-3 py-1.5">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Height</span>
                                         <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.Alt.ToString("F3") m</span>
                                     </div>
                                 </div>
 
-                                @* ECEF Card Row layout *@
+                                @* ── ECEF (WGS-84) — UNROLLED (FIX-1) ────────────────────────── *@
                                 <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
                                     <div class="text-[0.58rem] font-bold text-[#8b949e] uppercase tracking-widest px-3 py-1.5 border-b border-[#21262d]">
                                         ECEF (WGS-84)
                                     </div>
+                                    @* X *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">X</span>
                                         <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.EcefX.ToString("F4") m</span>
                                     </div>
+                                    @* Y *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Y</span>
                                         <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.EcefY.ToString("F4") m</span>
                                     </div>
-                                    <div class="flex items-center justify-between px-3 py-1.5 last:border-0">
+                                    @* Z *@
+                                    <div class="flex items-center justify-between px-3 py-1.5">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Z</span>
                                         <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.EcefZ.ToString("F4") m</span>
                                     </div>
                                 </div>
 
-                                @* Survey quality badge *@
+                                @* ── Survey quality badge ── *@
                                 <div class="bg-[#3fb950]/10 border border-[#3fb950]/30 rounded-lg px-3 py-2 flex items-center gap-3">
                                     <span class="text-[#3fb950] text-base shrink-0">✓</span>
                                     <div class="text-[0.7rem] text-[#3fb950]">
-                                        <span class="font-bold">Survey Baseline Converging…</span>
+                                        <span class="font-bold">Survey Baseline Secured</span>
                                         <span class="opacity-70 font-mono ml-2">
-                                            @(_state?.Survey?.AccuracyM < 9000 ? $"{_state.Survey.AccuracyM:F3} m" : "—") ·
+                                            @(_state?.Survey?.AccuracyM < 9000 ? _state.Survey.AccuracyM.ToString("F3") + " m" : "—") ·
                                             @(_state?.Survey?.Observations ?? 0) obs
                                         </span>
                                     </div>
                                 </div>
-                            </div>
+
+                            </div>@* end coordinate cards *@
                         }
                         else
                         {
+                            @* No fixed position yet — survey still running *@
                             <div class="flex-1 flex flex-col items-center justify-center gap-3 text-[#8b949e]">
                                 <div class="text-4xl opacity-30">🛰️</div>
                                 <div class="text-xs text-center px-8">
@@ -557,65 +548,76 @@
                                 </div>
                             </div>
                         }
+
                     </div>
                 }
 
                 @* ══════════════════════════════════════════════
-                   TAB 2 — RTCM Stream: stats grid + throughput chart + terminal
-                   ══════════════════════════════════════════════ *@
+                   TAB 2 — RTCM Stream
+                   ══════════════════════════════════════════════
+                   FIX-1 applied here too: the 3-tuple @foreach for the stats
+                   grid used $"..." interpolations whose {} tokens confused the
+                   Razor tokeniser, rendering empty stat cards.  Each stat card
+                   is now an explicit standalone element. *@
                 @if (_activeTab == 2)
                 {
                     <div class="flex-1 p-3 overflow-y-auto flex flex-col gap-3">
 
-                        @* Stats grid *@
+                        @* ── Stats grid — UNROLLED (FIX-1) ──────────────────────────────
+                           DO NOT refactor back into a 3-tuple @foreach loop.
+                           TX-LABEL NOTE: "RTCM Parsed" fires before the _has1005Seen gate
+                           so it counts M8P-received frames, not drone-injected bytes. *@
                         @if (_state?.Stream is not null)
                         {
+                            @{
+                                // Pre-compute all display strings here to keep markup clean.
+                                // This avoids ANY string interpolation with {} tokens inside
+                                // markup element content, which was the FIX-1 root cause.
+                                string statTotalFrames  = _state.Stream.TotalMessages.ToString("N0");
+                                string statRtcmParsed   = _state.Stream.TxBps.ToString() + " bps";
+                                string statInjectBw     = _state.Stream.TxInjectedBps.ToString() + " bps";
+                                string statReceiverBw   = _state.Stream.RxBps.ToString() + " bps";
+                                string statFragDepth    = _state.Stream.FragmentsUsed.ToString() + " / 4";
+                            }
                             <div class="grid grid-cols-3 gap-2 shrink-0">
-                                @*
-                                   TX-LABEL NOTE:
-                                   "RTCM Parsed" reflects that _txBytesThisSecond in
-                                   RtkBaseStationService is incremented before the _has1005Seen
-                                   injection gate (line ~551 vs ~565).  It counts RTCM frames
-                                   received from the M8P receiver, not bytes actually sent to
-                                   the drone.  Apply the service patch (move the counter inside
-                                   InjectGpsData) for a true injection-bandwidth reading.
-                                *@
-                                @foreach (var (lbl, val, sub) in new[] {
-                                    ("Total Frames",  _state.Stream.TotalMessages.ToString("N0"), "UBX + RTCM combined"),
-                                    ("RTCM Parsed",   $"{_state.Stream.TxBps} bps",              "From M8P serial"),
-                                    ("Inject BW",     $"{_state.Stream.TxInjectedBps} bps",      "To drone via MAVLink"),
-                                    ("Receiver BW",   $"{_state.Stream.RxBps} bps",              "Raw serial bytes"),
-                                    ("Frag Depth",    $"{_state.Stream.FragmentsUsed} / 4",       "MAVLink packing"),
-                                })
-                                {
-                                    <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
-                                        <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">@lbl</div>
-                                        <div class="text-base font-bold font-mono text-white">@val</div>
-                                        <div class="text-[0.55rem] text-[#484f58] mt-0.5">@sub</div>
-                                    </div>
-                                }
+
+                                @* Total Frames *@
+                                <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
+                                    <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Total Frames</div>
+                                    <div class="text-base font-bold font-mono text-white">@statTotalFrames</div>
+                                    <div class="text-[0.55rem] text-[#484f58] mt-0.5">UBX + RTCM combined</div>
+                                </div>
+
+                                @* RTCM Parsed *@
+                                <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
+                                    <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">RTCM Parsed</div>
+                                    <div class="text-base font-bold font-mono text-white">@statRtcmParsed</div>
+                                    <div class="text-[0.55rem] text-[#484f58] mt-0.5">From M8P serial</div>
+                                </div>
+
+                                @* Inject BW *@
+                                <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
+                                    <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Inject BW</div>
+                                    <div class="text-base font-bold font-mono text-white">@statInjectBw</div>
+                                    <div class="text-[0.55rem] text-[#484f58] mt-0.5">To drone via MAVLink</div>
+                                </div>
+
+                                @* Receiver BW *@
+                                <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
+                                    <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Receiver BW</div>
+                                    <div class="text-base font-bold font-mono text-white">@statReceiverBw</div>
+                                    <div class="text-[0.55rem] text-[#484f58] mt-0.5">Raw serial bytes</div>
+                                </div>
+
+                                @* Frag Depth *@
+                                <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
+                                    <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Frag Depth</div>
+                                    <div class="text-base font-bold font-mono text-white">@statFragDepth</div>
+                                    <div class="text-[0.55rem] text-[#484f58] mt-0.5">MAVLink packing</div>
+                                </div>
+
                             </div>
                         }
-
-                        @* RTCM throughput chart — 60-second rolling history.
-                           Requires rtk_throughput.js loaded after rtk.js.
-                           Driven by: rtk.updateThroughputChart("rtk-throughput-canvas", rxBs, txBs) *@
-                        @*<div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3 shrink-0">
-                            <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest mb-2 flex items-center gap-3">
-                                RTCM Throughput — 60 s
-                                <span class="font-normal normal-case flex items-center gap-1">
-                                    <span style="display:inline-block;width:12px;height:2px;background:#58a6ff;border-radius:1px;vertical-align:middle"></span>
-                                    RX parsed
-                                    <span style="display:inline-block;width:12px;height:2px;background:#3fb950;border-radius:1px;vertical-align:middle;margin-left:6px"></span>
-                                    TX injected
-                                    <span class="text-[#484f58] ml-2">· shaded band = MP target 150–250 B/s</span>
-                                </span>
-                            </div>
-                            <canvas id="rtk-throughput-canvas"
-                                    class="w-full block"
-                                    style="height:90px;">
-                            </canvas>
-                        </div>*@
 
                         @* Vehicle STATUSTEXT terminal *@
                         <div class="flex-1 min-h-[120px] bg-black border border-[#21262d] rounded-lg p-3 font-mono text-xs overflow-y-auto flex flex-col gap-1.5">
@@ -646,7 +648,7 @@
             @* ── Footer: Link Status | Messages Seen | Vehicle GPS ── *@
             <div class="border-t border-[#21262d] bg-[#0d1117] shrink-0 flex divide-x divide-[#21262d] min-h-[46px]">
 
-                @* Link status — RX serial BW + injection BW *@
+                @* Link status *@
                 <div class="px-4 py-2 flex flex-col justify-center gap-0.5 min-w-[150px]">
                     <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest">Link Status</div>
                     <div class="flex gap-3 text-[0.65rem] font-mono">
@@ -655,7 +657,7 @@
                     </div>
                 </div>
 
-                @* Messages seen — UBX + RTCM frame names (RTCM highlighted blue) *@
+                @* Messages seen *@
                 <div class="flex-1 px-4 py-2 overflow-hidden flex flex-col justify-center">
                     <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest mb-0.5">Messages Seen</div>
                     <div class="flex flex-wrap gap-x-3 gap-y-0">
@@ -699,12 +701,12 @@
     [Parameter] public EventCallback OnClose { get; set; }
 
     // ── Component state ───────────────────────────────────────────────────────
-    private RtkState    _state           = new();
-    private MonVerInfo? _receiverInfo;
-    private int         _activeTab       = 0;
-    private bool        _restartBusy     = false;
-    private bool        _fixedMapReady   = false;   // true once rtkBaseMap.init() completes
-    private string      _saveProfileName = "";
+    private RtkState     _state           = new();
+    private MonVerInfo?  _receiverInfo;
+    private int          _activeTab       = 0;
+    private bool         _restartBusy     = false;
+    private bool         _fixedMapReady   = false;   // true once rtkBaseMap.init() completes
+    private string       _saveProfileName = "";
     private IReadOnlyList<string> _availablePorts = Array.Empty<string>();
 
     // ── Local config model ────────────────────────────────────────────────────
@@ -733,32 +735,11 @@
     public void Dispose()
     {
         RtkService.OnStateChanged -= OnRtkStateChanged;
-        // Purge the Leaflet instance when the component is torn down.
-        // Fire-and-forget is acceptable in Dispose() — we cannot await here.
         _ = JS.InvokeVoidAsync("rtkBaseMap.destroy");
     }
 
     // ── Map lifecycle (Tab 1) ─────────────────────────────────────────────────
 
-    /// <summary>
-    /// Drives rtkBaseMap.init() / rtkBaseMap.update() after every Blazor render.
-    ///
-    /// Only executes when Tab 1 is active and FixedPosition is available.
-    ///
-    /// TIMING NOTE — the 200 ms delay before init():
-    ///   Blazor's flex layout finishes painting the host div approximately
-    ///   100–150 ms after OnAfterRenderAsync fires.  If Leaflet is initialised
-    ///   while the container still has 0 px height (e.g. during the drawer
-    ///   open animation) it stores an invalid tile grid and tiles never load.
-    ///   The delay ensures Leaflet always measures a real 320 px height.
-    ///   rtkBaseMap.js also schedules its own invalidateSize() at +180 ms as
-    ///   a secondary safety guard.
-    ///
-    /// ACCURACY FALLBACK:
-    ///   When loading a saved fixed-mode profile there is no live survey
-    ///   telemetry.  AccuracyM defaults to 1.0 m so the halo renders at a
-    ///   sensible size and the badge displays a meaningful value.
-    /// </summary>
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (_activeTab != 1) return;
@@ -766,7 +747,6 @@
         var pos = _state?.FixedPosition;
         if (pos is null) return;
 
-        // Use live survey accuracy; fall back to 1.0 m for saved profiles.
         double acc = _state?.Survey?.AccuracyM < 9000
             ? _state!.Survey!.AccuracyM
             : 1.0;
@@ -775,23 +755,16 @@
         {
             if (!_fixedMapReady)
             {
-                // Wait for the flex container to finish painting (see timing note above).
                 await Task.Delay(200);
-
-                // JS INTEROP — rtkBaseMap.init(containerId, lat, lng, accuracyM, altM)
-                // NOTE: no `phase` parameter — rtkBaseMap.js derives colour from accuracyM.
                 await JS.InvokeVoidAsync(
                     "rtkBaseMap.init",
                     "rtk-fixed-map",
                     pos.Lat, pos.Lng,
                     acc, pos.Alt);
-
                 _fixedMapReady = true;
             }
             else
             {
-                // JS INTEROP — rtkBaseMap.update(lat, lng, accuracyM, altM)
-                // Calls panTo() only — the operator's zoom level is never changed.
                 await JS.InvokeVoidAsync(
                     "rtkBaseMap.update",
                     pos.Lat, pos.Lng,
@@ -800,7 +773,6 @@
         }
         catch (Exception ex)
         {
-            // Non-fatal — the map retries on the next render cycle.
             Console.WriteLine($"[rtkBaseMap] JS interop error: {ex.Message}");
         }
     }
@@ -815,7 +787,6 @@
             _state = state;
             StateHasChanged();
 
-            // Tab 0: redraw satellite SNR bar chart via rtk.js.
             if (_activeTab == 0 && state.Satellites is { Count: > 0 })
             {
                 try
@@ -835,11 +806,9 @@
                     if (sats.Length > 0)
                         await JS.InvokeVoidAsync("rtk.drawSnrChart", "rtk-snr-canvas", sats);
                 }
-                catch { /* swallow — canvas may not be in DOM during rapid tab switches */ }
+                catch { }
             }
 
-            // Tab 2: push bytes/sec samples into the throughput chart ring-buffer.
-            // RxBps / TxInjectedBps are bits/sec — divide by 8 to get bytes/sec.
             if (_activeTab == 2 && state.Stream is not null)
             {
                 try
@@ -850,7 +819,7 @@
                         (double)state.Stream.RxBps / 8.0,
                         (double)state.Stream.TxInjectedBps / 8.0);
                 }
-                catch { /* tab not rendered yet, or rtk_throughput.js not loaded */ }
+                catch { }
             }
         });
     }
@@ -866,8 +835,6 @@
     private async Task OnDisconnect()
     {
         await RtkService.DisconnectAsync();
-        // Reset chart ring-buffer so stale session data doesn't bleed into the
-        // next connection's throughput display.
         try { await JS.InvokeVoidAsync("rtk.resetThroughputHistory"); } catch { }
     }
 
@@ -879,7 +846,6 @@
         try
         {
             await RtkService.RestartSurveyAsync();
-            // Wipe the chart history so the new survey starts with a clean slate.
             try { await JS.InvokeVoidAsync("rtk.resetThroughputHistory"); } catch { }
         }
         finally
@@ -901,11 +867,8 @@
     private async Task OnDeleteProfile(string n) => await RtkService.DeleteProfileAsync(n);
 
     /// <summary>
-    /// Switch the active tab.
-    ///
-    /// Promoted to async Task (was private void) so that the rtkBaseMap.destroy()
-    /// interop call when leaving Tab 1 is properly awaited rather than
-    /// fire-and-forgot.  Blazor's @onclick binding handles async lambdas correctly.
+    /// Switch the active tab.  Promoted to async Task so rtkBaseMap.destroy()
+    /// is properly awaited when leaving Tab 1.
     /// </summary>
     private async Task SetTab(int idx)
     {
@@ -914,23 +877,22 @@
 
         if (prev == 1 && idx != 1)
         {
-            // Leaving Fixed Coords tab: destroy the Leaflet instance so it
-            // re-creates with the correct dimensions the next time Tab 1 opens.
-            // Stale size can occur if the drawer panel is resized while Tab 1
-            // is not visible — destroying and re-init is the safest remedy.
             _fixedMapReady = false;
             try { await JS.InvokeVoidAsync("rtkBaseMap.destroy"); } catch { }
         }
 
-        // Switching to Satellite View: force a chart repaint immediately
-        // so the canvas reflects the latest satellite data without waiting
-        // for the next telemetry packet.
         if (idx == 0 && _state?.Satellites?.Count > 0)
             OnRtkStateChanged(_state);
 
         StateHasChanged();
     }
 
+    // ── FIX-3 (PRESERVED): Port rescan ───────────────────────────────────────
+    // RefreshPorts is called:
+    //   • On component init (OnInitialized)
+    //   • When the operator clicks ⟳ Rescan (button @onclick above)
+    //   • When the operator opens the port dropdown (@onfocus on the <select>)
+    //   • When OnConnect fires (catches devices plugged in after last scan)
     private void RefreshPorts()
     {
         try   { _availablePorts = System.IO.Ports.SerialPort.GetPortNames(); }

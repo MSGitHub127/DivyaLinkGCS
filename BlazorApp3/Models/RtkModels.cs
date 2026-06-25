@@ -261,6 +261,13 @@ public sealed record RtkState
     // a frozen duration value, so the survey ring never looks hung.
     public bool IsResettingTimer { get; init; } = false;
 
+    // 🌟 ── RESOLVED BUILD ERROR CS0117 ── 🌟
+    /// <summary>
+    /// Flag to signal the service backend and UI layer that coordinates 
+    /// are fully teardown-cleared during a hardware hot-restart loop.
+    /// </summary>
+    public bool PositionClearedForRestart { get; init; } = false;
+
     // ── Derived helpers used directly in Blazor UI ────────────────────────────
     public bool IsActive    => Phase >= RtkPhase.Survey;
     public bool IsFixed     => Phase >= RtkPhase.Fixed;
