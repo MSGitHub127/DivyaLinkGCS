@@ -1,38 +1,4 @@
-@* RtkDrawer.razor
-   ─────────────────────────────────────────────────────────────────────────────
-   BUG FIXES IN THIS REVISION
-   ─────────────────────────────────────────────────────────────────────────────
-
-   FIX-1 — BLANK COORDINATE CARDS (Geodetic / ECEF / Stats grid):
-     Root cause: @foreach (var (lbl, val) in new[] { ("Lat", $"{pos.Lat:F8}°"), ... })
-     The curly braces inside the $"..." string interpolation expressions are
-     mis-counted by the Razor tokeniser as matching the @foreach code-block
-     delimiter.  This silently swallows the loop body, rendering the card
-     headers but zero data rows.  The same defect hit the ECEF block and the
-     Tab 2 stats grid (whose interpolations also contain {} tokens).
-     Fix: all three @foreach loops are completely unrolled into explicit static
-     HTML rows.  Each value field directly calls .ToString("Fn") or embeds a
-     pre-computed variable — no string interpolation inside loop expressions.
-
-   FIX-2 — ESRI SATELLITE TILES (rtkBaseMap.js, separate file):
-     Tile source changed from OpenStreetMap to Esri World Imagery satellite
-     base + Esri World Boundaries and Places label overlay.
-     ResizeObserver attached to the container element to dynamically call
-     invalidateSize() on layout shifts.  See rtkBaseMap.js for full details.
-
-   FIX-3 — PORT RESCAN (preserved exactly):
-     The ⟳ Rescan button and @onfocus="RefreshPorts" on the <select> element
-     are already present in the uploaded source and are preserved verbatim.
-     The button is disabled while the port is open (Phase != Idle) to prevent
-     accidental port enumeration during an active survey.
-
-   CARRIED FORWARD (no change to logic):
-     JS INTEROP    rtkBaseMap.init / .update / .destroy (correct namespace).
-     SVG FIX       All ring-progress format strings pre-computed as named vars.
-     ASYNC SetTab  destroy() properly awaited on tab-leave.
-     STATE HANDLER OnRtkStateChanged drives SNR chart (Tab 0) and throughput (Tab 2).
-   ─────────────────────────────────────────────────────────────────────────────
-*@
+@* RtkDrawer.razor — coordinate cards use pre-computed strings; zero method calls in markup *@
 
 @using BlazorApp3.Models
 @using BlazorApp3.Services
@@ -41,10 +7,9 @@
 @inject IJSRuntime JS
 @implements IDisposable
 
-@* ── Outer container: full-window overlay ── *@
 <div class="flex flex-col h-full w-full overflow-hidden bg-[#0d1117] text-[#c9d1d9] font-sans">
 
-    @* ══ DRAWER TITLE BAR ══ *@
+    @* ══ TITLE BAR ══ *@
     <div class="flex items-center justify-between px-4 py-2.5 bg-[#161b22] border-b border-[#21262d] shrink-0">
         <div class="flex items-center gap-3">
             <span class="text-[0.65rem] @(_state?.Phase > RtkPhase.Idle ? "text-[#58a6ff] animate-pulse" : "text-[#484f58]")">⬤</span>
@@ -68,24 +33,17 @@
         </div>
     }
 
-    @* ══ BODY ══ *@
     <div class="flex flex-1 min-h-0 overflow-hidden">
 
-        @* ════════════════════════════════════════════════════
-           LEFT PANEL (340 px)
-           ════════════════════════════════════════════════════ *@
+        @* ════════ LEFT PANEL ════════ *@
         <div class="w-[340px] shrink-0 border-r border-[#21262d] flex flex-col overflow-y-auto">
-
             <div class="flex flex-col gap-4 p-4 flex-1">
 
-                @* ── CONNECTION ── *@
+                @* CONNECTION *@
                 <div class="flex flex-col gap-2.5">
                     <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Connection</div>
-
                     <div class="flex gap-2">
                         <div class="flex-1">
-
-                            @* ── FIX-3 (PRESERVED): Port label + inline Rescan button ── *@
                             <div class="flex justify-between items-center mb-1">
                                 <label class="text-[0.6rem] text-[#8b949e] block font-semibold tracking-wide">Port</label>
                                 <button class="text-[0.62rem] text-[#58a6ff] hover:text-white transition-colors bg-transparent border-none cursor-pointer p-0 select-none flex items-center gap-0.5 disabled:opacity-30"
@@ -96,9 +54,6 @@
                                     ⟳ Rescan
                                 </button>
                             </div>
-
-                            @* @onfocus triggers a rescan whenever the operator opens the dropdown,
-                               catching devices that were plugged in after the last scan. *@
                             <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:border-[#58a6ff] focus:outline-none cursor-pointer"
                                     disabled="@(_state?.Phase != RtkPhase.Idle)"
                                     @onfocus="RefreshPorts"
@@ -116,7 +71,6 @@
                                 }
                             </select>
                         </div>
-
                         <div class="w-[110px]">
                             <label class="text-[0.6rem] text-[#8b949e] block mb-1 font-semibold tracking-wide">Baud</label>
                             <select class="w-full bg-[#0d1117] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white font-mono focus:border-[#58a6ff] focus:outline-none cursor-pointer"
@@ -137,7 +91,6 @@
                         <span class="text-xs text-[#c9d1d9]">UBlox M8P/F9P autoconfig</span>
                     </label>
 
-                    @* Firmware / MSM badge — appears once MON-VER is parsed *@
                     @if (_receiverInfo?.Module is { Length: > 0 } mod)
                     {
                         <div class="flex items-center gap-2 text-[0.65rem]">
@@ -153,7 +106,7 @@
                     }
                 </div>
 
-                @* ── SURVEY-IN THRESHOLDS ── *@
+                @* SURVEY-IN THRESHOLDS *@
                 <div class="flex flex-col gap-2.5">
                     <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Survey-In Thresholds</div>
                     <div class="grid grid-cols-2 gap-2">
@@ -187,76 +140,51 @@
                             }
                             else
                             {
-                                <span>↺</span>
+                                <span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-rotate-ccw-icon lucide-rotate-ccw"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></span>
                                 <span>Restart Survey</span>
                             }
                         </button>
                     }
                 </div>
 
-                @* ── SURVEY-IN RING ──────────────────────────────────────────────────────
-                   SVG COMPILE FIX (from prior revision, kept intact):
-                   All floating-point format strings pre-computed as named locals so
-                   no ToString("F2") / ToString("F1") appears inside double-quoted SVG
-                   attribute values (Razor parser ambiguity → CS1002 compile error). *@
+                @* SURVEY-IN RING — SVG format strings pre-computed (Razor parser fix) *@
                 <div class="flex flex-col gap-2">
                     <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Survey-In</div>
-
                     <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
                         <div class="flex items-center gap-4">
-
                             @{
                                 double ringPct = _state?.Survey is { AccuracyM: < 9000 } sv
                                     ? Math.Min(100.0, _cfg.TargetAccuracyM / Math.Max(sv.AccuracyM, 0.0001) * 100.0)
                                     : 0.0;
-
-                                const double circ = 301.59;   // circumference at r=48
+                                const double circ = 301.59;
                                 double offset     = circ * (1.0 - ringPct / 100.0);
-
-                                string accText = _state?.Survey is { AccuracyM: > 0 and < 200 } s2
+                                string accText    = _state?.Survey is { AccuracyM: > 0 and < 200 } s2
                                     ? s2.AccuracyM.ToString("F2") : "—";
-
-                                string ringColor = ringPct >= 100 ? "#3fb950"
-                                                 : ringPct >= 50  ? "#f0b429"
-                                                 : "#58a6ff";
-
-                                double dotAngle = ringPct / 100.0 * 2.0 * Math.PI;
-                                double dotX     = 60 + 48 * Math.Cos(dotAngle - Math.PI / 2);
-                                double dotY     = 60 + 48 * Math.Sin(dotAngle - Math.PI / 2);
-
-                                string circStr   = circ.ToString("F2");
-                                string offsetStr = offset.ToString("F2");
-                                string dotXStr   = dotX.ToString("F1");
-                                string dotYStr   = dotY.ToString("F1");
+                                string ringColor  = ringPct >= 100 ? "#3fb950" : ringPct >= 50 ? "#f0b429" : "#58a6ff";
+                                double dotAngle   = ringPct / 100.0 * 2.0 * Math.PI;
+                                double dotX       = 60 + 48 * Math.Cos(dotAngle - Math.PI / 2);
+                                double dotY       = 60 + 48 * Math.Sin(dotAngle - Math.PI / 2);
+                                string circStr    = circ.ToString("F2");
+                                string offsetStr  = offset.ToString("F2");
+                                string dotXStr    = dotX.ToString("F1");
+                                string dotYStr    = dotY.ToString("F1");
                             }
-
                             <div class="relative shrink-0" style="width:88px;height:88px">
                                 <svg width="88" height="88" viewBox="0 0 120 120" style="transform:rotate(-90deg)">
-                                    @* Track (background ring) *@
-                                    <circle cx="60" cy="60" r="48"
-                                            fill="none" stroke="#21262d" stroke-width="8" />
-                                    @* Progress arc *@
-                                    <circle cx="60" cy="60" r="48"
-                                            fill="none"
-                                            stroke="@ringColor"
-                                            stroke-width="8"
-                                            stroke-linecap="round"
-                                            stroke-dasharray="@circStr"
-                                            stroke-dashoffset="@offsetStr"
+                                    <circle cx="60" cy="60" r="48" fill="none" stroke="#21262d" stroke-width="8" />
+                                    <circle cx="60" cy="60" r="48" fill="none"
+                                            stroke="@ringColor" stroke-width="8" stroke-linecap="round"
+                                            stroke-dasharray="@circStr" stroke-dashoffset="@offsetStr"
                                             style="transition:stroke-dashoffset 0.6s ease,stroke 0.4s ease" />
-                                    @* Leading-edge dot *@
                                     @if (ringPct > 0 && ringPct < 100)
                                     {
-                                        <circle cx="@dotXStr" cy="@dotYStr"
-                                                r="5" fill="@ringColor" />
+                                        <circle cx="@dotXStr" cy="@dotYStr" r="5" fill="@ringColor" />
                                     }
-                                    @* Seed dot at 12-o'clock when arc hasn't started *@
                                     @if (ringPct < 1)
                                     {
                                         <circle cx="60" cy="12" r="5" fill="@ringColor" />
                                     }
                                 </svg>
-
                                 <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
                                     @if (_state?.IsResettingTimer == true)
                                     {
@@ -270,7 +198,6 @@
                                     }
                                 </div>
                             </div>
-
                             <div class="flex flex-col gap-2 flex-1 text-xs">
                                 <div class="flex justify-between">
                                     <span class="text-[#8b949e]">Duration</span>
@@ -296,15 +223,17 @@
                                     }
                                 </div>
                             </div>
-
                         </div>
                     </div>
                 </div>
 
-                @* ── LIVE GPS POSITION (CurrentPosition from NAV-PVT, pre-survey) ──
-                   Requires RtkModels_additions.cs: LivePosition record + CurrentPosition on RtkState *@
+                @* LIVE GPS *@
                 @if (_state?.CurrentPosition is { IsValid: true } live)
-                {
+                {        
+                    string liveLat = live.Lat.ToString("F7") + "\u00b0";
+                    string liveLng = live.Lng.ToString("F7") + "\u00b0";
+                    string liveAlt = live.Alt.ToString("F2") + " m";
+
                     <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
                         <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest mb-2 flex items-center gap-2">
                             Live GPS
@@ -315,21 +244,21 @@
                         <div class="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs">
                             <div>
                                 <div class="text-[0.6rem] text-[#8b949e]">LAT</div>
-                                <div class="text-[#c9d1d9]">@live.Lat.ToString("F7")°</div>
+                                <div class="text-[#c9d1d9]">@liveLat</div>
                             </div>
                             <div>
                                 <div class="text-[0.6rem] text-[#8b949e]">LNG</div>
-                                <div class="text-[#c9d1d9]">@live.Lng.ToString("F7")°</div>
+                                <div class="text-[#c9d1d9]">@liveLng</div>
                             </div>
                             <div class="col-span-2">
                                 <div class="text-[0.6rem] text-[#8b949e]">ALT</div>
-                                <div class="text-[#c9d1d9]">@live.Alt.ToString("F2") m</div>
+                                <div class="text-[#c9d1d9]">@liveAlt</div>
                             </div>
                         </div>
                     </div>
                 }
 
-                @* ── SAVED PROFILES ── *@
+                @* SAVED PROFILES *@
                 <div class="flex flex-col gap-2 flex-1">
                     <div class="flex items-center justify-between">
                         <span class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest">Saved Profiles</span>
@@ -339,7 +268,6 @@
                                     @onclick="OnSaveProfile">Save Current</button>
                         }
                     </div>
-
                     @if (_state?.SavedProfiles is { Count: > 0 })
                     {
                         <div class="flex flex-col gap-1.5">
@@ -347,6 +275,7 @@
                             {
                                 if (p is null) continue;
                                 bool isActive = _state.ActiveProfileName == p.Name;
+                                string pCoords = p.Lat.ToString("F6") + "\u00b0, " + p.Lng.ToString("F6") + "\u00b0";
                                 <div class="bg-[#0d1117] border @(isActive ? "border-[#3fb950]" : "border-[#21262d]") rounded-md p-2 flex flex-col gap-1">
                                     <div class="flex items-center justify-between text-xs">
                                         <span class="font-semibold text-[#58a6ff] truncate max-w-[140px]">@p.Name</span>
@@ -355,9 +284,7 @@
                                             <span class="text-[0.55rem] text-[#3fb950] font-bold">ACTIVE</span>
                                         }
                                     </div>
-                                    <div class="text-[0.65rem] font-mono text-[#8b949e]">
-                                        @p.Lat.ToString("F6")°, @p.Lng.ToString("F6")°
-                                    </div>
+                                    <div class="text-[0.65rem] font-mono text-[#8b949e]">@pCoords</div>
                                     <div class="flex gap-1.5 mt-0.5">
                                         <button class="flex-1 text-[0.65rem] py-0.5 bg-[#238636] text-white rounded hover:bg-[#2ea44f]"
                                                 disabled="@(_state?.Phase == RtkPhase.Idle)"
@@ -377,9 +304,8 @@
                     }
                 </div>
 
-            </div>@* end scrollable body *@
+            </div>
 
-            @* Connect / Disconnect — pinned to bottom of left panel *@
             <div class="p-4 border-t border-[#21262d] shrink-0">
                 @if (_state?.Phase == RtkPhase.Idle)
                 {
@@ -392,15 +318,11 @@
                             @onclick="OnDisconnect">Disconnect Base Station</button>
                 }
             </div>
+        </div>
 
-        </div>@* end left panel *@
-
-        @* ════════════════════════════════════════════════════
-           RIGHT PANEL (flex-1)
-           ════════════════════════════════════════════════════ *@
+        @* ════════ RIGHT PANEL ════════ *@
         <div class="flex-1 min-w-0 flex flex-col overflow-hidden">
 
-            @* ── Tab bar ── *@
             <div class="flex border-b border-[#21262d] px-2 pt-1 shrink-0 bg-[#0d1117]">
                 @foreach (var (label, idx) in new[] { ("Satellite View", 0), ("Fixed Coords", 1), ("RTCM Stream", 2) })
                 {
@@ -412,12 +334,9 @@
                 }
             </div>
 
-            @* ── Tab content ── *@
             <div class="flex-1 min-h-0 overflow-hidden flex flex-col">
 
-                @* ══════════════════════════════════════════════
-                   TAB 0 — Satellite View (SNR bar chart)
-                   ══════════════════════════════════════════════ *@
+                @* ══ TAB 0 — Satellite View ══ *@
                 @if (_activeTab == 0)
                 {
                     <div class="flex-1 min-h-0 flex flex-col gap-2 p-3">
@@ -430,9 +349,8 @@
                                     bool connected = _state.Phase > RtkPhase.Idle;
                                     string pillCss = c.IsActive
                                         ? "bg-[#3fb950]/20 text-[#3fb950] border-[#3fb950]/50"
-                                        : connected
-                                            ? "bg-[#f85149]/10 text-[#f85149] border-[#f85149]/40"
-                                            : "bg-[#21262d] text-[#484f58] border-[#21262d]";
+                                        : connected ? "bg-[#f85149]/10 text-[#f85149] border-[#f85149]/40"
+                                        : "bg-[#21262d] text-[#484f58] border-[#21262d]";
                                     string dot = c.IsActive ? "● " : connected ? "○ " : "";
                                     <span class="text-[0.6rem] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border transition-all duration-500 @pillCss">
                                         @dot@c.Label
@@ -452,95 +370,91 @@
                     </div>
                 }
 
-                @* ══════════════════════════════════════════════
-                   TAB 1 — Fixed Coords
-                   ══════════════════════════════════════════════
-                   FIX-1: Coordinate card loops are FULLY UNROLLED.
-                   The previous @foreach loops used implicit tuple arrays with
-                   $"{pos.Lat:F8}°" style interpolated strings.  The curly
-                   braces inside those interpolations confused the Razor
-                   tokeniser's brace-counting, causing the loop body to be
-                   silently discarded — producing empty card headers with no
-                   data rows.  Each row is now a standalone explicit element
-                   referencing @pos.Lat.ToString("F8") etc. directly. *@
+                @* ══ TAB 1 — Fixed Coords ══
+                   COORDINATE CARDS: all display values are pre-computed as plain strings
+                   in the @{ } block below.  Only bare @varName references appear in markup.
+                   No .ToString() calls, no string interpolation, no method calls in HTML.
+                   This is the only reliable pattern across all Razor/Blazor compiler versions. *@
                 @if (_activeTab == 1)
                 {
                     <div class="flex-1 flex flex-col overflow-hidden">
 
                         @if (_state?.FixedPosition is { } pos)
                         {
-                            @* ── Live satellite map — rtkBaseMap.js (Esri SAT + LBL) ── *@
+                            @* ── Pre-compute every display string here.
+                               Rule: NOTHING in the markup below calls a method or
+                               uses string interpolation.  Plain @variable only. ── *@
+                            string cardLat     = pos.Lat.ToString("F8")   + "\u00b0";
+                            string cardLng     = pos.Lng.ToString("F8")   + "\u00b0";
+                            string cardAlt     = pos.Alt.ToString("F3")   + " m";
+                            string cardEcefX   = pos.EcefX.ToString("F4") + " m";
+                            string cardEcefY   = pos.EcefY.ToString("F4") + " m";
+                            string cardEcefZ   = pos.EcefZ.ToString("F4") + " m";
+
+                            double? _sAcc      = _state?.Survey?.AccuracyM;
+                            string  cardAcc    = (_sAcc.HasValue && _sAcc.Value < 9000)
+                                ? _sAcc.Value.ToString("F3") + " m"
+                                : "—";
+                            string  cardObs    = (_state?.Survey?.Observations ?? 0).ToString();
+
                             <div id="rtk-fixed-map"
                                  class="shrink-0 border-b border-[#21262d]"
                                  style="height:320px; background:#0d1117;">
                             </div>
 
-                            @* ── Coordinate cards ── *@
                             <div class="flex-1 overflow-y-auto p-3 flex flex-col gap-2.5">
 
-                                @* ── Geodetic (WGS-84) — UNROLLED (FIX-1) ─────────────────────
-                                   DO NOT refactor back into a tuple @foreach loop.
-                                   See FIX-1 note at the top of this file for the root cause. *@
+                                @* Geodetic (WGS-84) *@
                                 <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
                                     <div class="text-[0.58rem] font-bold text-[#8b949e] uppercase tracking-widest px-3 py-1.5 border-b border-[#21262d]">
                                         Geodetic (WGS-84)
                                     </div>
-                                    @* Latitude *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Latitude</span>
-                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.Lat.ToString("F8")°</span>
+                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@cardLat</span>
                                     </div>
-                                    @* Longitude *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Longitude</span>
-                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.Lng.ToString("F8")°</span>
+                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@cardLng</span>
                                     </div>
-                                    @* Height *@
                                     <div class="flex items-center justify-between px-3 py-1.5">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Height</span>
-                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.Alt.ToString("F3") m</span>
+                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@cardAlt</span>
                                     </div>
                                 </div>
 
-                                @* ── ECEF (WGS-84) — UNROLLED (FIX-1) ────────────────────────── *@
+                                @* ECEF (WGS-84) *@
                                 <div class="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
                                     <div class="text-[0.58rem] font-bold text-[#8b949e] uppercase tracking-widest px-3 py-1.5 border-b border-[#21262d]">
                                         ECEF (WGS-84)
                                     </div>
-                                    @* X *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">X</span>
-                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.EcefX.ToString("F4") m</span>
+                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@cardEcefX</span>
                                     </div>
-                                    @* Y *@
                                     <div class="flex items-center justify-between px-3 py-1.5 border-b border-[#0d1117]">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Y</span>
-                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.EcefY.ToString("F4") m</span>
+                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@cardEcefY</span>
                                     </div>
-                                    @* Z *@
                                     <div class="flex items-center justify-between px-3 py-1.5">
                                         <span class="text-[0.7rem] text-[#8b949e] w-20 shrink-0">Z</span>
-                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@pos.EcefZ.ToString("F4") m</span>
+                                        <span class="text-[0.72rem] font-mono font-bold text-white tracking-tight select-all">@cardEcefZ</span>
                                     </div>
                                 </div>
 
-                                @* ── Survey quality badge ── *@
+                                @* Survey quality badge *@
                                 <div class="bg-[#3fb950]/10 border border-[#3fb950]/30 rounded-lg px-3 py-2 flex items-center gap-3">
                                     <span class="text-[#3fb950] text-base shrink-0">✓</span>
                                     <div class="text-[0.7rem] text-[#3fb950]">
                                         <span class="font-bold">Survey Baseline Secured</span>
-                                        <span class="opacity-70 font-mono ml-2">
-                                            @(_state?.Survey?.AccuracyM < 9000 ? _state.Survey.AccuracyM.ToString("F3") + " m" : "—") ·
-                                            @(_state?.Survey?.Observations ?? 0) obs
-                                        </span>
+                                        <span class="opacity-70 font-mono ml-2">@cardAcc · @cardObs obs</span>
                                     </div>
                                 </div>
 
-                            </div>@* end coordinate cards *@
+                            </div>
                         }
                         else
                         {
-                            @* No fixed position yet — survey still running *@
                             <div class="flex-1 flex flex-col items-center justify-center gap-3 text-[#8b949e]">
                                 <div class="text-4xl opacity-30">🛰️</div>
                                 <div class="text-xs text-center px-8">
@@ -552,74 +466,48 @@
                     </div>
                 }
 
-                @* ══════════════════════════════════════════════
-                   TAB 2 — RTCM Stream
-                   ══════════════════════════════════════════════
-                   FIX-1 applied here too: the 3-tuple @foreach for the stats
-                   grid used $"..." interpolations whose {} tokens confused the
-                   Razor tokeniser, rendering empty stat cards.  Each stat card
-                   is now an explicit standalone element. *@
+                @* ══ TAB 2 — RTCM Stream ══ *@
                 @if (_activeTab == 2)
                 {
                     <div class="flex-1 p-3 overflow-y-auto flex flex-col gap-3">
 
-                        @* ── Stats grid — UNROLLED (FIX-1) ──────────────────────────────
-                           DO NOT refactor back into a 3-tuple @foreach loop.
-                           TX-LABEL NOTE: "RTCM Parsed" fires before the _has1005Seen gate
-                           so it counts M8P-received frames, not drone-injected bytes. *@
                         @if (_state?.Stream is not null)
                         {
-                            @{
-                                // Pre-compute all display strings here to keep markup clean.
-                                // This avoids ANY string interpolation with {} tokens inside
-                                // markup element content, which was the FIX-1 root cause.
-                                string statTotalFrames  = _state.Stream.TotalMessages.ToString("N0");
-                                string statRtcmParsed   = _state.Stream.TxBps.ToString() + " bps";
-                                string statInjectBw     = _state.Stream.TxInjectedBps.ToString() + " bps";
-                                string statReceiverBw   = _state.Stream.RxBps.ToString() + " bps";
-                                string statFragDepth    = _state.Stream.FragmentsUsed.ToString() + " / 4";
-                            }
-                            <div class="grid grid-cols-3 gap-2 shrink-0">
+                            string statTotalFrames = _state.Stream.TotalMessages.ToString("N0");
+                            string statRtcmParsed  = _state.Stream.TxBps.ToString()         + " bps";
+                            string statInjectBw    = _state.Stream.TxInjectedBps.ToString()  + " bps";
+                            string statReceiverBw  = _state.Stream.RxBps.ToString()          + " bps";
+                            string statFragDepth   = _state.Stream.FragmentsUsed.ToString()  + " / 4";
 
-                                @* Total Frames *@
+                            <div class="grid grid-cols-3 gap-2 shrink-0">
                                 <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
                                     <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Total Frames</div>
                                     <div class="text-base font-bold font-mono text-white">@statTotalFrames</div>
                                     <div class="text-[0.55rem] text-[#484f58] mt-0.5">UBX + RTCM combined</div>
                                 </div>
-
-                                @* RTCM Parsed *@
                                 <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
                                     <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">RTCM Parsed</div>
                                     <div class="text-base font-bold font-mono text-white">@statRtcmParsed</div>
                                     <div class="text-[0.55rem] text-[#484f58] mt-0.5">From M8P serial</div>
                                 </div>
-
-                                @* Inject BW *@
                                 <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
                                     <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Inject BW</div>
                                     <div class="text-base font-bold font-mono text-white">@statInjectBw</div>
                                     <div class="text-[0.55rem] text-[#484f58] mt-0.5">To drone via MAVLink</div>
                                 </div>
-
-                                @* Receiver BW *@
                                 <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
                                     <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Receiver BW</div>
                                     <div class="text-base font-bold font-mono text-white">@statReceiverBw</div>
                                     <div class="text-[0.55rem] text-[#484f58] mt-0.5">Raw serial bytes</div>
                                 </div>
-
-                                @* Frag Depth *@
                                 <div class="bg-[#161b22] border border-[#21262d] rounded-lg p-3">
                                     <div class="text-[0.6rem] text-[#8b949e] font-bold uppercase tracking-wider mb-1">Frag Depth</div>
                                     <div class="text-base font-bold font-mono text-white">@statFragDepth</div>
                                     <div class="text-[0.55rem] text-[#484f58] mt-0.5">MAVLink packing</div>
                                 </div>
-
                             </div>
                         }
 
-                        @* Vehicle STATUSTEXT terminal *@
                         <div class="flex-1 min-h-[120px] bg-black border border-[#21262d] rounded-lg p-3 font-mono text-xs overflow-y-auto flex flex-col gap-1.5">
                             <div class="text-[0.6rem] font-bold text-[#8b949e] uppercase tracking-widest border-b border-[#21262d] pb-1 mb-1 shrink-0">
                                 Vehicle Status Messages
@@ -643,12 +531,10 @@
                     </div>
                 }
 
-            </div>@* end tab content *@
+            </div>
 
-            @* ── Footer: Link Status | Messages Seen | Vehicle GPS ── *@
+            @* FOOTER *@
             <div class="border-t border-[#21262d] bg-[#0d1117] shrink-0 flex divide-x divide-[#21262d] min-h-[46px]">
-
-                @* Link status *@
                 <div class="px-4 py-2 flex flex-col justify-center gap-0.5 min-w-[150px]">
                     <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest">Link Status</div>
                     <div class="flex gap-3 text-[0.65rem] font-mono">
@@ -656,8 +542,6 @@
                         <span class="text-[#8b949e]">Inject <span class="@(_state?.Stream?.TxInjectedBps > 0 ? "text-[#3fb950]" : "text-white") ml-0.5">@(_state?.Stream?.TxInjectedBps ?? 0) bps</span></span>
                     </div>
                 </div>
-
-                @* Messages seen *@
                 <div class="flex-1 px-4 py-2 overflow-hidden flex flex-col justify-center">
                     <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest mb-0.5">Messages Seen</div>
                     <div class="flex flex-wrap gap-x-3 gap-y-0">
@@ -678,38 +562,32 @@
                         }
                     </div>
                 </div>
-
-                @* Vehicle GPS fix badge *@
                 <div class="px-4 py-2 flex flex-col items-end justify-center gap-0.5 min-w-[120px]">
                     <div class="text-[0.55rem] font-bold text-[#8b949e] uppercase tracking-widest">Vehicle GPS</div>
                     <span class="text-[0.65rem] font-bold px-2 py-0.5 rounded @VehicleFixBadgeClass(_state?.VehicleGpsFixType ?? 0)">
                         @(_state?.VehicleGpsLabel ?? "No Fix")
                     </span>
                 </div>
-
             </div>
 
-        </div>@* end right panel *@
+        </div>
 
-    </div>@* end body *@
+    </div>
 
-</div>@* end outer container *@
+</div>
 
 @code {
 
-    // ── Parameters ────────────────────────────────────────────────────────────
     [Parameter] public EventCallback OnClose { get; set; }
 
-    // ── Component state ───────────────────────────────────────────────────────
     private RtkState     _state           = new();
     private MonVerInfo?  _receiverInfo;
     private int          _activeTab       = 0;
     private bool         _restartBusy     = false;
-    private bool         _fixedMapReady   = false;   // true once rtkBaseMap.init() completes
+    private bool         _fixedMapReady   = false;
     private string       _saveProfileName = "";
     private IReadOnlyList<string> _availablePorts = Array.Empty<string>();
 
-    // ── Local config model ────────────────────────────────────────────────────
     private sealed class CfgLocal
     {
         public string ComPort         { get; set; } = "COM3";
@@ -717,13 +595,10 @@
         public bool   AutoConfig      { get; set; } = true;
         public double TargetAccuracyM { get; set; } = 0.200;
         public int    MinDurationSec  { get; set; } = 60;
-
         public RtkConfig ToConfig() =>
             new(ComPort, BaudRate, AutoConfig, TargetAccuracyM, MinDurationSec);
     }
     private readonly CfgLocal _cfg = new();
-
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     protected override void OnInitialized()
     {
@@ -738,46 +613,29 @@
         _ = JS.InvokeVoidAsync("rtkBaseMap.destroy");
     }
 
-    // ── Map lifecycle (Tab 1) ─────────────────────────────────────────────────
-
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (_activeTab != 1) return;
-
         var pos = _state?.FixedPosition;
         if (pos is null) return;
-
-        double acc = _state?.Survey?.AccuracyM < 9000
-            ? _state!.Survey!.AccuracyM
-            : 1.0;
-
+        double acc = _state?.Survey?.AccuracyM < 9000 ? _state!.Survey!.AccuracyM : 1.0;
         try
         {
             if (!_fixedMapReady)
             {
                 await Task.Delay(200);
-                await JS.InvokeVoidAsync(
-                    "rtkBaseMap.init",
-                    "rtk-fixed-map",
-                    pos.Lat, pos.Lng,
-                    acc, pos.Alt);
+                await JS.InvokeVoidAsync("rtkBaseMap.init", "rtk-fixed-map",
+                    pos.Lat, pos.Lng, acc, pos.Alt);
                 _fixedMapReady = true;
             }
             else
             {
-                await JS.InvokeVoidAsync(
-                    "rtkBaseMap.update",
-                    pos.Lat, pos.Lng,
-                    acc, pos.Alt);
+                await JS.InvokeVoidAsync("rtkBaseMap.update",
+                    pos.Lat, pos.Lng, acc, pos.Alt);
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[rtkBaseMap] JS interop error: {ex.Message}");
-        }
+        catch (Exception ex) { Console.WriteLine($"[rtkBaseMap] {ex.Message}"); }
     }
-
-    // ── State change handler ──────────────────────────────────────────────────
 
     private void OnRtkStateChanged(RtkState state)
     {
@@ -793,16 +651,9 @@
                 {
                     var sats = state.Satellites
                         .Where(s => s is not null)
-                        .Select(s => new
-                        {
-                            id     = s.Id,
-                            snr    = (int)s.Snr,
-                            active = s.Active,
-                            gnssId = (int)s.GnssId,
-                            svId   = (int)s.SvId
-                        })
+                        .Select(s => new { id = s.Id, snr = (int)s.Snr, active = s.Active,
+                                           gnssId = (int)s.GnssId, svId = (int)s.SvId })
                         .ToArray();
-
                     if (sats.Length > 0)
                         await JS.InvokeVoidAsync("rtk.drawSnrChart", "rtk-snr-canvas", sats);
                 }
@@ -813,8 +664,7 @@
             {
                 try
                 {
-                    await JS.InvokeVoidAsync(
-                        "rtk.updateThroughputChart",
+                    await JS.InvokeVoidAsync("rtk.updateThroughputChart",
                         "rtk-throughput-canvas",
                         (double)state.Stream.RxBps / 8.0,
                         (double)state.Stream.TxInjectedBps / 8.0);
@@ -823,8 +673,6 @@
             }
         });
     }
-
-    // ── Button handlers ───────────────────────────────────────────────────────
 
     private async Task OnConnect()
     {
@@ -848,17 +696,13 @@
             await RtkService.RestartSurveyAsync();
             try { await JS.InvokeVoidAsync("rtk.resetThroughputHistory"); } catch { }
         }
-        finally
-        {
-            _restartBusy = false;
-            StateHasChanged();
-        }
+        finally { _restartBusy = false; StateHasChanged(); }
     }
 
     private async Task OnSaveProfile()
     {
         if (string.IsNullOrWhiteSpace(_saveProfileName))
-            _saveProfileName = $"Base_{DateTime.Now:yyyyMMdd_HHmm}";
+            _saveProfileName = "Base_" + DateTime.Now.ToString("yyyyMMdd_HHmm");
         await RtkService.SaveCurrentProfileAsync(_saveProfileName.Trim());
         _saveProfileName = "";
     }
@@ -866,33 +710,20 @@
     private async Task OnUseProfile(string n)    => await RtkService.UseProfileAsync(n);
     private async Task OnDeleteProfile(string n) => await RtkService.DeleteProfileAsync(n);
 
-    /// <summary>
-    /// Switch the active tab.  Promoted to async Task so rtkBaseMap.destroy()
-    /// is properly awaited when leaving Tab 1.
-    /// </summary>
     private async Task SetTab(int idx)
     {
         int prev = _activeTab;
         _activeTab = idx;
-
         if (prev == 1 && idx != 1)
         {
             _fixedMapReady = false;
             try { await JS.InvokeVoidAsync("rtkBaseMap.destroy"); } catch { }
         }
-
         if (idx == 0 && _state?.Satellites?.Count > 0)
             OnRtkStateChanged(_state);
-
         StateHasChanged();
     }
 
-    // ── FIX-3 (PRESERVED): Port rescan ───────────────────────────────────────
-    // RefreshPorts is called:
-    //   • On component init (OnInitialized)
-    //   • When the operator clicks ⟳ Rescan (button @onclick above)
-    //   • When the operator opens the port dropdown (@onfocus on the <select>)
-    //   • When OnConnect fires (catches devices plugged in after last scan)
     private void RefreshPorts()
     {
         try   { _availablePorts = System.IO.Ports.SerialPort.GetPortNames(); }
@@ -900,8 +731,6 @@
         if (string.IsNullOrEmpty(_cfg.ComPort) && _availablePorts.Count > 0)
             _cfg.ComPort = _availablePorts[0];
     }
-
-    // ── Visual helpers ────────────────────────────────────────────────────────
 
     private static string PhaseLabel(RtkPhase p) => p switch
     {
